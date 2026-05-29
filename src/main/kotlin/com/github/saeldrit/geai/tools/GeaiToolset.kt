@@ -14,6 +14,9 @@ import com.github.saeldrit.geai.tools.fs.ListFilesTool
 import com.github.saeldrit.geai.tools.fs.ReadFileTool
 import com.github.saeldrit.geai.tools.fs.SearchTextTool
 import com.github.saeldrit.geai.tools.fs.WriteFileTool
+import com.github.saeldrit.geai.tools.knowledge.KbForgetTool
+import com.github.saeldrit.geai.tools.knowledge.KbLookupTool
+import com.github.saeldrit.geai.tools.knowledge.KbRecordTool
 import com.github.saeldrit.geai.tools.project.ProjectOverviewTool
 import com.github.saeldrit.geai.tools.selfmod.SelfInfoTool
 import com.github.saeldrit.geai.tools.selfmod.SelfPatchTool
@@ -23,6 +26,10 @@ import com.github.saeldrit.geai.tools.system.RunCommandTool
 object GeaiToolset {
 
     fun all(): List<AgentTool> = listOf(
+        // Knowledge axes (consult first — saves context)
+        KbLookupTool,
+        KbRecordTool,
+        KbForgetTool,
         // Navigation & reading
         ProjectOverviewTool,
         FindFilesTool,

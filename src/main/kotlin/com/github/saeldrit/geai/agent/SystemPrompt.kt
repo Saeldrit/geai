@@ -58,6 +58,14 @@ object SystemPrompt {
         4. Fix (only if requested): apply a minimal, style-matching change.
         5. Audit: summarize the corrected logic and call out related risks.
 
+        ## Project knowledge (navigation axes)
+        A persistent index survives across turns. BEFORE search_text/read_file, call `kb_lookup` — it
+        returns known symbol locations (NAV: file:line), conventions (STYLE), tech facts (TECH), and
+        forbidden actions (LESSON) without spending context. After you discover something durable,
+        store it with `kb_record`: NAV = symbol -> file:line; STYLE/TECH = a project rule/invariant;
+        LESSON = a mistake never to repeat. Update an existing entry with compare-and-swap
+        (expected_version = its current version). Treat LESSON entries as hard constraints on yourself.
+
         ## Growing new capabilities (self-modification)
         You can run commands with `run_command` (rebuild, run, test, git) to reproduce issues and verify
         fixes. If a task needs a capability you do not yet have, you may extend yourself: call `self_info`

@@ -2,6 +2,14 @@
 
 # geai Changelog
 
+## [0.0.6]
+
+### Added
+- Project knowledge index ("axes"): a persistent, tagged, versioned `.geai/knowledge.xml` with
+  optimistic CAS updates, and tools `kb_lookup` / `kb_record` / `kb_forget`. Axes: NAV (symbol ->
+  file:line), STYLE (conventions), TECH (stack/invariants), LESSON (what not to do). The agent
+  consults the index before searching/reading, so navigation costs little context or tokens.
+
 ## [0.0.5]
 
 ### Added
