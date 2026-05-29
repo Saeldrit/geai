@@ -2,6 +2,17 @@
 
 # geai Changelog
 
+## [0.0.4]
+
+### Added
+- Reasoning capture is now wired end to end: the Claude Code engine's `thinking` blocks are
+  emitted as a dedicated event and rendered in the collapsible block (previously dropped).
+- The composer input can be resized vertically by dragging its corner grip (up to 60% viewport).
+
+### Changed
+- System prompt: stricter, terser output register (no filler/flattery/hedging, answer only what
+  was asked, prefer short bullets).
+
 ## [0.0.3]
 
 ### Added
