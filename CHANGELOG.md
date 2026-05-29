@@ -2,6 +2,13 @@
 
 # geai Changelog
 
+## [0.0.7]
+
+### Fixed
+- Dark, theme-matched scrollbars in the JCEF UI (no more white scrollbar); page-level scroll
+  disabled so only the transcript scrolls. Tool/info lines now wrap instead of overflowing
+  horizontally, so context is never clipped.
+
 ## [0.0.6]
 
 ### Added

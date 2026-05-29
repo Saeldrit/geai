@@ -10,9 +10,17 @@
     --border:#393b40; --accent:#589df6; --muted:#8c8c8c; --field:#2b2d30;
   }
   *{box-sizing:border-box}
-  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);
+  /* dark scrollbars (JCEF is Chromium) — kill the default white scroll */
+  *{scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:var(--border);border:2px solid transparent;border-radius:8px;background-clip:content-box}
+  ::-webkit-scrollbar-thumb:hover{background:var(--muted);background-clip:content-box}
+  ::-webkit-scrollbar-corner{background:transparent}
+  ::-webkit-scrollbar-button{display:none;width:0;height:0}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);overflow:hidden;
     font-family:"Segoe UI",system-ui,-apple-system,sans-serif;font-size:13px;line-height:1.5}
-  #root{display:flex;flex-direction:column;height:100vh}
+  #root{display:flex;flex-direction:column;height:100vh;overflow:hidden}
 
   /* top bar */
   #topbar{display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid var(--border);
@@ -49,9 +57,9 @@
   .msg.assistant .who{color:#4ec98b}
   .msg .body{white-space:normal;word-wrap:break-word}
   .msg .body p{margin:0 0 8px}
-  .tool{color:var(--muted);font-size:12px;margin:0 0 6px;font-family:ui-monospace,Consolas,monospace}
+  .tool{color:var(--muted);font-size:12px;margin:0 0 6px;font-family:ui-monospace,Consolas,monospace;overflow-wrap:anywhere;word-break:break-word}
   .tool.err{color:#e06c75}
-  .info{color:var(--muted);font-style:italic;margin:0 0 8px}
+  .info{color:var(--muted);font-style:italic;margin:0 0 8px;overflow-wrap:anywhere}
 
   /* collapsible reasoning — hidden by default, toggled by the arrow */
   .reason{margin:0 0 12px;border:1px solid var(--border);border-radius:8px;background:var(--card);overflow:hidden}
