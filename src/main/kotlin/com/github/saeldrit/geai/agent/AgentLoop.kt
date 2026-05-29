@@ -126,7 +126,7 @@ class AgentLoop(
             ?: return ToolResult.error(
                 "Unknown tool '${call.name}'. Available: ${registry.tools.joinToString(", ") { it.name }}",
             )
-        if (tool.mutating && !settings.autoApproveEditTools) {
+        if (tool.mutating) {
             if (!ApprovalPolicy.confirm(project, tool, call.inputJson)) {
                 return ToolResult.error("User denied permission to run '${tool.name}'.")
             }

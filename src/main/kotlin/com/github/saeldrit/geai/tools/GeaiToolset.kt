@@ -30,6 +30,7 @@ import com.github.saeldrit.geai.tools.knowledge.KbRecordTool
 import com.github.saeldrit.geai.tools.project.ProjectOverviewTool
 import com.github.saeldrit.geai.tools.selfmod.SelfInfoTool
 import com.github.saeldrit.geai.tools.selfmod.SelfPatchTool
+import com.github.saeldrit.geai.tools.interaction.AskUserTool
 import com.github.saeldrit.geai.tools.system.RunCommandTool
 
 /** Central catalog of tools advertised to the model. */
@@ -55,6 +56,8 @@ object GeaiToolset {
         ContextBundleTool,
         // GRACE tiered routing — delegate code authoring to the strong tier
         EscalateAuthorTool,
+        // User interaction (clarifying questions, confirmations)
+        AskUserTool,
         // Navigation & reading
         ProjectOverviewTool,
         FindFilesTool,

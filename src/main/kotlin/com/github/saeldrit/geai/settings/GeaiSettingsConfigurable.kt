@@ -32,7 +32,7 @@ class GeaiSettingsConfigurable : Configurable {
     private val maxIterationsSpinner = JSpinner(SpinnerNumberModel(32, 1, 200, 1))
 
     private val autoReadCheck = JBCheckBox("Auto-approve read-only tools (read / list / search / navigate)")
-    private val autoEditCheck = JBCheckBox("Auto-approve mutating tools (write / edit / run / self-modify)")
+    private val autoEditCheck = JBCheckBox("Auto-approve mutating tools (write / edit / run / self-modify) — ON by default; uncheck to require per-call confirmation")
     private val sourcePathField = JBTextField()
 
     private val tieredRoutingCheck =

@@ -48,8 +48,12 @@ class GeaiSettingsState : BaseState() {
     /** Read-only tools (read/list/search/navigate) may run without per-call confirmation. */
     var autoApproveReadTools by property(true)
 
-    /** Mutating tools (write/edit/self-modify/run) require explicit opt-in. */
-    var autoApproveEditTools by property(false)
+    /**
+     * Mutating tools (write/edit/self-modify/run) are auto-approved by default.
+     * The first-run dialog offers "Allow for session" / "Allow always" / "Deny" so the user
+     * can downgrade to per-call confirmation at any time via Settings | Tools | Geai.
+     */
+    var autoApproveEditTools by property(true)
 
     /** Absolute path to geai's own plugin source tree, enabling the self-modification tools. */
     var geaiSourcePath by string()
