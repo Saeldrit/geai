@@ -5,6 +5,12 @@
     <vendor>saeldrit</vendor>
 
     <depends>com.intellij.modules.platform</depends>
+    <!--
+      Optional dependency on the Java plugin: enables psi: anchor resolution and full PSI-based
+      graph indexing (FILE→class→method, inheritance). geai loads and works without it — psi:
+      anchors degrade to a clean error, graph_reindex falls back to the spec-only subgraph.
+    -->
+    <depends optional="true" config-file="geai-java.xml">com.intellij.modules.java</depends>
 
     <resource-bundle>messages.GeaiBundle</resource-bundle>
 

@@ -1,0 +1,7 @@
+<!--
+  Extensions activated only when com.intellij.modules.java is present (IntelliJ IDEA, Android Studio).
+  Keeps geai loadable in non-JVM IDEs (PyCharm, GoLand, etc.) while enabling full PSI navigation
+  and graph indexing when the Java plugin is available.
+-->
+<idea-plugin>
+</idea-plugin>

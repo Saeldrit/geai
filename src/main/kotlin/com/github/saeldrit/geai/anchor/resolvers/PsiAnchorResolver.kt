@@ -5,6 +5,7 @@ import com.github.saeldrit.geai.anchor.AnchorResolver
 import com.github.saeldrit.geai.anchor.ResolvedAnchor
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.psi.JavaPsiFacade
 import com.intellij.psi.PsiClass
@@ -29,12 +30,17 @@ object PsiAnchorResolver : AnchorResolver {
         val member = if (hash >= 0) locator.substring(hash + 1).trim().ifBlank { null } else null
         if (fqName.isEmpty()) throw AnchorException("psi: empty class name in '$locator'")
 
+        if (DumbService.isDumb(project))
+            throw AnchorException("psi: IDE is still indexing — retry after indexing completes.")
+
         return ReadAction.compute<ResolvedAnchor, RuntimeException> {
             val psiClass = try {
                 JavaPsiFacade.getInstance(project).findClass(fqName, GlobalSearchScope.allScope(project))
             } catch (_: NoClassDefFoundError) {
-                throw AnchorException("psi: JVM language support is not available in this IDE; use file: or openapi: anchors.")
-            } ?: throw AnchorException("psi: class not found on the project classpath: $fqName")
+                throw AnchorException("psi: Java plugin (com.intellij.modules.java) is not available in this IDE; use file: or openapi: anchors.")
+            } catch (_: ClassNotFoundException) {
+                throw AnchorException("psi: Java plugin (com.intellij.modules.java) is not available in this IDE; use file: or openapi: anchors.")
+            } ?: throw AnchorException("psi: class '$fqName' not found — check the fully-qualified name and that the project is indexed.")
             val element: PsiElement = if (member == null) psiClass else findMember(psiClass, member, fqName)
             ResolvedAnchor.of(
                 ref = "psi:$locator",

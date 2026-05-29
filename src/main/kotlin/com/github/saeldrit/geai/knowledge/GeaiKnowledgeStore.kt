@@ -25,6 +25,10 @@ class GeaiKnowledgeStore(private val project: Project) {
 
     private val lock = Any()
 
+    /** In-memory cache — invalidated on every write so query() always sees the latest state. */
+    @Volatile
+    private var cache: List<KnowledgeEntry>? = null
+
     private fun file(): Path {
         val base = project.basePath
         val dir = if (base != null) Paths.get(base, ".geai") else Paths.get(PathManager.getSystemPath(), "geai", project.locationHash)
@@ -32,14 +36,25 @@ class GeaiKnowledgeStore(private val project: Project) {
         return dir.resolve("knowledge.xml")
     }
 
+    /** Loads from cache if warm, otherwise reads from disk. Must be called inside [lock]. */
     private fun load(): MutableList<KnowledgeEntry> {
+        cache?.let { return it.toMutableList() }
+        return loadFromDisk().also { cache = it.toList() }
+    }
+
+    private fun loadFromDisk(): MutableList<KnowledgeEntry> {
         val path = file()
         if (!Files.exists(path)) return mutableListOf()
         return runCatching {
             JDOMUtil.load(path).getChildren("entry").map { element ->
+                val axisRaw = element.getAttributeValue("axis")
+                val axis = runCatching { Axis.valueOf(axisRaw?.uppercase() ?: "") }.getOrElse {
+                    thisLogger().warn("Geai: unknown axis '$axisRaw', defaulting to TECH")
+                    Axis.TECH
+                }
                 KnowledgeEntry(
                     id = element.getAttributeValue("id").orEmpty(),
-                    axis = runCatching { Axis.valueOf(element.getAttributeValue("axis") ?: "TECH") }.getOrDefault(Axis.TECH),
+                    axis = axis,
                     tags = (element.getAttributeValue("tags") ?: "").split(",").map { it.trim() }.filter { it.isNotEmpty() },
                     title = element.getAttributeValue("title").orEmpty(),
                     location = element.getAttributeValue("location")?.takeIf { it.isNotBlank() },
@@ -58,7 +73,7 @@ class GeaiKnowledgeStore(private val project: Project) {
         entries.forEach { entry ->
             val element = Element("entry").apply {
                 setAttribute("id", entry.id)
-                setAttribute("axis", entry.axis.name)
+                setAttribute("axis", entry.axis.name)   // always uppercase enum name
                 setAttribute("version", entry.version.toString())
                 setAttribute("tags", entry.tags.joinToString(","))
                 setAttribute("title", entry.title)
@@ -67,7 +82,13 @@ class GeaiKnowledgeStore(private val project: Project) {
             }
             root.addContent(element)
         }
-        runCatching { JDOMUtil.write(root, file()) }.onFailure { thisLogger().warn("Geai: failed to write knowledge.xml", it) }
+        runCatching {
+            JDOMUtil.write(root, file())
+            cache = entries.toList()   // update cache atomically with the write
+        }.onFailure {
+            cache = null               // invalidate on write failure so next load re-reads disk
+            thisLogger().warn("Geai: failed to write knowledge.xml", it)
+        }
     }
 
     fun query(axis: Axis?, tags: List<String>, text: String?): List<KnowledgeEntry> = synchronized(lock) {
@@ -105,9 +126,12 @@ class GeaiKnowledgeStore(private val project: Project) {
     fun remove(id: String): Boolean = synchronized(lock) {
         val entries = load()
         val removed = entries.removeAll { it.id == id }
-        if (removed) save(entries)
+        if (removed) save(entries) else Unit
         removed
     }
+
+    /** Force-invalidate the in-memory cache (e.g. after external edits to knowledge.xml). */
+    fun invalidateCache() = synchronized(lock) { cache = null }
 
     private fun KnowledgeEntry.matches(needle: String): Boolean =
         title.lowercase().contains(needle) ||
