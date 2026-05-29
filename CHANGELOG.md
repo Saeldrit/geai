@@ -2,6 +2,72 @@
 
 # geai Changelog
 
+## [0.0.12]
+
+### Added
+- Tool calls in the chat are now grouped into a single collapsible block per agent turn.
+  Each call shows the tool name, argument preview, and a status icon (⏳ → ✓ / ✗).
+  The block closes automatically when the agent finishes.
+- Markdown rendering in assistant messages: headings `##`/`###`, lists, tables, bold, inline code.
+
+## [0.0.11]
+
+### Added
+- `ask_user` tool: the agent can pause and ask a clarifying question (yes/no or free text)
+  for genuinely ambiguous or destructive situations. Not used for routine tool approvals.
+- Approval dialog redesigned: three options — Allow once / Allow for session / Deny — plus
+  a checkbox to persist "allow always" to settings. "Allow for session" adds the tool to an
+  in-memory allow-list for the IDE session.
+
+### Changed
+- `autoApproveEditTools` default changed from `false` to `true`. Mutating tools run without
+  dialogs out of the box. Disable in settings to restore per-call confirmation.
+
+## [0.0.10]
+
+### Fixed
+- `graph_reindex` returned 0 nodes: `com.intellij.modules.java` was not declared as an optional
+  dependency in `plugin.xml`, so IntelliJ did not load Java PSI classes into the plugin
+  classloader. Fixed with an optional `<depends>` + `geai-java.xml`.
+- `psi:` anchors failed with "JVM language support not available": same root cause. Now degrades
+  cleanly in non-JVM IDEs.
+- `kb_lookup` with `axis` filter returned no results: `query()` read from disk independently of
+  `put()`, causing a race on Windows. Fixed with an in-memory cache invalidated atomically on
+  write. Also fixed axis parsing (`uppercase()` before `valueOf()`).
+
+## [0.0.9]
+
+### Fixed
+- `graph_reindex` returned 0 nodes when IDE indexing was not complete: added `DumbService.isDumb()`
+  guard and replaced `isInSourceContent()` with `isInSource() || isInContent()`.
+  PSI failures are now logged instead of silently swallowed.
+
+## [0.0.8]
+
+### Added
+- **GRACE** (Graph-RAG Anchored Code Engineering) — full implementation across five phases:
+  - Phase 1: `AnchorResolver` SPI + `file:` / `psi:` / `openapi:` resolvers + `resolve_ref` tool.
+  - Phase 2: `SpecStore` (`spec/*.spec.xml`) + `spec_list` / `spec_lookup` / `spec_record` /
+    `spec_validate` tools. Drift detection via SHA-256 baseline on Category-B anchors.
+  - Phase 3: `CodeGraph` + `GraphIndexer` (PSI + governance edges) + `graph_query` /
+    `graph_neighbors` / `graph_reindex` tools.
+  - Phase 4: `ContextBundler` (seed → expand → rank → resolve → pack) + `Ranker` SPI
+    (deterministic default, vector shim) + `context_bundle` tool.
+  - Phase 5: tiered model routing (`navigatorModel` + `escalate_author` tool). One provider/key,
+    two model names. Navigator drives the loop; author writes code on demand.
+- Settings UI: GRACE tiered routing toggle, navigator model field, vector ranker toggle.
+- Anthropic prompt caching (`cache_control: ephemeral` on system block and last tool).
+- HTTP retries with exponential backoff on 429 / 502 / 503 / 504.
+- MCP server: per-session bearer token (SecureRandom, 24 bytes).
+- `write_file` and `run_command` confined to the project root.
+- `kotlin.code.style = official` in `gradle.properties`.
+- `since-build = 252` in plugin manifest.
+
+### Fixed
+- OpenAI tool-call id collision on fallback id generation.
+- MCP `serverInfo` version now reflects the actual plugin version.
+- `ContextCompressor` budget now derived from the configured model context window.
+
 ## [0.0.7]
 
 ### Fixed

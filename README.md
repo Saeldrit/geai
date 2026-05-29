@@ -3,114 +3,134 @@
 ![Build](https://github.com/Saeldrit/geai/workflows/Build/badge.svg)
 
 <!-- Plugin description -->
-**geai** is an autonomous debugging agent that lives inside IntelliJ IDEA. Open its tool window,
-describe a bug in plain language — _"invalid data reaches the UI, I can't find where we lose it"_ —
-and geai navigates your project, traces the data flow, sets breakpoints, drives the debugger, and
-proposes (or applies) a fix that matches your codebase's style.
+**geai** is an autonomous debugging and coding agent that lives inside IntelliJ IDEA. Open its
+tool window, describe a bug or task in plain language, and geai navigates the project, traces
+data flow, sets breakpoints, drives the debugger, reads and edits files, and applies fixes that
+match your codebase's style.
 
-It connects to **Claude** (Anthropic) or any **OpenAI-compatible** endpoint (DeepSeek, Qwen/DashScope,
-OpenRouter, or a local model via Ollama / LM Studio / vLLM). It runs a real tool-using agent loop with
-IDE-backed tools: project navigation, full-text search, file read/edit, breakpoint control, debug-session
-steering, and command execution for rebuilds and tests. Sessions are persisted, so a disconnect or IDE
-restart resumes the investigation where it left off. geai can even extend itself: when it hits a missing
-capability it can patch its own source, rebuild, and ask you to reload.
+It connects to **Claude** (Anthropic) or any **OpenAI-compatible** endpoint (DeepSeek, Qwen,
+OpenRouter, local models via Ollama / LM Studio / vLLM), or runs through the **Claude Code CLI**
+using your subscription login with no per-token cost.
 <!-- Plugin description end -->
 
-## Features
+## Installation
 
-- **Conversational debugging** — a chat tool window (right dock) where you describe the problem; geai
-  asks clarifying questions when needed, otherwise works autonomously.
-- **Provider-agnostic LLM** — Anthropic Claude (native Messages API) or any OpenAI-compatible server.
-  API keys are stored in the IDE credential store (PasswordSafe), never in plain config.
-- **IDE-native tools** (function-calling):
-  - Navigation & reading: `project_overview`, `find_files`, `list_files`, `read_file`, `search_text`
-  - Editing: `write_file`, `edit_file` (undoable write-commands, exact-match edits)
-  - Debugging: `set_breakpoint`, `remove_breakpoint`, `list_breakpoints`, `debug_state`,
-    `start_debug`, `await_pause`
-  - System & self-modification: `run_command`, `self_info`, `self_patch`
-- **Context management** — a compact project snapshot seeds the system prompt; long transcripts are
-  compacted deterministically (oldest tool outputs truncated, recent turns kept) so investigations
-  survive without losing the thread.
-- **Resumable sessions** — persisted to `<project>/.geai/sessions/` after every tool result and turn.
-- **Safety** — mutating tools (edit/run/self-patch/start-debug) prompt for approval unless you opt into
-  auto-approval in settings.
+Install the `.zip` from [Releases](https://github.com/Saeldrit/geai/releases) via
+**Settings → Plugins → ⚙ → Install Plugin from Disk**, or build from source (see below).
 
-## Setup
+Requires IntelliJ IDEA 2025.2+.
 
-1. **Settings | Tools | Geai**
-2. Pick a **Provider** (Anthropic or OpenAI-compatible), set the **Model** and **Base URL** if you want
-   to override the defaults, and paste your **API key**.
-3. (Optional) Set **Geai source path** to this plugin's own checkout to enable self-modification.
+## Engines
 
-Defaults: Anthropic → `claude-sonnet-4-6`; OpenAI-compatible → `https://api.deepseek.com` / `deepseek-chat`.
+Two modes, configured in **Settings → Tools → Geai**:
 
-## Engines: API key vs Claude Code subscription
+**API key mode** — geai runs its own agent loop and calls the provider HTTP API directly.
+Works with Anthropic Claude, DeepSeek, Qwen/DashScope, OpenRouter, or any OpenAI-compatible
+server. API keys are stored in the IDE credential store (PasswordSafe), never in plain config.
 
-geai can run in two modes (Settings | Tools | Geai):
+**Claude Code engine** — enable *"Use Claude Code CLI as the engine"*. geai hosts an in-IDE
+MCP server exposing all its tools and delegates the loop to your locally installed `claude` CLI,
+which authenticates with your Claude Pro/Max subscription. No API key, no per-token cost.
+Requires the [Claude Code CLI](https://code.claude.com) installed and logged in.
 
-- **Built-in agent (API key)** — geai runs its own agent loop and calls the provider HTTP API directly with your API key. Provider-agnostic (Claude / DeepSeek / Qwen / local).
-- **Claude Code engine (subscription login)** — enable *"Use Claude Code CLI as the engine"*. geai then hosts an in-IDE MCP server exposing all its tools and delegates the loop to your locally installed `claude` CLI, which authenticates with **your Claude Pro/Max subscription** (no API key, no per-token API cost). Requires the [Claude Code CLI](https://code.claude.com) installed and logged in (`claude` on PATH, or set the path in settings). geai still gates its own mutating tools via the approval prompt at the MCP layer. Note: from **June 15, 2026**, subscription usage through the CLI/SDK draws from a separate monthly Agent SDK credit.
+## GRACE
 
-The raw Anthropic API only accepts API keys, which is why subscription login must go through the Claude Code CLI rather than a bearer token — and reusing subscription tokens directly in third-party clients violates Anthropic's terms.
+GRACE (Graph-RAG Anchored Code Engineering) is the context protocol that keeps the agent
+grounded in project-specific rules and live code contracts instead of guessing.
+
+It operates on two categories:
+
+**Category A** — hard invariants, policies, and formulas stored in `spec/*.spec.xml`. The agent
+reads these before implementing anything and must never violate them.
+
+**Category B** — live contracts and symbols. Never stored statically; resolved on demand via
+`resolve_ref` using URI schemes `psi:` (live JVM symbol via PSI), `file:` (source range), or
+`openapi:` (endpoint schema from generated OpenAPI). This keeps contracts current with the
+actual codebase and prevents hallucinated signatures.
+
+The code graph is built with `graph_reindex` (FILE → class → method, inheritance, governance
+edges) and navigated with `graph_query`, `graph_neighbors`, and `context_bundle`. The bundle
+assembles a focused slice of anchors, specs, and neighborhood for a given task — the cheapest
+path to "enough context to act" without reading whole files.
+
+`spec_validate` detects drift: it re-resolves all Category-B anchors and reports OK / DRIFT /
+BROKEN so regressions are caught mechanically.
+
+## Tiered model routing
+
+One provider, one API key, two model roles. Enable with *"GRACE tiered routing"* in settings.
+
+The **navigator** (cheap model, e.g. `deepseek-chat` or `claude-haiku-4-5`) drives the agent
+loop: planning, tool calls, graph navigation, context assembly. The **author** (strong model,
+e.g. `claude-sonnet-4-6`) is invoked only via `escalate_author` when code must be written, and
+receives a pre-assembled context bundle so it spends tokens on authoring, not orientation.
+
+When tiering is off, all steps use the single configured model.
 
 ## Usage
 
-Open the **Geai** tool window (right side) and type, e.g.:
+Open the **Geai** tool window (right dock) and type a task:
 
-> На UI уходят невалидные данные, не пойму где их теряем. Это во вкладке профиля.
+> "Invalid data reaches the UI, I can't find where we lose it."
 
-geai will orient itself (`project_overview`), locate the relevant code, trace the value from source to
-the UI sink, optionally set breakpoints and start a debug session to observe the real runtime state, and
-report the root cause with concrete `file:line` evidence and a recommended fix. Press **Stop** to cancel a
-turn; **New session** to start fresh. Previous sessions auto-resume on reopen.
+geai will orient itself, locate the relevant code, trace the value from source to sink,
+optionally set breakpoints and start a debug session to observe real runtime state, and report
+the root cause with concrete `file:line` evidence and a recommended fix.
 
-## Building & running
+When the agent genuinely cannot proceed without your input — ambiguous branch, destructive
+action, whether to start a debug session — it calls `ask_user` and shows a focused dialog.
+Routine tool calls run without interruption.
 
-This plugin targets IntelliJ IDEA 2025.2 (Java 21). The build daemon is pinned to JDK 21 via
-`gradle/gradle-daemon-jvm.properties` (Kotlin 2.1.0 cannot run on JDK 25+), so it builds correctly even if
-your `JAVA_HOME` points at a newer JDK.
+**Tool approval** — mutating tools (write, edit, run, self-patch) are auto-approved by default.
+Disable in settings to get a per-call dialog with three options: Allow once / Allow for session
+/ Deny.
+
+## Build
 
 ```bash
+git clone https://github.com/Saeldrit/geai.git
+cd geai
 ./gradlew buildPlugin      # produces build/distributions/geai-*.zip
 ./gradlew runIde           # launches a sandbox IDE with geai installed
 ./gradlew test             # runs tests
 ```
 
-Install the built zip via **Settings | Plugins | ⚙ | Install plugin from disk…**
-
-## Self-modification
-
-When geai lacks a capability for a task, it can grow one: it calls `self_info` to learn its own layout,
-writes a new `AgentTool` with `self_patch`, registers it in `GeaiToolset`, rebuilds with `run_command`,
-and asks you to reload the plugin (a running plugin can't hot-swap its own classes). After the restart,
-the new capability is available and you can ask it to continue.
+Targets IntelliJ IDEA 2025.2 (build 252), JDK 21. The build daemon is pinned to JDK 21 via
+`gradle/gradle-daemon-jvm.properties`.
 
 ## Architecture
 
 ```
-settings/   provider, model, keys (PasswordSafe), settings UI
-llm/        provider-agnostic message/tool model + Anthropic & OpenAI-compatible clients (JDK HttpClient + Gson)
-tools/      AgentTool framework + registry
-  fs/       read / list / search / find / write / edit
-  project/  project overview
-  debug/    breakpoints + debug-session control (XDebugger)
-  system/   run_command
-  selfmod/  self_info / self_patch
-agent/      AgentLoop (background, cancellable), system prompt, approval policy, GeaiAgentService
-context/    project snapshot + transcript compaction
-session/    JSON persistence + resume
-toolWindow/ Swing chat UI
+settings/       provider, model, keys (PasswordSafe), settings UI
+llm/            provider-agnostic message/tool model + Anthropic & OpenAI-compatible clients
+tools/
+  fs/           read / list / search / find / write / edit
+  debug/        breakpoints, debug-session control, variable inspection, expression eval
+  system/       run_command
+  selfmod/      self_info / self_patch
+  grace/        resolve_ref, spec_*, graph_*, context_bundle, escalate_author
+  knowledge/    kb_lookup / kb_record / kb_forget (persistent NAV/STYLE/TECH/LESSON index)
+  interaction/  ask_user
+agent/          AgentLoop (background, cancellable), system prompt, approval policy
+context/        project snapshot + transcript compaction
+session/        JSON persistence + resume
+anchor/         AnchorResolver SPI + file: / psi: / openapi: resolvers
+spec/           SpecStore — reads/writes spec/*.spec.xml (Category A)
+graph/          GeaiGraphStore + GraphIndexer (PSI + governance edges)
+bundle/         ContextBundler + Ranker SPI (deterministic default, vector shim)
+toolWindow/     JCEF chat UI + Swing fallback
+mcp/            in-IDE MCP server (for Claude Code engine)
 ```
 
-## Limitations & roadmap
+## Limitations
 
-- LLM responses are non-streaming in v1 (correct tool-calling prioritized); token streaming is a planned
-  enhancement.
-- Debugger integration sets breakpoints and reports the paused location; deep variable/stack evaluation at
-  a breakpoint is the next increment (a natural candidate for self-modification).
-- Account/OAuth login is not available for third-party API access; geai uses API keys.
+- Responses are non-streaming; the UI updates after each complete agent step.
+- Concurrent sessions across multiple project windows are not supported.
+- GRACE graph operations require a fully indexed project — run `graph_reindex` after large
+  refactors or initial clone.
 
 ---
-Plugin based on the [IntelliJ Platform Plugin Template][template].
 
-[template]: https://github.com/JetBrains/intellij-platform-plugin-template
+See [docs/GRACE_ARCHITECTURE.md](docs/GRACE_ARCHITECTURE.md) for the full GRACE design.
+
+Plugin based on the [IntelliJ Platform Plugin Template](https://github.com/JetBrains/intellij-platform-plugin-template).
