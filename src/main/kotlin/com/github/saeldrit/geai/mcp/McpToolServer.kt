@@ -7,6 +7,8 @@ import com.github.saeldrit.geai.tools.ToolArgs
 import com.github.saeldrit.geai.tools.ToolContext
 import com.github.saeldrit.geai.tools.ToolRegistry
 import com.github.saeldrit.geai.tools.ToolResult
+import com.intellij.ide.plugins.PluginManagerCore
+import com.intellij.openapi.extensions.PluginId
 import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonNull
@@ -20,6 +22,7 @@ import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
 import java.nio.charset.StandardCharsets
+import java.security.SecureRandom
 import java.util.concurrent.Executors
 
 /**
@@ -41,6 +44,13 @@ class McpToolServer(
     var port: Int = -1
         private set
 
+    /**
+     * Random per-session bearer secret. The loopback bind keeps remote hosts out, but any local
+     * process could otherwise reach the tool surface (and read project source); the token closes
+     * that gap. Shared with the CLI through the generated MCP config, never logged.
+     */
+    val authToken: String = newToken()
+
     fun start() {
         val http = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         http.createContext("/mcp") { exchange -> handle(exchange) }
@@ -60,6 +70,11 @@ class McpToolServer(
         try {
             if (!exchange.requestMethod.equals("POST", ignoreCase = true)) {
                 exchange.sendResponseHeaders(405, -1)
+                exchange.close()
+                return
+            }
+            if (exchange.requestHeaders.getFirst("Authorization") != "Bearer $authToken") {
+                exchange.sendResponseHeaders(401, -1)
                 exchange.close()
                 return
             }
@@ -104,9 +119,12 @@ class McpToolServer(
         add("capabilities", JsonObject().apply { add("tools", JsonObject()) })
         add("serverInfo", JsonObject().apply {
             addProperty("name", "geai")
-            addProperty("version", "0.0.1")
+            addProperty("version", pluginVersion())
         })
     }
+
+    private fun pluginVersion(): String =
+        PluginManagerCore.getPlugin(PluginId.getId(PLUGIN_ID))?.version ?: "0.0.0"
 
     private fun toolsListResult(): JsonObject {
         val tools = JsonArray()
@@ -161,5 +179,16 @@ class McpToolServer(
         exchange.responseHeaders.add("Content-Type", "application/json")
         exchange.sendResponseHeaders(200, bytes.size.toLong())
         exchange.responseBody.use { it.write(bytes) }
+    }
+
+    private companion object {
+        const val PLUGIN_ID = "com.github.saeldrit.geai"
+        private val RANDOM = SecureRandom()
+
+        fun newToken(): String {
+            val bytes = ByteArray(24)
+            RANDOM.nextBytes(bytes)
+            return bytes.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
+        }
     }
 }

@@ -45,15 +45,27 @@ class AnthropicClient(
             addProperty("model", request.model)
             addProperty("max_tokens", request.maxTokens)
             addProperty("temperature", request.temperature)
-            if (request.system.isNotBlank()) addProperty("system", request.system)
+            // System prompt as a cacheable block: it is large and identical across a session, so a
+            // cache breakpoint here turns repeated reads into cheap cache hits.
+            if (request.system.isNotBlank()) {
+                add("system", JsonArray().apply {
+                    add(JsonObject().apply {
+                        addProperty("type", "text")
+                        addProperty("text", request.system)
+                        add("cache_control", ephemeral())
+                    })
+                })
+            }
         }
         if (request.tools.isNotEmpty()) {
             val tools = JsonArray()
-            request.tools.forEach { spec ->
+            request.tools.forEachIndexed { index, spec ->
                 tools.add(JsonObject().apply {
                     addProperty("name", spec.name)
                     addProperty("description", spec.description)
                     add("input_schema", JsonSupport.parseElement(spec.parametersJsonSchema))
+                    // Breakpoint on the last tool caches the whole (stable) tool catalog prefix.
+                    if (index == request.tools.lastIndex) add("cache_control", ephemeral())
                 })
             }
             root.add("tools", tools)
@@ -63,6 +75,8 @@ class AnthropicClient(
         root.add("messages", messages)
         return root
     }
+
+    private fun ephemeral(): JsonObject = JsonObject().apply { addProperty("type", "ephemeral") }
 
     private fun toWireMessage(message: ChatMessage): JsonObject? = when (message.role) {
         Role.SYSTEM -> null // system prompt is a top-level field, never a message

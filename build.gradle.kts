@@ -33,6 +33,12 @@ kotlin {
 // Configure IntelliJ Platform Gradle Plugin - read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin-extension.html
 intellijPlatform {
     pluginConfiguration {
+        // Pin the lower compatibility bound; the plugin builds against 2025.2 (build 252). untilBuild
+        // is left to the platform plugin's default (current branch) so updates aren't blocked needlessly.
+        ideaVersion {
+            sinceBuild = "252"
+        }
+
         // Extract the <!-- Plugin description --> section from README.md and provide for the plugin's manifest
         description = providers.fileContents(layout.projectDirectory.file("README.md")).asText.map {
             val start = "<!-- Plugin description -->"

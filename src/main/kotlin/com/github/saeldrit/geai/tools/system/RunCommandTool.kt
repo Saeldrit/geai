@@ -36,7 +36,9 @@ object RunCommandTool : AgentTool {
         val parts = ParametersListUtil.parse(command)
         if (parts.isEmpty()) return ToolResult.error("Empty command.")
         val dir = resolveWorkingDir(context, workingDir)
-            ?: return ToolResult.error("Working directory not found: ${workingDir ?: "<project root>"}")
+            ?: return ToolResult.error(
+                "Working directory not found, not a directory, or outside the project: ${workingDir ?: "<project root>"}",
+            )
 
         return runCatching {
             val commandLine = GeneralCommandLine(parts)
@@ -59,13 +61,15 @@ object RunCommandTool : AgentTool {
         }.getOrElse { ToolResult.error("Failed to run '$command': ${it.message}") }
     }
 
-    private fun resolveWorkingDir(context: ToolContext, dir: String?): File? {
-        if (dir.isNullOrBlank()) return context.project.basePath?.let(::File)
-        val direct = File(dir)
-        if (direct.isAbsolute) return direct.takeIf { it.isDirectory }
-        val base = context.project.basePath ?: return null
-        return File(base, dir).takeIf { it.isDirectory }
-    }
+    private fun resolveWorkingDir(context: ToolContext, dir: String?): File? = runCatching {
+        val base = context.project.basePath?.let(::File)?.canonicalFile ?: return null
+        if (dir.isNullOrBlank()) return base
+        val candidate = File(dir).let { if (it.isAbsolute) it else File(base, dir) }.canonicalFile
+        // Confine execution to the project tree: an arbitrary absolute working_dir would let the
+        // model run commands anywhere on disk, even when edit tools are auto-approved.
+        if (candidate != base && !candidate.path.startsWith(base.path + File.separator)) return null
+        candidate.takeIf { it.isDirectory }
+    }.getOrNull()
 
     private fun tail(text: String): String =
         if (text.length <= OUTPUT_TAIL) text else "…(${text.length - OUTPUT_TAIL} chars trimmed)\n" + text.takeLast(OUTPUT_TAIL)

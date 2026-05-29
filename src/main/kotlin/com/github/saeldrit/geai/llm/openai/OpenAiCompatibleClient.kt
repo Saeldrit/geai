@@ -129,12 +129,14 @@ class OpenAiCompatibleClient(
 
         val blocks = mutableListOf<ContentBlock>()
         message.stringOrNull("content")?.takeIf { it.isNotEmpty() }?.let { blocks.add(ContentBlock.Text(it)) }
-        message.get("tool_calls")?.takeIf { it.isJsonArray }?.asJsonArray?.forEach { element ->
+        message.get("tool_calls")?.takeIf { it.isJsonArray }?.asJsonArray?.forEachIndexed { index, element ->
             val call = element.asJsonObject
-            val function = call.objectOrNull("function") ?: return@forEach
+            val function = call.objectOrNull("function") ?: return@forEachIndexed
             blocks.add(
                 ContentBlock.ToolUse(
-                    id = call.stringOrNull("id") ?: "call_${function.stringOrNull("name").orEmpty()}",
+                    // Index keeps the id unique when a model omits ids for multiple parallel calls,
+                    // so each tool_result maps back to the right call.
+                    id = call.stringOrNull("id") ?: "call_${index}_${function.stringOrNull("name").orEmpty()}",
                     name = function.stringOrNull("name").orEmpty(),
                     inputJson = function.stringOrNull("arguments")?.ifBlank { "{}" } ?: "{}",
                 )

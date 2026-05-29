@@ -38,7 +38,8 @@ class ClaudeCodeEngine(private val project: Project) {
         val tempFiles = mutableListOf<Path>()
         try {
             server.start()
-            val mcpConfig = """{"mcpServers":{"geai":{"type":"http","url":"http://127.0.0.1:${server.port}/mcp"}}}"""
+            val mcpConfig =
+                """{"mcpServers":{"geai":{"type":"http","url":"http://127.0.0.1:${server.port}/mcp","headers":{"Authorization":"Bearer ${server.authToken}"}}}}"""
             val configFile = tempFile(tempFiles, "geai-mcp", ".json", mcpConfig)
             val promptFile = tempFile(tempFiles, "geai-doctrine", ".txt", SystemPrompt.doctrine())
             val allowedTools = GeaiToolset.all().joinToString(",") { "mcp__geai__${it.name}" }

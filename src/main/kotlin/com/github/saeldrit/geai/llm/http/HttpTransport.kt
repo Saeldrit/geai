@@ -25,6 +25,9 @@ internal object HttpTransport {
         .followRedirects(HttpClient.Redirect.NORMAL)
         .build()
 
+    private const val MAX_RETRIES = 3
+    private val RETRYABLE_STATUS = setOf(429, 502, 503, 504)
+
     fun postJson(
         url: String,
         headers: Map<String, String>,
@@ -32,22 +35,51 @@ internal object HttpTransport {
         indicator: ProgressIndicator,
         requestTimeout: Duration = Duration.ofMinutes(5),
     ): String {
-        val builder = HttpRequest.newBuilder()
+        val request = HttpRequest.newBuilder()
             .uri(URI.create(url))
             .timeout(requestTimeout)
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(body, Charsets.UTF_8))
-        headers.forEach { (key, value) -> builder.header(key, value) }
+            .apply { headers.forEach { (key, value) -> header(key, value) } }
+            .build()
 
-        val future = client.sendAsync(builder.build(), HttpResponse.BodyHandlers.ofString(Charsets.UTF_8))
-        val response = awaitCancellable(future, indicator)
+        var attempt = 0
+        while (true) {
+            val future = client.sendAsync(request, HttpResponse.BodyHandlers.ofString(Charsets.UTF_8))
+            val response = awaitCancellable(future, indicator)
+            val status = response.statusCode()
+            val payload = response.body().orEmpty()
+            if (status in 200..299) return payload
 
-        val status = response.statusCode()
-        val payload = response.body().orEmpty()
-        if (status !in 200..299) {
+            // Transient errors are worth retrying with backoff; honour Retry-After when present.
+            if (status in RETRYABLE_STATUS && attempt < MAX_RETRIES) {
+                val waitMillis = retryAfterMillis(response) ?: (500L shl attempt)
+                attempt++
+                sleepCancellable(waitMillis, indicator)
+                continue
+            }
             throw LlmException(describeHttpError(status, payload), statusCode = status)
         }
-        return payload
+    }
+
+    private fun retryAfterMillis(response: HttpResponse<*>): Long? =
+        response.headers().firstValue("retry-after").orElse(null)
+            ?.trim()?.toLongOrNull()
+            ?.let { (it * 1000L).coerceIn(0L, 60_000L) }
+
+    private fun sleepCancellable(totalMillis: Long, indicator: ProgressIndicator) {
+        var remaining = totalMillis
+        while (remaining > 0) {
+            if (indicator.isCanceled) throw ProcessCanceledException()
+            val slice = minOf(remaining, 150L)
+            try {
+                Thread.sleep(slice)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw ProcessCanceledException()
+            }
+            remaining -= slice
+        }
     }
 
     private fun <T> awaitCancellable(future: CompletableFuture<T>, indicator: ProgressIndicator): T {

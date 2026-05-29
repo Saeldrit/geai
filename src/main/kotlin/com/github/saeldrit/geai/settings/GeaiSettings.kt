@@ -29,6 +29,9 @@ class GeaiSettingsState : BaseState() {
     var maxTokens by property(8192)
     var maxAgentIterations by property(32)
 
+    /** Model context window (tokens) used to size transcript compaction. Default ~200k (Claude). */
+    var maxContextTokens by property(200_000)
+
     /** Read-only tools (read/list/search/navigate) may run without per-call confirmation. */
     var autoApproveReadTools by property(true)
 

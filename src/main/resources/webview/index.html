@@ -80,8 +80,8 @@
   #composer{flex:0 0 auto;border-top:1px solid var(--border);padding:8px 10px}
   #inputwrap{border:1px solid var(--border);border-radius:10px;background:var(--field);padding:8px 10px}
   #inputwrap:focus-within{border-color:var(--accent)}
-  #input{width:100%;border:none;outline:none;resize:vertical;background:transparent;color:var(--fg);
-    font-family:inherit;font-size:13px;min-height:38px;height:38px;max-height:60vh}
+  #input{width:100%;border:none;outline:none;resize:none;background:transparent;color:var(--fg);
+    font-family:inherit;font-size:13px;min-height:60px;max-height:50vh;overflow-y:auto;line-height:1.45}
   #footer{display:flex;align-items:center;gap:10px;margin-top:6px}
   #engine{color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #tokens{color:var(--muted);font-size:12px;margin-left:auto}
@@ -89,6 +89,14 @@
   #send:hover{filter:brightness(1.08)}
   #send.stop{background:#5a5d63}
   .hidden{display:none!important}
+  .iconbtn.active{color:var(--accent);background:var(--card-hover);opacity:1}
+  /* "steps only" mode: hide narration + reasoning, keep the action steps */
+  #chat.steps-only .msg.assistant,#chat.steps-only .reason{display:none}
+  .codeblock{position:relative}
+  .codeblock .copybtn{position:absolute;top:6px;right:6px;font-size:11px;padding:2px 8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--muted);cursor:pointer;opacity:0;transition:opacity .12s}
+  .codeblock:hover .copybtn{opacity:.85}
+  .codeblock .copybtn:hover{opacity:1;color:var(--fg);border-color:var(--accent)}
+  .codeblock .copybtn.done{color:#4ec98b;border-color:#4ec98b;opacity:1}
 
   /* history overlay */
   #overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center}
@@ -107,6 +115,7 @@
     <span class="brand"><span class="mark"><svg viewBox="0 0 24 24" width="1.05em" height="1.05em" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/><path d="M12 2.5a9.5 9.5 0 0 1 8.2 5" opacity="0.6"/></svg></span>geai</span>
     <span class="spacer"></span>
     <span id="status">Ready</span>
+    <button class="iconbtn" id="btnSteps" title="Только шаги — скрыть рассуждения">≡</button>
     <button class="iconbtn" id="btnNew" title="Новая сессия">＋</button>
     <button class="iconbtn" id="btnHistory" title="История сессий">🕘</button>
     <button class="iconbtn" id="btnSettings" title="Настройки">⚙</button>
@@ -144,6 +153,8 @@
   function send2k(obj){ if(window.geaiSend) window.geaiSend(JSON.stringify(obj)); }
 
   function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+  function b64(s){ try{ return btoa(unescape(encodeURIComponent(s))); }catch(e){ return ''; } }
+  function unb64(s){ try{ return decodeURIComponent(escape(atob(s))); }catch(e){ return ''; } }
   function inline(s){
     return esc(s).replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
   }
@@ -151,7 +162,7 @@
   function md(text){
     var parts=(text||'').split('```'), out='';
     for(var i=0;i<parts.length;i++){
-      if(i%2===1){ var seg=parts[i].replace(/^[a-zA-Z0-9_-]*\n/,''); out+='<pre><code>'+esc(seg)+'</code></pre>'; }
+      if(i%2===1){ var seg=parts[i].replace(/^[a-zA-Z0-9_-]*\n/,''); out+='<div class="codeblock"><button class="copybtn" data-code="'+b64(seg)+'">Copy</button><pre><code>'+esc(seg)+'</code></pre></div>'; }
       else{ var blocks=parts[i].split(/\n{2,}/);
         for(var b=0;b<blocks.length;b++){ if(blocks[b].trim()==='')continue;
           out+='<p>'+inline(blocks[b]).replace(/\n/g,'<br>')+'</p>'; } }
@@ -203,14 +214,24 @@
     });
   }
 
+  function autoGrow(){ input.style.height='auto'; input.style.height=Math.min(input.scrollHeight, Math.floor(window.innerHeight*0.5))+'px'; }
   function submit(){ if(running) { send2k({action:'stop'}); return; }
-    var t=input.value.trim(); if(!t) return; input.value=''; setRunning(true); send2k({action:'submit',text:t}); }
+    var t=input.value.trim(); if(!t) return; input.value=''; autoGrow(); setRunning(true); send2k({action:'submit',text:t}); }
 
   send.onclick=submit;
+  input.addEventListener('input', autoGrow);
   input.addEventListener('keydown',function(e){ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); submit(); } });
   el('btnNew').onclick=function(){ send2k({action:'newSession'}); };
   el('btnSettings').onclick=function(){ send2k({action:'openSettings'}); };
   el('btnHistory').onclick=function(){ send2k({action:'history'}); };
+  el('btnSteps').onclick=function(){ var on=chat.classList.toggle('steps-only'); this.classList.toggle('active',on); };
+  chat.addEventListener('click', function(e){
+    var btn = e.target.closest ? e.target.closest('.copybtn') : null; if(!btn) return;
+    var code = unb64(btn.getAttribute('data-code')||''); if(!code) return;
+    send2k({action:'copy', text: code});
+    var prev = btn.textContent; btn.textContent='✓ Copied'; btn.classList.add('done');
+    setTimeout(function(){ btn.textContent=prev; btn.classList.remove('done'); }, 1200);
+  });
 
   // ---- Kotlin -> JS API ----
   window.geaiBoot=function(){ send2k({action:'ready'}); };

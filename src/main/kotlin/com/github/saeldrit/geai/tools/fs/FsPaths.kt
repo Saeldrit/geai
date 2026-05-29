@@ -26,4 +26,11 @@ internal object FsPaths {
         val path = file.path
         return if (path.startsWith("$base/")) path.removePrefix("$base/") else path
     }
+
+    /** True when [file] lives under the project content root — the boundary for mutating tools. */
+    fun isInsideProject(project: Project, file: VirtualFile): Boolean {
+        val base = project.basePath?.replace('\\', '/') ?: return false
+        val path = file.path
+        return path == base || path.startsWith("$base/")
+    }
 }

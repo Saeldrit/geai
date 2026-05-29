@@ -52,7 +52,9 @@ object WriteFileTool : AgentTool {
     }
 
     private fun createOrFind(project: Project, path: String): VirtualFile? {
-        FsPaths.resolve(project, path)?.let { return it }
+        // Overwrite an existing file only when it lives inside the project — an absolute path that
+        // happens to exist elsewhere on disk (e.g. a system file) must never be clobbered.
+        FsPaths.resolve(project, path)?.let { return it.takeIf { f -> FsPaths.isInsideProject(project, f) } }
         if (ABSOLUTE.matches(path.trim())) return null // don't create new files outside the project
         val base = project.basePath ?: return null
         val baseDir = LocalFileSystem.getInstance().findFileByPath(base) ?: return null

@@ -18,6 +18,7 @@ import com.google.gson.JsonParser
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
+import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
@@ -31,6 +32,7 @@ import org.cef.browser.CefFrame
 import org.cef.handler.CefLoadHandlerAdapter
 import java.awt.BorderLayout
 import java.awt.Color
+import java.awt.datatransfer.StringSelection
 import javax.swing.JPanel
 
 /**
@@ -97,6 +99,7 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
             "openSettings" -> ShowSettingsUtil.getInstance().showSettingsDialog(project, GeaiSettingsConfigurable::class.java)
             "history" -> exec("window.geaiHistory(${JsonSupport.gson.toJson(historyList())});")
             "loadSession" -> obj.get("id")?.asString?.let { loadSession(it) }
+            "copy" -> obj.get("text")?.asString?.let { CopyPasteManager.getInstance().setContents(StringSelection(it)) }
         }
     }
 
