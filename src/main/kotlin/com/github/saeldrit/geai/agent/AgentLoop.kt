@@ -9,7 +9,7 @@ import com.github.saeldrit.geai.llm.LlmException
 import com.github.saeldrit.geai.llm.StopReason
 import com.github.saeldrit.geai.settings.GeaiSettingsState
 import com.github.saeldrit.geai.settings.GeaiSettings
-import com.github.saeldrit.geai.settings.effectiveModel
+import com.github.saeldrit.geai.settings.loopModel
 import com.github.saeldrit.geai.tools.ToolArgException
 import com.github.saeldrit.geai.tools.ToolArgs
 import com.github.saeldrit.geai.tools.ToolContext
@@ -59,7 +59,7 @@ class AgentLoop(
 
                 val outgoing = ContextCompressor.compress(session.messages, settings.maxContextTokens, settings.maxTokens)
                 val request = ChatRequest(
-                    model = settings.effectiveModel(),
+                    model = settings.loopModel(),
                     system = systemPrompt,
                     messages = outgoing,
                     tools = registry.specs(),

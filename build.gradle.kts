@@ -19,6 +19,10 @@ dependencies {
     // IntelliJ Platform Gradle Plugin Dependencies Extension - read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin-dependencies-extension.html
     intellijPlatform {
         intellijIdeaCommunity("2025.2.6.1")
+        // Java PSI (JavaPsiFacade etc.) for the GRACE `psi:` anchor resolver. Compile-time only —
+        // plugin.xml intentionally does NOT hard-depend on com.intellij.modules.java, so geai still
+        // loads in non-JVM IDEs; the psi: resolver guards its usage and degrades to a clean error.
+        bundledPlugin("com.intellij.java")
         testFramework(TestFrameworkType.Platform)
     }
 }

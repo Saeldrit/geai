@@ -35,10 +35,17 @@ class GeaiSettingsConfigurable : Configurable {
     private val autoEditCheck = JBCheckBox("Auto-approve mutating tools (write / edit / run / self-modify)")
     private val sourcePathField = JBTextField()
 
+    private val tieredRoutingCheck =
+        JBCheckBox("GRACE tiered routing: navigate on a cheap model, escalate code authoring to the main model (same provider/key)")
+    private val navigatorModelField = JBTextField()
+    private val vectorRankerCheck =
+        JBCheckBox("GRACE: prefer the semantic (vector) ranker for context bundles when available")
+
     override fun getDisplayName(): String = GeaiBundle.message("geai.settings.title")
 
     override fun createComponent(): JComponent {
         engineCheck.addActionListener { updateEnabled() }
+        tieredRoutingCheck.addActionListener { updateEnabled() }
         providerCombo.addActionListener {
             (providerCombo.selectedItem as? LlmProvider)?.let { provider ->
                 populateModels(provider)
@@ -60,6 +67,10 @@ class GeaiSettingsConfigurable : Configurable {
             .addComponent(autoReadCheck)
             .addComponent(autoEditCheck)
             .addLabeledComponent("Geai source path:", sourcePathField)
+            .addSeparator()
+            .addComponent(tieredRoutingCheck)
+            .addLabeledComponent("Navigator model:", navigatorModelField)
+            .addComponent(vectorRankerCheck)
             .addComponentFillVertically(JPanel(), 0)
             .panel
         reset()
@@ -78,8 +89,10 @@ class GeaiSettingsConfigurable : Configurable {
     private fun updateEnabled() {
         val claudeEngine = engineCheck.isSelected
         claudePathField.isEnabled = claudeEngine
-        listOf<JComponent>(providerCombo, modelCombo, baseUrlField, apiKeyField, maxTokensSpinner, maxIterationsSpinner)
+        listOf<JComponent>(providerCombo, modelCombo, baseUrlField, apiKeyField, maxTokensSpinner, maxIterationsSpinner, tieredRoutingCheck, vectorRankerCheck)
             .forEach { it.isEnabled = !claudeEngine }
+        // Navigator model only matters when tiering is on and the native engine is in use.
+        navigatorModelField.isEnabled = !claudeEngine && tieredRoutingCheck.isSelected
     }
 
     override fun isModified(): Boolean {
@@ -96,6 +109,9 @@ class GeaiSettingsConfigurable : Configurable {
             sourcePathField.text != state.geaiSourcePath.orEmpty() ||
             engineCheck.isSelected != state.useClaudeCodeEngine ||
             claudePathField.text != state.claudeCliPath.orEmpty() ||
+            tieredRoutingCheck.isSelected != state.tieredRoutingEnabled ||
+            navigatorModelField.text != state.navigatorModel.orEmpty() ||
+            vectorRankerCheck.isSelected != state.graceVectorRanker ||
             String(apiKeyField.password) != storedKey
     }
 
@@ -112,6 +128,9 @@ class GeaiSettingsConfigurable : Configurable {
         state.geaiSourcePath = sourcePathField.text.trim().ifBlank { null }
         state.useClaudeCodeEngine = engineCheck.isSelected
         state.claudeCliPath = claudePathField.text.trim().ifBlank { null }
+        state.tieredRoutingEnabled = tieredRoutingCheck.isSelected
+        state.navigatorModel = navigatorModelField.text.trim().ifBlank { null }
+        state.graceVectorRanker = vectorRankerCheck.isSelected
         GeaiSecrets.setApiKey(provider, String(apiKeyField.password).trim().ifBlank { null })
     }
 
@@ -131,6 +150,10 @@ class GeaiSettingsConfigurable : Configurable {
         engineCheck.isSelected = state.useClaudeCodeEngine
         claudePathField.text = state.claudeCliPath.orEmpty()
         claudePathField.emptyText.text = "blank = resolve 'claude' from PATH"
+        tieredRoutingCheck.isSelected = state.tieredRoutingEnabled
+        navigatorModelField.text = state.navigatorModel.orEmpty()
+        navigatorModelField.emptyText.text = "cheap model of the same provider, e.g. claude-haiku-4-5 / deepseek-chat (blank = main model)"
+        vectorRankerCheck.isSelected = state.graceVectorRanker
         apiKeyField.text = GeaiSecrets.apiKey(state.provider).orEmpty()
         updateEnabled()
     }

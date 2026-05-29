@@ -32,6 +32,19 @@ class GeaiSettingsState : BaseState() {
     /** Model context window (tokens) used to size transcript compaction. Default ~200k (Claude). */
     var maxContextTokens by property(200_000)
 
+    /** GRACE: prefer the semantic (vector) ranker for context bundles when available; else deterministic. */
+    var graceVectorRanker by property(false)
+
+    /**
+     * GRACE tiered routing: when on, the agent loop runs on the cheap [navigatorModel] and escalates
+     * code authoring to the strong main [model] via the escalate_author tool. Same provider/key —
+     * the tiers are just two model names. Off by default (single model, current behaviour).
+     */
+    var tieredRoutingEnabled by property(false)
+
+    /** Cheap navigator-tier model of the SAME provider (e.g. claude-haiku-4-5 / deepseek-chat). Blank = use main model. */
+    var navigatorModel by string()
+
     /** Read-only tools (read/list/search/navigate) may run without per-call confirmation. */
     var autoApproveReadTools by property(true)
 
@@ -53,3 +66,10 @@ fun GeaiSettingsState.effectiveModel(): String =
 
 fun GeaiSettingsState.effectiveBaseUrl(): String =
     baseUrl?.takeIf { it.isNotBlank() }?.trimEnd('/') ?: provider.defaultBaseUrl
+
+/** Model the agent loop runs on: the cheap navigator when tiered, otherwise the main model. */
+fun GeaiSettingsState.loopModel(): String =
+    if (tieredRoutingEnabled) navigatorModel?.takeIf { it.isNotBlank() } ?: effectiveModel() else effectiveModel()
+
+/** Strong author-tier model for code authoring (the configured main model). */
+fun GeaiSettingsState.authorModel(): String = effectiveModel()

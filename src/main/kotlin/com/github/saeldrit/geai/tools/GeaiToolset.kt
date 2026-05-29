@@ -14,6 +14,16 @@ import com.github.saeldrit.geai.tools.fs.ListFilesTool
 import com.github.saeldrit.geai.tools.fs.ReadFileTool
 import com.github.saeldrit.geai.tools.fs.SearchTextTool
 import com.github.saeldrit.geai.tools.fs.WriteFileTool
+import com.github.saeldrit.geai.tools.grace.ContextBundleTool
+import com.github.saeldrit.geai.tools.grace.EscalateAuthorTool
+import com.github.saeldrit.geai.tools.grace.GraphNeighborsTool
+import com.github.saeldrit.geai.tools.grace.GraphQueryTool
+import com.github.saeldrit.geai.tools.grace.GraphReindexTool
+import com.github.saeldrit.geai.tools.grace.ResolveRefTool
+import com.github.saeldrit.geai.tools.grace.SpecListTool
+import com.github.saeldrit.geai.tools.grace.SpecLookupTool
+import com.github.saeldrit.geai.tools.grace.SpecRecordTool
+import com.github.saeldrit.geai.tools.grace.SpecValidateTool
 import com.github.saeldrit.geai.tools.knowledge.KbForgetTool
 import com.github.saeldrit.geai.tools.knowledge.KbLookupTool
 import com.github.saeldrit.geai.tools.knowledge.KbRecordTool
@@ -30,6 +40,21 @@ object GeaiToolset {
         KbLookupTool,
         KbRecordTool,
         KbForgetTool,
+        // GRACE anchors — resolve Category-B facts to live ground truth
+        ResolveRefTool,
+        // GRACE specs — Category-A intent/rules + drift validation
+        SpecListTool,
+        SpecLookupTool,
+        SpecRecordTool,
+        SpecValidateTool,
+        // GRACE graph — navigable structure + governance edges
+        GraphQueryTool,
+        GraphNeighborsTool,
+        GraphReindexTool,
+        // GRACE context bundle — minimal precise context assembled from the graph
+        ContextBundleTool,
+        // GRACE tiered routing — delegate code authoring to the strong tier
+        EscalateAuthorTool,
         // Navigation & reading
         ProjectOverviewTool,
         FindFilesTool,
