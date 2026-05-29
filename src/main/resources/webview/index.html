@@ -98,6 +98,29 @@
   .codeblock .copybtn:hover{opacity:1;color:var(--fg);border-color:var(--accent)}
   .codeblock .copybtn.done{color:#4ec98b;border-color:#4ec98b;opacity:1}
 
+  /* tool-group: collapsible block for all tool calls in one agent turn */
+  .tools-group{margin:0 0 8px;border:1px solid var(--border);border-radius:8px;background:var(--card);font-size:12px;color:var(--muted)}
+  .tools-group>summary{cursor:pointer;list-style:none;padding:5px 10px;display:flex;align-items:center;gap:6px;user-select:none}
+  .tools-group>summary::-webkit-details-marker{display:none}
+  .tools-group>summary::before{content:'⚙';font-size:10px;opacity:.7;margin-right:2px}
+  .tools-group>summary:hover{background:var(--card-hover);border-radius:8px}
+  .tools-group .tool-entries{padding:2px 10px 8px;display:flex;flex-direction:column;gap:3px;border-top:1px solid var(--border)}
+  .tool-entry{display:flex;align-items:baseline;gap:6px;font-family:ui-monospace,Consolas,monospace;overflow:hidden}
+  .tool-entry .tn{color:var(--accent);flex-shrink:0}
+  .tool-entry .ta{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;font-size:11px}
+  .tool-entry .ts{flex-shrink:0}
+  .tool-entry .ts.ok{color:#4ec98b}
+  .tool-entry .ts.err{color:#e06c75}
+
+  /* markdown extras inside assistant bubbles */
+  .msg.assistant h2{font-size:1.1em;font-weight:700;margin:10px 0 4px;padding-bottom:3px;border-bottom:1px solid var(--border)}
+  .msg.assistant h3{font-size:1em;font-weight:700;margin:8px 0 3px}
+  .msg.assistant ul,.msg.assistant ol{padding-left:1.4em;margin:4px 0}
+  .msg.assistant li{margin:1px 0}
+  .msg.assistant table{border-collapse:collapse;margin:6px 0;font-size:0.92em;width:100%}
+  .msg.assistant th,.msg.assistant td{border:1px solid var(--border);padding:3px 8px;text-align:left}
+  .msg.assistant th{background:var(--card-hover);font-weight:600}
+
   /* history overlay */
   #overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center}
   #histbox{background:var(--card);border:1px solid var(--border);border-radius:12px;width:min(440px,86vw);
@@ -149,25 +172,72 @@
   var el=function(id){return document.getElementById(id)};
   var scroll=el('scroll'), chat=el('chat'), welcome=el('welcome'), input=el('input'),
       send=el('send'), statusEl=el('status'), tokensEl=el('tokens'), engineEl=el('engine');
+  // tool-group state (reset each agent turn)
+  var tGroup=null, tEntries=null, tCount=0, tPending={};
 
   function send2k(obj){ if(window.geaiSend) window.geaiSend(JSON.stringify(obj)); }
 
   function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
   function b64(s){ try{ return btoa(unescape(encodeURIComponent(s))); }catch(e){ return ''; } }
   function unb64(s){ try{ return decodeURIComponent(escape(atob(s))); }catch(e){ return ''; } }
-  function inline(s){
-    return esc(s).replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+  function inlineMd(s){
+    return esc(s)
+      .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
+      .replace(/`([^`]+)`/g,'<code>$1</code>');
   }
-  // markdown-lite: fenced code + inline + paragraphs
+  function renderTable(rows){
+    var data=rows.filter(function(l){return !/^\s*\|[\s\-|:]+\|\s*$/.test(l);});
+    if(!data.length) return '';
+    function parseRow(l){return l.replace(/^\s*\|/,'').replace(/\|\s*$/,'').split('|').map(function(c){return c.trim();});}
+    var head=parseRow(data[0]).map(function(c){return '<th>'+inlineMd(c)+'</th>';}).join('');
+    var body=data.slice(1).map(function(r){return '<tr>'+parseRow(r).map(function(c){return '<td>'+inlineMd(c)+'</td>';}).join('')+'</tr>';}).join('');
+    return '<table><thead><tr>'+head+'</tr></thead>'+(body?'<tbody>'+body+'</tbody>':'')+'</table>';
+  }
+  // markdown: fenced code, tables, headings, lists, bold, inline-code, paragraphs
   function md(text){
-    var parts=(text||'').split('```'), out='';
-    for(var i=0;i<parts.length;i++){
-      if(i%2===1){ var seg=parts[i].replace(/^[a-zA-Z0-9_-]*\n/,''); out+='<div class="codeblock"><button class="copybtn" data-code="'+b64(seg)+'">Copy</button><pre><code>'+esc(seg)+'</code></pre></div>'; }
-      else{ var blocks=parts[i].split(/\n{2,}/);
-        for(var b=0;b<blocks.length;b++){ if(blocks[b].trim()==='')continue;
-          out+='<p>'+inline(blocks[b]).replace(/\n/g,'<br>')+'</p>'; } }
+    var FENCE='\x00', blocks=[], out=[];
+    // 1. extract fenced code blocks
+    text=(text||'').replace(/```[\s\S]*?```/g,function(m){
+      var seg=m.slice(3,-3).replace(/^[a-zA-Z0-9_+-]*\n?/,'');
+      blocks.push('<div class="codeblock"><button class="copybtn" data-code="'+b64(seg)+'">Copy</button><pre><code>'+esc(seg)+'</code></pre></div>');
+      return FENCE+(blocks.length-1)+FENCE;
+    });
+    var lines=text.split('\n'), i=0, para=[];
+    function flushPara(){if(para.length){out.push('<p>'+para.join('<br>')+'</p>');para=[];}}
+    while(i<lines.length){
+      var l=lines[i];
+      // fenced code placeholder
+      var fm=l.trim().match(/^\x00(\d+)\x00$/);
+      if(fm){flushPara();out.push(blocks[+fm[1]]);i++;continue;}
+      // table
+      if(/^\s*\|/.test(l)){
+        flushPara();
+        var tbl=[];
+        while(i<lines.length&&/^\s*\|/.test(lines[i])){tbl.push(lines[i]);i++;}
+        out.push(renderTable(tbl));continue;
+      }
+      // h2 / h3
+      var h2=l.match(/^##\s+(.+)/);if(h2){flushPara();out.push('<h2>'+inlineMd(h2[1])+'</h2>');i++;continue;}
+      var h3=l.match(/^###\s+(.+)/);if(h3){flushPara();out.push('<h3>'+inlineMd(h3[1])+'</h3>');i++;continue;}
+      // unordered list
+      if(/^[-*]\s+/.test(l)){
+        flushPara();var items=[];
+        while(i<lines.length&&/^[-*]\s+/.test(lines[i])){items.push('<li>'+inlineMd(lines[i].replace(/^[-*]\s+/,''))+'</li>');i++;}
+        out.push('<ul>'+items.join('')+'</ul>');continue;
+      }
+      // ordered list
+      if(/^\d+\.\s+/.test(l)){
+        flushPara();var items=[];
+        while(i<lines.length&&/^\d+\.\s+/.test(lines[i])){items.push('<li>'+inlineMd(lines[i].replace(/^\d+\.\s+/,''))+'</li>');i++;}
+        out.push('<ol>'+items.join('')+'</ol>');continue;
+      }
+      // blank line → paragraph break
+      if(l.trim()===''){flushPara();i++;continue;}
+      // normal text
+      para.push(inlineMd(l));i++;
     }
-    return out;
+    flushPara();
+    return out.join('');
   }
 
   function showChat(){ if(!started){started=true; welcome.classList.add('hidden'); chat.classList.remove('hidden');} }
@@ -183,19 +253,73 @@
 
   function setRunning(r){ running=r; send.textContent=r?'Стоп':'Отправить'; send.classList.toggle('stop',r);
     input.disabled=r; statusEl.textContent=r?'Работаю…':'Ready'; }
+  function closeToolGroup(label){
+    if(!tGroup) return;
+    var s=tGroup.querySelector('summary'); if(s) s.textContent=label;
+    tGroup.removeAttribute('open');
+    tGroup=null; tEntries=null;
+  }
+  function stepsLabel(n,suffix){ return n+' шаг'+(n===1?'':n<5?'а':'ов')+' '+suffix; }
 
   function renderEvent(ev){
     switch(ev.type){
-      case 'userMessage': showChat(); bubble('user','Вы',ev.text); break;
+      case 'userMessage':
+        showChat();
+        closeToolGroup(stepsLabel(tCount,'✓')); tCount=0; tPending={};
+        bubble('user','Вы',ev.text); break;
       case 'thinking': statusEl.textContent='Думаю…'; break;
       case 'reasoning': showChat(); reasoning(ev.text); break;
-      case 'assistantText': showChat(); bubble('assistant','geai',ev.text); break;
-      case 'toolStarted': showChat(); line('tool','→ '+ev.tool+'  '+(ev.args||'')); break;
-      case 'toolFinished': showChat(); line('tool'+(ev.error?' err':''),(ev.error?'✗ ':'✓ ')+ev.tool+': '+oneLine(ev.content)); break;
+      case 'assistantText':
+        showChat();
+        closeToolGroup(stepsLabel(tCount,'✓')); tCount=0; tPending={};
+        bubble('assistant','geai',ev.text); break;
+      case 'toolStarted': {
+        showChat();
+        if(!tGroup){
+          tGroup=document.createElement('details');
+          tGroup.className='tools-group'; tGroup.setAttribute('open','');
+          var sum=document.createElement('summary'); sum.textContent='1 шаг…';
+          tGroup.appendChild(sum);
+          tEntries=document.createElement('div'); tEntries.className='tool-entries';
+          tGroup.appendChild(tEntries);
+          append(tGroup); tCount=0;
+        }
+        tCount++;
+        tGroup.querySelector('summary').textContent=stepsLabel(tCount,'…');
+        var entry=document.createElement('div'); entry.className='tool-entry';
+        var preview=esc((ev.args||'').replace(/\s+/g,' ').slice(0,100));
+        entry.innerHTML='<span class="tn">'+esc(ev.tool)+'</span><span class="ta">'+preview+'</span><span class="ts">⏳</span>';
+        tEntries.appendChild(entry);
+        tPending[ev.tool]=entry;
+        if(atBottom()) scroll.scrollTop=scroll.scrollHeight;
+        break;
+      }
+      case 'toolFinished': {
+        var ent=tPending[ev.tool];
+        if(ent){
+          var ts=ent.querySelector('.ts');
+          ts.textContent=ev.error?'✗':'✓';
+          ts.className='ts '+(ev.error?'err':'ok');
+          delete tPending[ev.tool];
+        }
+        if(atBottom()) scroll.scrollTop=scroll.scrollHeight;
+        break;
+      }
       case 'info': showChat(); line('info',ev.text); break;
-      case 'error': showChat(); var e=document.createElement('div'); e.className='errline'; e.textContent='⚠ '+ev.text; append(e); setRunning(false); break;
-      case 'cancelled': showChat(); line('info',ev.text||'Остановлено.'); setRunning(false); break;
-      case 'done': statusEl.textContent='Готово'; if(ev.tokensIn!=null) setTokens(ev.tokensIn,ev.tokensOut); setRunning(false); break;
+      case 'error':
+        showChat();
+        closeToolGroup(stepsLabel(tCount,'✗')); tCount=0; tPending={};
+        var e=document.createElement('div'); e.className='errline'; e.textContent='⚠ '+ev.text; append(e);
+        setRunning(false); break;
+      case 'cancelled':
+        showChat();
+        closeToolGroup(stepsLabel(tCount,'✗')); tCount=0; tPending={};
+        line('info',ev.text||'Остановлено.'); setRunning(false); break;
+      case 'done':
+        closeToolGroup(stepsLabel(tCount,'✓')); tCount=0; tPending={};
+        statusEl.textContent='Готово';
+        if(ev.tokensIn!=null) setTokens(ev.tokensIn,ev.tokensOut);
+        setRunning(false); break;
     }
   }
   function oneLine(s){ s=(s||'').replace(/\s+/g,' ').trim(); return s.length>180?s.slice(0,180)+'…':s; }
