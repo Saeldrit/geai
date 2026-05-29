@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>geai</title>
+<style>
+  :root{
+    --bg:#1e1f22; --fg:#dfe1e5; --card:#2b2d30; --card-hover:#35373b;
+    --border:#393b40; --accent:#589df6; --muted:#8c8c8c; --field:#2b2d30;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);
+    font-family:"Segoe UI",system-ui,-apple-system,sans-serif;font-size:13px;line-height:1.5}
+  #root{display:flex;flex-direction:column;height:100vh}
+
+  /* top bar */
+  #topbar{display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid var(--border);
+    flex:0 0 auto}
+  #topbar .brand{font-weight:600;letter-spacing:.2px;display:flex;align-items:center;gap:6px}
+  .mark{color:var(--accent);display:inline-flex;align-items:center}
+  .mark svg{display:block}
+  #topbar .spacer{flex:1}
+  #status{color:var(--muted);font-size:12px;margin-right:4px}
+  .iconbtn{background:none;border:none;color:var(--fg);cursor:pointer;border-radius:6px;
+    padding:5px 7px;font-size:14px;opacity:.8}
+  .iconbtn:hover{background:var(--card-hover);opacity:1}
+
+  /* scroll area */
+  #scroll{flex:1;overflow-y:auto;padding:14px 14px 4px}
+
+  /* welcome */
+  #welcome .logo{font-size:26px;font-weight:700;display:flex;align-items:center;gap:8px;margin:8px 2px 2px}
+  #welcome .logo .mark{color:var(--accent)}
+  #welcome .tagline{color:var(--muted);margin:0 2px 16px;max-width:560px}
+  .skill{display:flex;align-items:center;gap:12px;padding:11px 12px;border:1px solid var(--border);
+    border-radius:10px;background:var(--card);margin-bottom:8px;cursor:pointer;transition:background .12s,border-color .12s}
+  .skill:hover{background:var(--card-hover);border-color:var(--accent)}
+  .skill .ic{font-size:18px;width:22px;text-align:center}
+  .skill .ttl{flex:1}
+  .badge{font-size:10px;font-weight:700;letter-spacing:.4px;padding:2px 6px;border-radius:6px;
+    border:1px solid var(--accent);color:var(--accent)}
+  .badge.beta{border-color:#c071f0;color:#c071f0}
+
+  /* chat */
+  .msg{margin:0 0 14px}
+  .msg .who{font-weight:600;margin-bottom:3px}
+  .msg.user .who{color:var(--accent)}
+  .msg.assistant .who{color:#4ec98b}
+  .msg .body{white-space:normal;word-wrap:break-word}
+  .msg .body p{margin:0 0 8px}
+  .tool{color:var(--muted);font-size:12px;margin:0 0 6px;font-family:ui-monospace,Consolas,monospace}
+  .tool.err{color:#e06c75}
+  .info{color:var(--muted);font-style:italic;margin:0 0 8px}
+  .errline{color:#e06c75;font-weight:600;margin:0 0 8px;white-space:pre-wrap}
+  pre{background:#181a1c;border:1px solid var(--border);border-radius:8px;padding:9px 11px;overflow-x:auto;margin:6px 0}
+  code{font-family:ui-monospace,Consolas,monospace;font-size:12px}
+  p code{background:#181a1c;border:1px solid var(--border);border-radius:4px;padding:1px 4px}
+
+  /* composer */
+  #composer{flex:0 0 auto;border-top:1px solid var(--border);padding:8px 10px}
+  #inputwrap{border:1px solid var(--border);border-radius:10px;background:var(--field);padding:8px 10px}
+  #inputwrap:focus-within{border-color:var(--accent)}
+  #input{width:100%;border:none;outline:none;resize:none;background:transparent;color:var(--fg);
+    font-family:inherit;font-size:13px;min-height:38px;max-height:160px}
+  #footer{display:flex;align-items:center;gap:10px;margin-top:6px}
+  #engine{color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #tokens{color:var(--muted);font-size:12px;margin-left:auto}
+  #send{background:var(--accent);color:#fff;border:none;border-radius:8px;padding:6px 14px;cursor:pointer;font-weight:600}
+  #send:hover{filter:brightness(1.08)}
+  #send.stop{background:#5a5d63}
+  .hidden{display:none!important}
+
+  /* history overlay */
+  #overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center}
+  #histbox{background:var(--card);border:1px solid var(--border);border-radius:12px;width:min(440px,86vw);
+    max-height:70vh;overflow:auto;padding:10px}
+  #histbox h3{margin:6px 8px 10px;font-size:14px}
+  .histitem{padding:9px 10px;border-radius:8px;cursor:pointer}
+  .histitem:hover{background:var(--card-hover)}
+  .histitem .t{font-weight:600}
+  .histitem .m{color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+<div id="root">
+  <div id="topbar">
+    <span class="brand"><span class="mark"><svg viewBox="0 0 24 24" width="1.05em" height="1.05em" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/><path d="M12 2.5a9.5 9.5 0 0 1 8.2 5" opacity="0.6"/></svg></span>geai</span>
+    <span class="spacer"></span>
+    <span id="status">Ready</span>
+    <button class="iconbtn" id="btnNew" title="Новая сессия">＋</button>
+    <button class="iconbtn" id="btnHistory" title="История сессий">🕘</button>
+    <button class="iconbtn" id="btnSettings" title="Настройки">⚙</button>
+  </div>
+
+  <div id="scroll">
+    <div id="welcome">
+      <div class="logo"><span class="mark"><svg viewBox="0 0 24 24" width="1.05em" height="1.05em" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/><path d="M12 2.5a9.5 9.5 0 0 1 8.2 5" opacity="0.6"/></svg></span> geai</div>
+      <p class="tagline">Ваш помощник для отладки, навигации и правок. Понимает структуру проекта,
+        ставит брейкпоинты, ведёт дебаг и подражает стилю кода.</p>
+      <div id="skills"></div>
+    </div>
+    <div id="chat" class="hidden"></div>
+  </div>
+
+  <div id="composer">
+    <div id="inputwrap">
+      <textarea id="input" placeholder="Опишите баг, напр. «на UI уходят невалидные данные, не пойму где теряем». Enter — отправить, Shift+Enter — новая строка."></textarea>
+    </div>
+    <div id="footer">
+      <span id="engine"></span>
+      <span id="tokens"></span>
+      <button id="send">Отправить</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  var running=false, started=false;
+  var el=function(id){return document.getElementById(id)};
+  var scroll=el('scroll'), chat=el('chat'), welcome=el('welcome'), input=el('input'),
+      send=el('send'), statusEl=el('status'), tokensEl=el('tokens'), engineEl=el('engine');
+
+  function send2k(obj){ if(window.geaiSend) window.geaiSend(JSON.stringify(obj)); }
+
+  function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+  function inline(s){
+    return esc(s).replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+  }
+  // markdown-lite: fenced code + inline + paragraphs
+  function md(text){
+    var parts=(text||'').split('```'), out='';
+    for(var i=0;i<parts.length;i++){
+      if(i%2===1){ var seg=parts[i].replace(/^[a-zA-Z0-9_-]*\n/,''); out+='<pre><code>'+esc(seg)+'</code></pre>'; }
+      else{ var blocks=parts[i].split(/\n{2,}/);
+        for(var b=0;b<blocks.length;b++){ if(blocks[b].trim()==='')continue;
+          out+='<p>'+inline(blocks[b]).replace(/\n/g,'<br>')+'</p>'; } }
+    }
+    return out;
+  }
+
+  function showChat(){ if(!started){started=true; welcome.classList.add('hidden'); chat.classList.remove('hidden');} }
+  function atBottom(){ return scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight < 60; }
+  function append(node){ var stick=atBottom(); chat.appendChild(node); if(stick) scroll.scrollTop=scroll.scrollHeight; }
+
+  function bubble(cls,who,text){ var d=document.createElement('div'); d.className='msg '+cls;
+    d.innerHTML='<div class="who">'+esc(who)+'</div><div class="body">'+md(text)+'</div>'; append(d); }
+  function line(cls,text){ var d=document.createElement('div'); d.className=cls; d.textContent=text; append(d); }
+
+  function setRunning(r){ running=r; send.textContent=r?'Стоп':'Отправить'; send.classList.toggle('stop',r);
+    input.disabled=r; statusEl.textContent=r?'Работаю…':'Ready'; }
+
+  function renderEvent(ev){
+    switch(ev.type){
+      case 'userMessage': showChat(); bubble('user','Вы',ev.text); break;
+      case 'thinking': statusEl.textContent='Думаю…'; break;
+      case 'assistantText': showChat(); bubble('assistant','geai',ev.text); break;
+      case 'toolStarted': showChat(); line('tool','→ '+ev.tool+'  '+(ev.args||'')); break;
+      case 'toolFinished': showChat(); line('tool'+(ev.error?' err':''),(ev.error?'✗ ':'✓ ')+ev.tool+': '+oneLine(ev.content)); break;
+      case 'info': showChat(); line('info',ev.text); break;
+      case 'error': showChat(); var e=document.createElement('div'); e.className='errline'; e.textContent='⚠ '+ev.text; append(e); setRunning(false); break;
+      case 'cancelled': showChat(); line('info',ev.text||'Остановлено.'); setRunning(false); break;
+      case 'done': statusEl.textContent='Готово'; if(ev.tokensIn!=null) setTokens(ev.tokensIn,ev.tokensOut); setRunning(false); break;
+    }
+  }
+  function oneLine(s){ s=(s||'').replace(/\s+/g,' ').trim(); return s.length>180?s.slice(0,180)+'…':s; }
+  function setTokens(i,o){ tokensEl.textContent='↑'+fmt(i)+' ↓'+fmt(o); }
+  function fmt(n){ n=n||0; return n>=1000?(n/1000).toFixed(1)+'k':(''+n); }
+
+  function renderSkills(skills){
+    var host=el('skills'); host.innerHTML='';
+    (skills||[]).forEach(function(sk){
+      var d=document.createElement('div'); d.className='skill';
+      d.innerHTML='<span class="ic">'+esc(sk.icon)+'</span><span class="ttl">'+esc(sk.title)+'</span>'+
+        (sk.badge?'<span class="badge '+(sk.badge.toLowerCase()==='beta'?'beta':'')+'">'+esc(sk.badge)+'</span>':'');
+      d.onclick=function(){ input.value=sk.prompt; input.focus();
+        input.setSelectionRange(input.value.length,input.value.length); };
+      host.appendChild(d);
+    });
+  }
+
+  function submit(){ if(running) { send2k({action:'stop'}); return; }
+    var t=input.value.trim(); if(!t) return; input.value=''; setRunning(true); send2k({action:'submit',text:t}); }
+
+  send.onclick=submit;
+  input.addEventListener('keydown',function(e){ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); submit(); } });
+  el('btnNew').onclick=function(){ send2k({action:'newSession'}); };
+  el('btnSettings').onclick=function(){ send2k({action:'openSettings'}); };
+  el('btnHistory').onclick=function(){ send2k({action:'history'}); };
+
+  // ---- Kotlin -> JS API ----
+  window.geaiBoot=function(){ send2k({action:'ready'}); };
+  window.geaiInit=function(state){
+    if(state.theme){ var r=document.documentElement.style;
+      for(var k in state.theme){ r.setProperty('--'+k, state.theme[k]); } }
+    if(state.engine) engineEl.textContent=state.engine;
+    renderSkills(state.skills);
+    chat.innerHTML=''; started=false; welcome.classList.remove('hidden'); chat.classList.add('hidden');
+    if(state.transcript && state.transcript.length){ state.transcript.forEach(renderEvent); }
+    setTokens(state.tokensIn||0, state.tokensOut||0);
+    setRunning(!!state.running);
+    if(state.configured===false){ showChat(); line('info','Geai не настроен. Откройте Settings | Tools | Geai и добавьте API-ключ, либо включите движок Claude Code.'); }
+  };
+  window.geaiEvent=function(ev){ renderEvent(ev); };
+  window.geaiReset=function(){ chat.innerHTML=''; started=false; welcome.classList.remove('hidden');
+    chat.classList.add('hidden'); statusEl.textContent='Новая сессия'; setRunning(false); };
+  window.geaiHistory=function(list){
+    var ov=document.createElement('div'); ov.id='overlay';
+    var box=document.createElement('div'); box.id='histbox'; box.innerHTML='<h3>История сессий</h3>';
+    if(!list||!list.length){ box.innerHTML+='<div class="info" style="padding:8px">Пока нет сохранённых сессий.</div>'; }
+    (list||[]).forEach(function(s){ var it=document.createElement('div'); it.className='histitem';
+      it.innerHTML='<div class="t">'+esc(s.title)+'</div><div class="m">'+s.messageCount+' сообщений</div>';
+      it.onclick=function(){ document.body.removeChild(ov); send2k({action:'loadSession',id:s.id}); };
+      box.appendChild(it); });
+    ov.appendChild(box); ov.onclick=function(e){ if(e.target===ov) document.body.removeChild(ov); };
+    document.body.appendChild(ov);
+  };
+
+  if(window.geaiSend) window.geaiBoot();
+})();
+</script>
+</body>
+</html>

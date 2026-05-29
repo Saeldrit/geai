@@ -3,19 +3,31 @@ import org.jetbrains.changelog.markdownToHTML
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 
 plugins {
-    id("org.jetbrains.kotlin.jvm")
+    id("org.jetbrains.kotlin.jvm") version "2.1.0"
     id("org.jetbrains.intellij.platform")
-    id("org.jetbrains.changelog")
+    id("org.jetbrains.changelog") version "2.2.1"
 }
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
 
+    // Gson ships inside the IDE at runtime; compileOnly guarantees compilation without
+    // bundling a second copy that could clash with the platform's.
+    compileOnly("com.google.code.gson:gson:2.10.1")
+    testImplementation("com.google.code.gson:gson:2.10.1")
+
     // IntelliJ Platform Gradle Plugin Dependencies Extension - read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin-dependencies-extension.html
     intellijPlatform {
-        intellijIdea("2025.2.6.1")
+        intellijIdeaCommunity("2025.2.6.1")
         testFramework(TestFrameworkType.Platform)
     }
+}
+
+// IntelliJ IDEA 2025.2 runs on JDK 21; pin the toolchain so plugin bytecode targets 21
+// regardless of the JDK that launches Gradle. The foojay-resolver-convention applied in
+// settings.gradle.kts auto-provisions a matching JDK when one is not installed locally.
+kotlin {
+    jvmToolchain(21)
 }
 
 // Configure IntelliJ Platform Gradle Plugin - read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin-extension.html

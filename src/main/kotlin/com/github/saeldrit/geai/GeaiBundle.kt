@@ -5,12 +5,17 @@ import org.jetbrains.annotations.NonNls
 import org.jetbrains.annotations.PropertyKey
 
 @NonNls
-private const val BUNDLE = "messages.MyBundle"
+private const val BUNDLE = "messages.GeaiBundle"
 
-object MyBundle : DynamicBundle(BUNDLE) {
+/**
+ * Localized message accessor for the geai plugin.
+ *
+ * Keys live in `src/main/resources/messages/GeaiBundle.properties`.
+ */
+object GeaiBundle : DynamicBundle(BUNDLE) {
 
     @JvmStatic
-    fun message(@PropertyKey(resourceBundle = BUNDLE) key: String, vararg params: Any) =
+    fun message(@PropertyKey(resourceBundle = BUNDLE) key: String, vararg params: Any): String =
         getMessage(key, *params)
 
     @Suppress("unused")

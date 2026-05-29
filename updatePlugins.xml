@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Custom plugin repository descriptor for geai.
+
+  In IntelliJ IDEA: Settings | Plugins | gear | Manage Plugin Repositories… | +
+  then add the raw URL of THIS file:
+    https://raw.githubusercontent.com/Saeldrit/geai/main/updatePlugins.xml
+  geai then appears in Marketplace search and updates automatically when a new
+  release bumps the version here and attaches a matching zip.
+-->
+<plugins>
+  <plugin id="com.github.saeldrit.geai"
+          url="https://github.com/Saeldrit/geai/releases/download/v0.0.1/geai-0.0.1.zip"
+          version="0.0.1">
+    <name>geai</name>
+    <vendor>saeldrit</vendor>
+    <idea-version since-build="252"/>
+    <description><![CDATA[
+      Autonomous debugging agent for IntelliJ IDEA. Describe a bug in the chat tool window and
+      geai navigates the project, traces data flow, sets breakpoints, drives the debugger, and
+      proposes or applies a fix in the project's style. Runs on an API key (Claude / DeepSeek /
+      Qwen / OpenAI-compatible) or on your Claude subscription via the Claude Code CLI.
+    ]]></description>
+  </plugin>
+</plugins>

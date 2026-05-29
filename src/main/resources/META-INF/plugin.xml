@@ -6,10 +6,18 @@
 
     <depends>com.intellij.modules.platform</depends>
 
-    <resource-bundle>messages.MyBundle</resource-bundle>
+    <resource-bundle>messages.GeaiBundle</resource-bundle>
 
     <extensions defaultExtensionNs="com.intellij">
-        <toolWindow factoryClass="com.github.saeldrit.geai.toolWindow.MyToolWindowFactory" id="MyToolWindow"/>
-        <postStartupActivity implementation="com.github.saeldrit.geai.startup.MyProjectActivity" />
+        <toolWindow
+            factoryClass="com.github.saeldrit.geai.toolWindow.GeaiToolWindowFactory"
+            id="Geai"
+            anchor="right"
+            icon="/icons/geaiToolWindow.svg"/>
+        <applicationConfigurable
+            parentId="tools"
+            instance="com.github.saeldrit.geai.settings.GeaiSettingsConfigurable"
+            id="com.github.saeldrit.geai.settings"
+            displayName="Geai"/>
     </extensions>
 </idea-plugin>
