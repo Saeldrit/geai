@@ -13,8 +13,8 @@ dependencies {
 
     // Gson ships inside the IDE at runtime; compileOnly guarantees compilation without
     // bundling a second copy that could clash with the platform's.
-    compileOnly("com.google.code.gson:gson:2.10.1")
-    testImplementation("com.google.code.gson:gson:2.10.1")
+    compileOnly("com.google.code.gson:gson:2.14.0")
+    testImplementation("com.google.code.gson:gson:2.14.0")
 
     // IntelliJ Platform Gradle Plugin Dependencies Extension - read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin-dependencies-extension.html
     intellijPlatform {
