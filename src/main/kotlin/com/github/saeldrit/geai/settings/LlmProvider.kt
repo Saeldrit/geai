@@ -12,15 +12,31 @@ enum class LlmProvider(
     val displayName: String,
     val defaultBaseUrl: String,
     val defaultModel: String,
+    /** Suggestions for the model dropdown; the field stays editable for custom endpoints. */
+    val suggestedModels: List<String>,
 ) {
     ANTHROPIC(
         displayName = "Anthropic (Claude)",
         defaultBaseUrl = "https://api.anthropic.com",
         defaultModel = "claude-sonnet-4-6",
+        suggestedModels = listOf(
+            "claude-sonnet-4-6",
+            "claude-opus-4-8",
+            "claude-haiku-4-5-20251001",
+        ),
     ),
     OPENAI_COMPATIBLE(
         displayName = "OpenAI-compatible (DeepSeek / Qwen / local)",
         defaultBaseUrl = "https://api.deepseek.com",
         defaultModel = "deepseek-chat",
+        suggestedModels = listOf(
+            "deepseek-chat",
+            "deepseek-reasoner",
+            "qwen-plus",
+            "qwen-max",
+            "qwen3-coder-plus",
+            "gpt-4o",
+            "gpt-4o-mini",
+        ),
     ),
 }

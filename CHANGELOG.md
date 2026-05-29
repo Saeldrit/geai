@@ -2,6 +2,15 @@
 
 # geai Changelog
 
+## [0.0.2]
+
+### Changed
+- Settings: the Model field is now an editable dropdown of suggested models per provider (still
+  free-typed for custom endpoints).
+- Settings: enabling the Claude Code engine now disables the provider/model/key/token fields that
+  do not apply, and the engine toggle moved to the top — so it is clear what to configure.
+- Original geai iconography (plugin icon, tool-window icon, in-UI mark) replacing the placeholder.
+
 ## [Unreleased]
 
 ### Added

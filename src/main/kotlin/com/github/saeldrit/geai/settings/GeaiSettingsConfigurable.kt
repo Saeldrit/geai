@@ -14,100 +14,124 @@ import javax.swing.JSpinner
 import javax.swing.SpinnerNumberModel
 
 /**
- * Settings page under **Settings | Tools | Geai**. API keys are written to [GeaiSecrets]
- * (credential store), everything else to [GeaiSettings].
+ * Settings page under **Settings | Tools | Geai**. The engine toggle gates which fields apply:
+ * with the Claude Code engine on, the provider/model/key fields are disabled (Claude Code brings
+ * its own login and model). API keys are written to [GeaiSecrets]; everything else to [GeaiSettings].
  */
 class GeaiSettingsConfigurable : Configurable {
 
+    private val engineCheck =
+        JBCheckBox("Use Claude Code CLI as the engine (your Claude subscription login — no API key needed)")
+    private val claudePathField = JBTextField()
+
     private val providerCombo = ComboBox(DefaultComboBoxModel(LlmProvider.entries.toTypedArray()))
-    private val modelField = JBTextField()
+    private val modelCombo = ComboBox<String>().apply { isEditable = true }
     private val baseUrlField = JBTextField()
     private val apiKeyField = JBPasswordField()
     private val maxTokensSpinner = JSpinner(SpinnerNumberModel(8192, 256, 200_000, 256))
     private val maxIterationsSpinner = JSpinner(SpinnerNumberModel(32, 1, 200, 1))
+
     private val autoReadCheck = JBCheckBox("Auto-approve read-only tools (read / list / search / navigate)")
     private val autoEditCheck = JBCheckBox("Auto-approve mutating tools (write / edit / run / self-modify)")
     private val sourcePathField = JBTextField()
-    private val engineCheck = JBCheckBox("Use Claude Code CLI as the engine (your Claude subscription login)")
-    private val claudePathField = JBTextField()
 
     override fun getDisplayName(): String = GeaiBundle.message("geai.settings.title")
 
     override fun createComponent(): JComponent {
+        engineCheck.addActionListener { updateEnabled() }
         providerCombo.addActionListener {
-            (providerCombo.selectedItem as? LlmProvider)?.let { p ->
-                modelField.emptyText.text = p.defaultModel
-                baseUrlField.emptyText.text = p.defaultBaseUrl
-                apiKeyField.text = GeaiSecrets.apiKey(p).orEmpty()
+            (providerCombo.selectedItem as? LlmProvider)?.let { provider ->
+                populateModels(provider)
+                modelCombo.selectedItem = null // fall back to the new provider's default
+                baseUrlField.emptyText.text = provider.defaultBaseUrl
             }
         }
-        val built = FormBuilder.createFormBuilder()
+        val panel = FormBuilder.createFormBuilder()
+            .addComponent(engineCheck)
+            .addLabeledComponent("Claude CLI path:", claudePathField)
+            .addSeparator()
             .addLabeledComponent("Provider:", providerCombo)
-            .addLabeledComponent("Model:", modelField)
+            .addLabeledComponent("Model:", modelCombo)
             .addLabeledComponent("Base URL:", baseUrlField)
             .addLabeledComponent("API key:", apiKeyField)
             .addLabeledComponent("Max tokens:", maxTokensSpinner)
             .addLabeledComponent("Max agent iterations:", maxIterationsSpinner)
+            .addSeparator()
             .addComponent(autoReadCheck)
             .addComponent(autoEditCheck)
             .addLabeledComponent("Geai source path:", sourcePathField)
-            .addComponent(engineCheck)
-            .addLabeledComponent("Claude CLI path:", claudePathField)
             .addComponentFillVertically(JPanel(), 0)
             .panel
         reset()
-        return built
+        return panel
+    }
+
+    private fun populateModels(provider: LlmProvider) {
+        modelCombo.removeAllItems()
+        provider.suggestedModels.forEach { modelCombo.addItem(it) }
+    }
+
+    private fun currentModel(): String =
+        ((modelCombo.editor.item as? String) ?: (modelCombo.selectedItem as? String)).orEmpty().trim()
+
+    /** Disable the fields that do not apply to the active engine, so it is obvious what to fill in. */
+    private fun updateEnabled() {
+        val claudeEngine = engineCheck.isSelected
+        claudePathField.isEnabled = claudeEngine
+        listOf<JComponent>(providerCombo, modelCombo, baseUrlField, apiKeyField, maxTokensSpinner, maxIterationsSpinner)
+            .forEach { it.isEnabled = !claudeEngine }
     }
 
     override fun isModified(): Boolean {
-        val s = GeaiSettings.getInstance().state
-        val provider = providerCombo.selectedItem as? LlmProvider ?: s.provider
+        val state = GeaiSettings.getInstance().state
+        val provider = providerCombo.selectedItem as? LlmProvider ?: state.provider
         val storedKey = GeaiSecrets.apiKey(provider).orEmpty()
-        return provider != s.provider ||
-            modelField.text != s.model.orEmpty() ||
-            baseUrlField.text != s.baseUrl.orEmpty() ||
-            (maxTokensSpinner.value as Int) != s.maxTokens ||
-            (maxIterationsSpinner.value as Int) != s.maxAgentIterations ||
-            autoReadCheck.isSelected != s.autoApproveReadTools ||
-            autoEditCheck.isSelected != s.autoApproveEditTools ||
-            sourcePathField.text != s.geaiSourcePath.orEmpty() ||
-            engineCheck.isSelected != s.useClaudeCodeEngine ||
-            claudePathField.text != s.claudeCliPath.orEmpty() ||
+        return provider != state.provider ||
+            currentModel() != state.model.orEmpty() ||
+            baseUrlField.text != state.baseUrl.orEmpty() ||
+            (maxTokensSpinner.value as Int) != state.maxTokens ||
+            (maxIterationsSpinner.value as Int) != state.maxAgentIterations ||
+            autoReadCheck.isSelected != state.autoApproveReadTools ||
+            autoEditCheck.isSelected != state.autoApproveEditTools ||
+            sourcePathField.text != state.geaiSourcePath.orEmpty() ||
+            engineCheck.isSelected != state.useClaudeCodeEngine ||
+            claudePathField.text != state.claudeCliPath.orEmpty() ||
             String(apiKeyField.password) != storedKey
     }
 
     override fun apply() {
-        val s = GeaiSettings.getInstance().state
-        val provider = providerCombo.selectedItem as? LlmProvider ?: s.provider
-        s.provider = provider
-        s.model = modelField.text.trim().ifBlank { null }
-        s.baseUrl = baseUrlField.text.trim().ifBlank { null }
-        s.maxTokens = maxTokensSpinner.value as Int
-        s.maxAgentIterations = maxIterationsSpinner.value as Int
-        s.autoApproveReadTools = autoReadCheck.isSelected
-        s.autoApproveEditTools = autoEditCheck.isSelected
-        s.geaiSourcePath = sourcePathField.text.trim().ifBlank { null }
-        s.useClaudeCodeEngine = engineCheck.isSelected
-        s.claudeCliPath = claudePathField.text.trim().ifBlank { null }
+        val state = GeaiSettings.getInstance().state
+        val provider = providerCombo.selectedItem as? LlmProvider ?: state.provider
+        state.provider = provider
+        state.model = currentModel().ifBlank { null }
+        state.baseUrl = baseUrlField.text.trim().ifBlank { null }
+        state.maxTokens = maxTokensSpinner.value as Int
+        state.maxAgentIterations = maxIterationsSpinner.value as Int
+        state.autoApproveReadTools = autoReadCheck.isSelected
+        state.autoApproveEditTools = autoEditCheck.isSelected
+        state.geaiSourcePath = sourcePathField.text.trim().ifBlank { null }
+        state.useClaudeCodeEngine = engineCheck.isSelected
+        state.claudeCliPath = claudePathField.text.trim().ifBlank { null }
         GeaiSecrets.setApiKey(provider, String(apiKeyField.password).trim().ifBlank { null })
     }
 
     override fun reset() {
-        val s = GeaiSettings.getInstance().state
-        providerCombo.selectedItem = s.provider
-        modelField.text = s.model.orEmpty()
-        modelField.emptyText.text = s.provider.defaultModel
-        baseUrlField.text = s.baseUrl.orEmpty()
-        baseUrlField.emptyText.text = s.provider.defaultBaseUrl
-        maxTokensSpinner.value = s.maxTokens
-        maxIterationsSpinner.value = s.maxAgentIterations
-        autoReadCheck.isSelected = s.autoApproveReadTools
-        autoEditCheck.isSelected = s.autoApproveEditTools
-        sourcePathField.text = s.geaiSourcePath.orEmpty()
+        val state = GeaiSettings.getInstance().state
+        providerCombo.selectedItem = state.provider
+        populateModels(state.provider)
+        modelCombo.selectedItem = state.model?.takeIf { it.isNotBlank() }
+        baseUrlField.text = state.baseUrl.orEmpty()
+        baseUrlField.emptyText.text = state.provider.defaultBaseUrl
+        maxTokensSpinner.value = state.maxTokens
+        maxIterationsSpinner.value = state.maxAgentIterations
+        autoReadCheck.isSelected = state.autoApproveReadTools
+        autoEditCheck.isSelected = state.autoApproveEditTools
+        sourcePathField.text = state.geaiSourcePath.orEmpty()
         sourcePathField.emptyText.text = "absolute path to geai's own source — enables self-modification tools"
-        engineCheck.isSelected = s.useClaudeCodeEngine
-        claudePathField.text = s.claudeCliPath.orEmpty()
+        engineCheck.isSelected = state.useClaudeCodeEngine
+        claudePathField.text = state.claudeCliPath.orEmpty()
         claudePathField.emptyText.text = "blank = resolve 'claude' from PATH"
-        apiKeyField.text = GeaiSecrets.apiKey(s.provider).orEmpty()
+        apiKeyField.text = GeaiSecrets.apiKey(state.provider).orEmpty()
+        updateEnabled()
     }
 }
