@@ -2,6 +2,15 @@
 
 # geai Changelog
 
+## [0.0.3]
+
+### Added
+- The model's reasoning/thinking is shown as a collapsible block (hidden by default) in both the
+  JCEF and Swing UIs, on the Claude Code engine.
+
+### Changed
+- Tighter, more professional system-prompt register (terse, direct, no filler).
+
 ## [0.0.2]
 
 ### Changed

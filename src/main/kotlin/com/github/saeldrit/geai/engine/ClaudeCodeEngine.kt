@@ -165,6 +165,9 @@ class ClaudeCodeEngine(private val project: Project) {
         textEmitted: BooleanArray,
     ) {
         when (block.get("type")?.asString) {
+            "thinking" -> block.get("thinking")?.asString?.takeIf { it.isNotBlank() }
+                ?.let { listener.onEvent(AgentEvent.Reasoning(it)) }
+
             "text" -> block.get("text")?.asString?.takeIf { it.isNotBlank() }?.let {
                 listener.onEvent(AgentEvent.AssistantText(it))
                 session.messages.add(ChatMessage.assistantText(it))

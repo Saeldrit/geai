@@ -7,6 +7,9 @@ import com.github.saeldrit.geai.tools.ToolResult
 sealed interface AgentEvent {
     data class UserMessage(val text: String) : AgentEvent
     data object Thinking : AgentEvent
+
+    /** The model's internal reasoning. Rendered collapsed (hidden behind a toggle), never inline. */
+    data class Reasoning(val text: String) : AgentEvent
     data class AssistantText(val text: String) : AgentEvent
     data class ToolStarted(val tool: String, val argsJson: String) : AgentEvent
     data class ToolFinished(val tool: String, val result: ToolResult) : AgentEvent

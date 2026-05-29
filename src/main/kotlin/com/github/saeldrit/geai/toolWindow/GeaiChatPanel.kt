@@ -127,6 +127,7 @@ class GeaiChatPanel(private val project: Project) : JPanel(BorderLayout()) {
         when (event) {
             is AgentEvent.UserMessage -> appendBlock("You", event.text, USER)
             is AgentEvent.Thinking -> statusLabel.text = "Thinking…"
+            is AgentEvent.Reasoning -> appendInline("⌄ reasoning: ${preview(event.text)}", INFO)
             is AgentEvent.AssistantText -> appendBlock("geai", event.text, ASSISTANT)
             is AgentEvent.ToolStarted -> appendInline("→ ${event.tool} ${preview(event.argsJson)}", TOOL)
             is AgentEvent.ToolFinished -> {

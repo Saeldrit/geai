@@ -52,6 +52,17 @@
   .tool{color:var(--muted);font-size:12px;margin:0 0 6px;font-family:ui-monospace,Consolas,monospace}
   .tool.err{color:#e06c75}
   .info{color:var(--muted);font-style:italic;margin:0 0 8px}
+
+  /* collapsible reasoning — hidden by default, toggled by the arrow */
+  .reason{margin:0 0 12px;border:1px solid var(--border);border-radius:8px;background:var(--card);overflow:hidden}
+  .reason>summary{cursor:pointer;list-style:none;padding:7px 10px;color:var(--muted);font-size:12px;
+    display:flex;align-items:center;gap:6px;user-select:none}
+  .reason>summary::-webkit-details-marker{display:none}
+  .reason>summary::before{content:'▶';font-size:9px;transition:transform .12s}
+  .reason[open]>summary::before{transform:rotate(90deg)}
+  .reason>summary:hover{background:var(--card-hover)}
+  .reason .rbody{padding:6px 12px 10px;color:var(--muted);white-space:pre-wrap;word-wrap:break-word;
+    font-size:12px;border-top:1px solid var(--border);font-family:ui-monospace,Consolas,monospace}
   .errline{color:#e06c75;font-weight:600;margin:0 0 8px;white-space:pre-wrap}
   pre{background:#181a1c;border:1px solid var(--border);border-radius:8px;padding:9px 11px;overflow-x:auto;margin:6px 0}
   code{font-family:ui-monospace,Consolas,monospace;font-size:12px}
@@ -61,8 +72,8 @@
   #composer{flex:0 0 auto;border-top:1px solid var(--border);padding:8px 10px}
   #inputwrap{border:1px solid var(--border);border-radius:10px;background:var(--field);padding:8px 10px}
   #inputwrap:focus-within{border-color:var(--accent)}
-  #input{width:100%;border:none;outline:none;resize:none;background:transparent;color:var(--fg);
-    font-family:inherit;font-size:13px;min-height:38px;max-height:160px}
+  #input{width:100%;border:none;outline:none;resize:vertical;background:transparent;color:var(--fg);
+    font-family:inherit;font-size:13px;min-height:38px;height:38px;max-height:60vh}
   #footer{display:flex;align-items:center;gap:10px;margin-top:6px}
   #engine{color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #tokens{color:var(--muted);font-size:12px;margin-left:auto}
@@ -147,6 +158,9 @@
   function bubble(cls,who,text){ var d=document.createElement('div'); d.className='msg '+cls;
     d.innerHTML='<div class="who">'+esc(who)+'</div><div class="body">'+md(text)+'</div>'; append(d); }
   function line(cls,text){ var d=document.createElement('div'); d.className=cls; d.textContent=text; append(d); }
+  function reasoning(text){ var d=document.createElement('details'); d.className='reason';
+    d.innerHTML='<summary>Размышления</summary><div class="rbody"></div>';
+    d.querySelector('.rbody').textContent=text; append(d); }
 
   function setRunning(r){ running=r; send.textContent=r?'Стоп':'Отправить'; send.classList.toggle('stop',r);
     input.disabled=r; statusEl.textContent=r?'Работаю…':'Ready'; }
@@ -155,6 +169,7 @@
     switch(ev.type){
       case 'userMessage': showChat(); bubble('user','Вы',ev.text); break;
       case 'thinking': statusEl.textContent='Думаю…'; break;
+      case 'reasoning': showChat(); reasoning(ev.text); break;
       case 'assistantText': showChat(); bubble('assistant','geai',ev.text); break;
       case 'toolStarted': showChat(); line('tool','→ '+ev.tool+'  '+(ev.args||'')); break;
       case 'toolFinished': showChat(); line('tool'+(ev.error?' err':''),(ev.error?'✗ ':'✓ ')+ev.tool+': '+oneLine(ev.content)); break;
