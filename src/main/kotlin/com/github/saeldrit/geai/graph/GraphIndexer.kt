@@ -4,7 +4,9 @@ import com.github.saeldrit.geai.spec.SpecItem
 import com.github.saeldrit.geai.spec.SpecStore
 import com.github.saeldrit.geai.tools.fs.FsPaths
 import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.progress.ProcessCanceledException
+import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.psi.PsiClass
@@ -36,26 +38,37 @@ object GraphIndexer {
     }
 
     private fun indexCode(project: Project, nodes: MutableMap<String, GraphNode>, edges: MutableSet<GraphEdge>) {
+        // If IDE is still indexing (dumb mode) PSI is unreliable — skip code pass, spec subgraph still builds.
+        if (DumbService.isDumb(project)) {
+            thisLogger().info("Geai graph_reindex: IDE is in dumb mode, skipping PSI code pass.")
+            return
+        }
         try {
             ReadAction.run<RuntimeException> {
                 val fileIndex = ProjectFileIndex.getInstance(project)
                 val psiManager = PsiManager.getInstance(project)
                 fileIndex.iterateContent { vf ->
                     if (nodes.size >= MAX_NODES) return@iterateContent false
-                    if (vf.isDirectory || !fileIndex.isInSourceContent(vf) || vf.extension?.lowercase() !in SOURCE_EXT) {
-                        return@iterateContent true
-                    }
+                    // isInSource covers both source roots and test roots; isInSourceContent
+                    // is narrower and misses roots that are not explicitly marked in module settings.
+                    val ext = vf.extension?.lowercase()
+                    if (vf.isDirectory || ext !in SOURCE_EXT) return@iterateContent true
+                    if (!fileIndex.isInSource(vf) && !fileIndex.isInContent(vf)) return@iterateContent true
                     val owner = psiManager.findFile(vf) as? PsiClassOwner ?: return@iterateContent true
                     val fileId = "file:${FsPaths.relativize(project, vf)}"
-                    nodes.putIfAbsent(fileId, GraphNode(fileId, NodeKind.FILE, vf.name, "file:${FsPaths.relativize(project, vf)}", null, emptyList()))
+                    nodes.putIfAbsent(
+                        fileId,
+                        GraphNode(fileId, NodeKind.FILE, vf.name, "file:${FsPaths.relativize(project, vf)}", null, emptyList())
+                    )
                     owner.classes.forEach { psiClass -> indexClass(psiClass, fileId, nodes, edges) }
                     true
                 }
             }
         } catch (e: ProcessCanceledException) {
             throw e
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
             // Non-JVM host (no Java PSI) or transient PSI issue: spec subgraph still builds.
+            thisLogger().warn("Geai graph_reindex: PSI code pass failed (non-JVM or transient): ${t.message}")
         }
     }
 

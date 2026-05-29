@@ -6,6 +6,7 @@ import com.github.saeldrit.geai.tools.AgentTool
 import com.github.saeldrit.geai.tools.ToolArgs
 import com.github.saeldrit.geai.tools.ToolContext
 import com.github.saeldrit.geai.tools.ToolResult
+import com.intellij.openapi.project.DumbService
 
 /**
  * Rebuilds the derived GRACE graph from current code + specs. Safe and idempotent — touches only
@@ -20,8 +21,10 @@ object GraphReindexTool : AgentTool {
     override val parametersJsonSchema = """{"type":"object","properties":{}}"""
 
     override fun execute(args: ToolArgs, context: ToolContext): ToolResult = runCatching {
+        val dumb = DumbService.isDumb(context.project)
         val graph = GraphIndexer.reindex(context.project)
         GeaiGraphStore.getInstance(context.project).replaceAll(graph)
-        ToolResult.ok("Graph rebuilt: ${graph.nodes.size} nodes, ${graph.edges.size} edges.")
+        val warning = if (dumb) " (WARNING: IDE is still indexing — PSI code pass skipped; re-run graph_reindex after indexing completes to get full symbol graph)" else ""
+        ToolResult.ok("Graph rebuilt: ${graph.nodes.size} nodes, ${graph.edges.size} edges.$warning")
     }.getOrElse { ToolResult.error("graph_reindex failed: ${it.message}") }
 }
