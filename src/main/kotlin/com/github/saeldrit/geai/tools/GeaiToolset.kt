@@ -1,7 +1,9 @@
 package com.github.saeldrit.geai.tools
 
 import com.github.saeldrit.geai.tools.debug.AwaitPauseTool
+import com.github.saeldrit.geai.tools.debug.DebugEvaluateTool
 import com.github.saeldrit.geai.tools.debug.DebugStateTool
+import com.github.saeldrit.geai.tools.debug.DebugVariablesTool
 import com.github.saeldrit.geai.tools.debug.ListBreakpointsTool
 import com.github.saeldrit.geai.tools.debug.RemoveBreakpointTool
 import com.github.saeldrit.geai.tools.debug.SetBreakpointTool
@@ -37,6 +39,8 @@ object GeaiToolset {
         DebugStateTool,
         StartDebugTool,
         AwaitPauseTool,
+        DebugVariablesTool,
+        DebugEvaluateTool,
         // System & self-modification
         RunCommandTool,
         SelfInfoTool,

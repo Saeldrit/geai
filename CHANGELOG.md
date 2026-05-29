@@ -2,6 +2,13 @@
 
 # geai Changelog
 
+## [0.0.5]
+
+### Added
+- Debugger can now inspect runtime state at a breakpoint: `debug_variables` reads the current
+  frame's locals and `debug_evaluate` evaluates an expression in the frame (XDebugger value API).
+  This closes the gap where geai could pause but not see values — added via the self-extension path.
+
 ## [0.0.4]
 
 ### Added
