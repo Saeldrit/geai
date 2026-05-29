@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="UTF-8"?>
+<?xml version="0.0.4" encoding="UTF-8"?>
 <!--
   Custom plugin repository descriptor for geai.
 
@@ -10,8 +10,8 @@
 -->
 <plugins>
   <plugin id="com.github.saeldrit.geai"
-          url="https://github.com/Saeldrit/geai/releases/download/v0.0.3/geai-0.0.3.zip"
-          version="0.0.3">
+          url="https://github.com/Saeldrit/geai/releases/download/v0.0.4/geai-0.0.4.zip"
+          version="0.0.4">
     <name>geai</name>
     <vendor>saeldrit</vendor>
     <idea-version since-build="252"/>
