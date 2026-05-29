@@ -1,0 +1,5 @@
+# Normalize line endings: LF in repo, platform-native on checkout
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+gradlew.bat text eol=crlf
