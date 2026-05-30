@@ -1,1 +1,1 @@
-﻿{"permissions":{"allow":["Bash(./gradlew:*)","Bash(gradlew.bat:*)"]}}
+﻿{"permissions":{"allow":["Bash(./gradlew:*)","Bash(gradlew.bat:*)","Bash(git:*)","Bash(gh:*)"]}}

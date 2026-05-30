@@ -155,7 +155,14 @@ class AnthropicClient(
             else -> StopReason.OTHER
         }
         val usage = root.objectOrNull("usage")
-            ?.let { TokenUsage(it.intOr("input_tokens", 0), it.intOr("output_tokens", 0)) }
+            ?.let {
+                TokenUsage(
+                    inputTokens = it.intOr("input_tokens", 0),
+                    outputTokens = it.intOr("output_tokens", 0),
+                    cacheReadTokens = it.intOr("cache_read_input_tokens", 0),
+                    cacheWriteTokens = it.intOr("cache_creation_input_tokens", 0),
+                )
+            }
             ?: TokenUsage.ZERO
 
         return ChatResult(ChatMessage.assistant(blocks), stopReason, usage)

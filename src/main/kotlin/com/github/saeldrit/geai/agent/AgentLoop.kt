@@ -1,12 +1,14 @@
 package com.github.saeldrit.geai.agent
 
 import com.github.saeldrit.geai.context.ContextCompressor
+import com.github.saeldrit.geai.cost.UsageFormat
 import com.github.saeldrit.geai.llm.ChatMessage
 import com.github.saeldrit.geai.llm.ChatRequest
 import com.github.saeldrit.geai.llm.ContentBlock
 import com.github.saeldrit.geai.llm.LlmClientFactory
 import com.github.saeldrit.geai.llm.LlmException
 import com.github.saeldrit.geai.llm.StopReason
+import com.github.saeldrit.geai.llm.TokenUsage
 import com.github.saeldrit.geai.settings.GeaiSettingsState
 import com.github.saeldrit.geai.settings.GeaiSettings
 import com.github.saeldrit.geai.settings.loopModel
@@ -46,6 +48,7 @@ class AgentLoop(
 
         try {
             var iteration = 0
+            var turnUsage = TokenUsage.ZERO
             while (true) {
                 if (indicator.isCanceled) {
                     listener.onEvent(AgentEvent.Cancelled())
@@ -53,6 +56,7 @@ class AgentLoop(
                 }
                 if (iteration++ >= maxIterations) {
                     listener.onEvent(AgentEvent.Info("Reached the max iteration budget ($maxIterations). Stopping; ask me to continue if needed."))
+                    listener.onEvent(AgentEvent.Info(UsageFormat.summary(settings.loopModel(), turnUsage, session.totalUsage, settings.modelPrices)))
                     listener.onEvent(AgentEvent.Done(session.totalUsage))
                     return
                 }
@@ -69,6 +73,7 @@ class AgentLoop(
                 listener.onEvent(AgentEvent.Thinking)
                 val result = client.chat(request, indicator)
                 session.totalUsage += result.usage
+                turnUsage += result.usage
                 session.messages.add(result.message)
 
                 result.message.text.takeIf { it.isNotBlank() }?.let { listener.onEvent(AgentEvent.AssistantText(it)) }
@@ -78,6 +83,7 @@ class AgentLoop(
                     if (result.stopReason == StopReason.MAX_TOKENS) {
                         listener.onEvent(AgentEvent.Info("Response was truncated by the token limit; raise Max tokens in Settings | Tools | Geai."))
                     }
+                    listener.onEvent(AgentEvent.Info(UsageFormat.summary(settings.loopModel(), turnUsage, session.totalUsage, settings.modelPrices)))
                     listener.onEvent(AgentEvent.Done(session.totalUsage))
                     return
                 }

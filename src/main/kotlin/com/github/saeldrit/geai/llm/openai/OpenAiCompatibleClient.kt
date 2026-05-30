@@ -152,7 +152,17 @@ class OpenAiCompatibleClient(
             else -> if (hasToolUse) StopReason.TOOL_USE else StopReason.OTHER
         }
         val usage = root.objectOrNull("usage")
-            ?.let { TokenUsage(it.intOr("prompt_tokens", 0), it.intOr("completion_tokens", 0)) }
+            ?.let { usageObj ->
+                // Cache hits are reported differently per vendor: DeepSeek uses prompt_cache_hit_tokens;
+                // OpenAI uses prompt_tokens_details.cached_tokens. Prefer whichever is present.
+                val deepseekHit = usageObj.intOr("prompt_cache_hit_tokens", 0)
+                val openAiCached = usageObj.objectOrNull("prompt_tokens_details")?.intOr("cached_tokens", 0) ?: 0
+                TokenUsage(
+                    inputTokens = usageObj.intOr("prompt_tokens", 0),
+                    outputTokens = usageObj.intOr("completion_tokens", 0),
+                    cacheReadTokens = maxOf(deepseekHit, openAiCached),
+                )
+            }
             ?: TokenUsage.ZERO
 
         return ChatResult(ChatMessage.assistant(blocks), stopReason, usage)

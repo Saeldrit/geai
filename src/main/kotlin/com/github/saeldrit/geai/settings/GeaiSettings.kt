@@ -48,6 +48,13 @@ class GeaiSettingsState : BaseState() {
     /** Cheap navigator-tier model of the SAME provider (e.g. claude-haiku-4-5 / deepseek-chat). Blank = use main model. */
     var navigatorModel by string()
 
+    /**
+     * Per-model USD price table for cost display, one line `model=input,output,cacheRead,cacheWrite`
+     * ($ per 1M tokens). Keyed by the actual model name so each model is costed at its own rate.
+     * Blank/no match → tokens shown without a cost (never a fabricated figure). Kept current by the user.
+     */
+    var modelPrices by string()
+
     /** Read-only tools (read/list/search/navigate) may run without per-call confirmation. */
     var autoApproveReadTools by property(true)
 

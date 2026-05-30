@@ -1,6 +1,7 @@
 package com.github.saeldrit.geai.tools.grace
 
 import com.github.saeldrit.geai.agent.SystemPrompt
+import com.github.saeldrit.geai.cost.UsageFormat
 import com.github.saeldrit.geai.llm.ChatMessage
 import com.github.saeldrit.geai.llm.ChatRequest
 import com.github.saeldrit.geai.llm.LlmClientFactory
@@ -64,7 +65,8 @@ object EscalateAuthorTool : AgentTool {
         return try {
             val result = client.chat(request, context.indicator)
             val text = result.message.text.ifBlank { "(author tier returned no text)" }
-            ToolResult.ok("author-tier (${settings.authorModel()}):\n$text")
+            val usage = UsageFormat.line("author", settings.authorModel(), result.usage, settings.modelPrices)
+            ToolResult.ok("$usage\n$text")
         } catch (e: LlmException) {
             ToolResult.error("escalate_author failed: ${e.message}")
         }

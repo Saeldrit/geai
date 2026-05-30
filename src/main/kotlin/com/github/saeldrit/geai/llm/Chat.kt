@@ -23,9 +23,25 @@ enum class StopReason {
     OTHER,
 }
 
-data class TokenUsage(val inputTokens: Int, val outputTokens: Int) {
+/**
+ * Token accounting for one response. [inputTokens]/[outputTokens] are the billed non-cached
+ * input and the output; [cacheReadTokens]/[cacheWriteTokens] are reported separately by providers
+ * that support prompt caching (Anthropic cache read/creation, DeepSeek prompt-cache hit) so cost
+ * can reflect the real cache discount — never an invented one.
+ */
+data class TokenUsage(
+    val inputTokens: Int,
+    val outputTokens: Int,
+    val cacheReadTokens: Int = 0,
+    val cacheWriteTokens: Int = 0,
+) {
     operator fun plus(other: TokenUsage): TokenUsage =
-        TokenUsage(inputTokens + other.inputTokens, outputTokens + other.outputTokens)
+        TokenUsage(
+            inputTokens + other.inputTokens,
+            outputTokens + other.outputTokens,
+            cacheReadTokens + other.cacheReadTokens,
+            cacheWriteTokens + other.cacheWriteTokens,
+        )
 
     companion object {
         val ZERO = TokenUsage(0, 0)
