@@ -32,6 +32,9 @@ class GeaiSettingsState : BaseState() {
     /** Model context window (tokens) used to size transcript compaction. Default ~200k (Claude). */
     var maxContextTokens by property(200_000)
 
+    /** Master switch for the GRACE toolset + doctrine (anchors/specs/graph/bundle/routing). Off = lean baseline. */
+    var graceEnabled by property(true)
+
     /** GRACE: prefer the semantic (vector) ranker for context bundles when available; else deterministic. */
     var graceVectorRanker by property(false)
 

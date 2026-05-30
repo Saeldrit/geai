@@ -35,6 +35,8 @@ class GeaiSettingsConfigurable : Configurable {
     private val autoEditCheck = JBCheckBox("Auto-approve mutating tools (write / edit / run / self-modify) — ON by default; uncheck to require per-call confirmation")
     private val sourcePathField = JBTextField()
 
+    private val graceEnabledCheck =
+        JBCheckBox("Enable GRACE (anchors / specs / graph / context bundle / tiered routing) — off = lean baseline")
     private val tieredRoutingCheck =
         JBCheckBox("GRACE tiered routing: navigate on a cheap model, escalate code authoring to the main model (same provider/key)")
     private val navigatorModelField = JBTextField()
@@ -45,6 +47,7 @@ class GeaiSettingsConfigurable : Configurable {
 
     override fun createComponent(): JComponent {
         engineCheck.addActionListener { updateEnabled() }
+        graceEnabledCheck.addActionListener { updateEnabled() }
         tieredRoutingCheck.addActionListener { updateEnabled() }
         providerCombo.addActionListener {
             (providerCombo.selectedItem as? LlmProvider)?.let { provider ->
@@ -68,6 +71,7 @@ class GeaiSettingsConfigurable : Configurable {
             .addComponent(autoEditCheck)
             .addLabeledComponent("Geai source path:", sourcePathField)
             .addSeparator()
+            .addComponent(graceEnabledCheck)
             .addComponent(tieredRoutingCheck)
             .addLabeledComponent("Navigator model:", navigatorModelField)
             .addComponent(vectorRankerCheck)
@@ -89,10 +93,13 @@ class GeaiSettingsConfigurable : Configurable {
     private fun updateEnabled() {
         val claudeEngine = engineCheck.isSelected
         claudePathField.isEnabled = claudeEngine
-        listOf<JComponent>(providerCombo, modelCombo, baseUrlField, apiKeyField, maxTokensSpinner, maxIterationsSpinner, tieredRoutingCheck, vectorRankerCheck)
+        listOf<JComponent>(providerCombo, modelCombo, baseUrlField, apiKeyField, maxTokensSpinner, maxIterationsSpinner, graceEnabledCheck)
             .forEach { it.isEnabled = !claudeEngine }
-        // Navigator model only matters when tiering is on and the native engine is in use.
-        navigatorModelField.isEnabled = !claudeEngine && tieredRoutingCheck.isSelected
+        // GRACE sub-options apply only with the native engine AND GRACE enabled.
+        val grace = !claudeEngine && graceEnabledCheck.isSelected
+        tieredRoutingCheck.isEnabled = grace
+        vectorRankerCheck.isEnabled = grace
+        navigatorModelField.isEnabled = grace && tieredRoutingCheck.isSelected
     }
 
     override fun isModified(): Boolean {
@@ -109,6 +116,7 @@ class GeaiSettingsConfigurable : Configurable {
             sourcePathField.text != state.geaiSourcePath.orEmpty() ||
             engineCheck.isSelected != state.useClaudeCodeEngine ||
             claudePathField.text != state.claudeCliPath.orEmpty() ||
+            graceEnabledCheck.isSelected != state.graceEnabled ||
             tieredRoutingCheck.isSelected != state.tieredRoutingEnabled ||
             navigatorModelField.text != state.navigatorModel.orEmpty() ||
             vectorRankerCheck.isSelected != state.graceVectorRanker ||
@@ -128,6 +136,7 @@ class GeaiSettingsConfigurable : Configurable {
         state.geaiSourcePath = sourcePathField.text.trim().ifBlank { null }
         state.useClaudeCodeEngine = engineCheck.isSelected
         state.claudeCliPath = claudePathField.text.trim().ifBlank { null }
+        state.graceEnabled = graceEnabledCheck.isSelected
         state.tieredRoutingEnabled = tieredRoutingCheck.isSelected
         state.navigatorModel = navigatorModelField.text.trim().ifBlank { null }
         state.graceVectorRanker = vectorRankerCheck.isSelected
@@ -150,6 +159,7 @@ class GeaiSettingsConfigurable : Configurable {
         engineCheck.isSelected = state.useClaudeCodeEngine
         claudePathField.text = state.claudeCliPath.orEmpty()
         claudePathField.emptyText.text = "blank = resolve 'claude' from PATH"
+        graceEnabledCheck.isSelected = state.graceEnabled
         tieredRoutingCheck.isSelected = state.tieredRoutingEnabled
         navigatorModelField.text = state.navigatorModel.orEmpty()
         navigatorModelField.emptyText.text = "cheap model of the same provider, e.g. claude-haiku-4-5 / deepseek-chat (blank = main model)"

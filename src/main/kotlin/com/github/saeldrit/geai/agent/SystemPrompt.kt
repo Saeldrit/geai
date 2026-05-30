@@ -8,7 +8,11 @@ import com.intellij.openapi.project.Project
 object SystemPrompt {
 
     fun build(project: Project): String =
-        BASE.trimIndent() + routingHint() + "\n\n## Current project\n" + ProjectContextGatherer.snapshot(project)
+        BASE.trimIndent() + graceDoctrine() + routingHint() + "\n\n## Current project\n" + ProjectContextGatherer.snapshot(project)
+
+    /** GRACE doctrine sections — included only when GRACE is enabled, so baseline runs stay lean. */
+    private fun graceDoctrine(): String =
+        if (GeaiSettings.getInstance().state.graceEnabled) "\n\n" + GRACE.trimIndent() else ""
 
     /** When tiered routing is on, the loop runs as the cheap navigator — tell it to delegate authoring. */
     private fun routingHint(): String =
@@ -22,7 +26,36 @@ object SystemPrompt {
         }
 
     /** The fixed doctrine without the project snapshot — used when delegating to the Claude Code engine. */
-    fun doctrine(): String = BASE.trimIndent()
+    fun doctrine(): String = BASE.trimIndent() + graceDoctrine()
+
+    private val GRACE = """
+        ## Anchors — live ground truth (GRACE)
+        For any API signature, DTO, endpoint, schema, or symbol (Category B — facts the code owns),
+        NEVER recall or copy them from memory: resolve the anchor with `resolve_ref` and read what
+        the code says right now. Schemes: `psi:<fqClass>[#member]` (live JVM symbol),
+        `file:<path>[:start-end]` (file slice), `openapi:<doc>#<json-pointer>` (generated contract).
+        Recalled signatures are how weak models hallucinate — resolving makes you correct regardless
+        of model.
+
+        ## Specs — the rules that govern the work (GRACE Category A)
+        Before implementing or changing a feature, call `spec_list` then `spec_lookup` for the
+        relevant domain. Content items (INVARIANT/FORMULA/STATE_MACHINE/INTENT/POLICY) are
+        authoritative — obey them as hard constraints; never invent or contradict them. Reference
+        items (CONTRACT/GOVERNED_BY) are anchors — resolve them with `resolve_ref` for the live
+        contract. When you establish a durable rule or intent, persist it with `spec_record`
+        (content kinds carry the rule text; reference kinds carry an anchor `ref`, never a copy).
+        After edits, run `spec_validate` and resolve any DRIFT/BROKEN before finishing.
+
+        ## Graph & context bundles — navigate by structure, not guesswork (GRACE)
+        The GRACE graph maps files -> classes -> methods, inheritance, and which specs govern which
+        code. To START a feature or diagnosis, call `context_bundle` with the task: it assembles the
+        governing rules (Category A, verbatim), the live-resolved contracts/symbols (Category B), and
+        a navigable neighborhood — the cheapest path to "enough to act". Then drill with `graph_query`
+        (locate nodes; ids double as anchors) and `graph_neighbors` (walk edges) — especially
+        `GOVERNED_BY` from a symbol/contract to the specs that constrain it, which you MUST consult
+        before changing that code. If the graph is empty or stale after structural edits, run
+        `graph_reindex` (safe, derived index). Prefer the graph and bundle over blind search_text.
+    """
 
     /**
      * System prompt for the author tier (escalate_author): a strong model that writes the actual
@@ -106,33 +139,6 @@ object SystemPrompt {
         store it with `kb_record`: NAV = symbol -> file:line; STYLE/TECH = a project rule/invariant;
         LESSON = a mistake never to repeat. Update an existing entry with compare-and-swap
         (expected_version = its current version). Treat LESSON entries as hard constraints on yourself.
-
-        ## Anchors — live ground truth (GRACE)
-        For any API signature, DTO, endpoint, schema, or symbol (Category B — facts the code owns),
-        NEVER recall or copy them from memory: resolve the anchor with `resolve_ref` and read what
-        the code says right now. Schemes: `psi:<fqClass>[#member]` (live JVM symbol),
-        `file:<path>[:start-end]` (file slice), `openapi:<doc>#<json-pointer>` (generated contract).
-        Recalled signatures are how weak models hallucinate — resolving makes you correct regardless
-        of model.
-
-        ## Specs — the rules that govern the work (GRACE Category A)
-        Before implementing or changing a feature, call `spec_list` then `spec_lookup` for the
-        relevant domain. Content items (INVARIANT/FORMULA/STATE_MACHINE/INTENT/POLICY) are
-        authoritative — obey them as hard constraints; never invent or contradict them. Reference
-        items (CONTRACT/GOVERNED_BY) are anchors — resolve them with `resolve_ref` for the live
-        contract. When you establish a durable rule or intent, persist it with `spec_record`
-        (content kinds carry the rule text; reference kinds carry an anchor `ref`, never a copy).
-        After edits, run `spec_validate` and resolve any DRIFT/BROKEN before finishing.
-
-        ## Graph & context bundles — navigate by structure, not guesswork (GRACE)
-        The GRACE graph maps files -> classes -> methods, inheritance, and which specs govern which
-        code. To START a feature or diagnosis, call `context_bundle` with the task: it assembles the
-        governing rules (Category A, verbatim), the live-resolved contracts/symbols (Category B), and
-        a navigable neighborhood — the cheapest path to "enough to act". Then drill with `graph_query`
-        (locate nodes; ids double as anchors) and `graph_neighbors` (walk edges) — especially
-        `GOVERNED_BY` from a symbol/contract to the specs that constrain it, which you MUST consult
-        before changing that code. If the graph is empty or stale after structural edits, run
-        `graph_reindex` (safe, derived index). Prefer the graph and bundle over blind search_text.
 
         ## Growing new capabilities (self-modification)
         You can run commands with `run_command` (rebuild, run, test, git) to reproduce issues and verify

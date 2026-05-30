@@ -32,30 +32,17 @@ import com.github.saeldrit.geai.tools.selfmod.SelfInfoTool
 import com.github.saeldrit.geai.tools.selfmod.SelfPatchTool
 import com.github.saeldrit.geai.tools.interaction.AskUserTool
 import com.github.saeldrit.geai.tools.system.RunCommandTool
+import com.github.saeldrit.geai.settings.GeaiSettings
 
 /** Central catalog of tools advertised to the model. */
 object GeaiToolset {
 
-    fun all(): List<AgentTool> = listOf(
+    /** Always-on core: knowledge axes, interaction, navigation, editing, debugging, system. */
+    private val CORE: List<AgentTool> = listOf(
         // Knowledge axes (consult first — saves context)
         KbLookupTool,
         KbRecordTool,
         KbForgetTool,
-        // GRACE anchors — resolve Category-B facts to live ground truth
-        ResolveRefTool,
-        // GRACE specs — Category-A intent/rules + drift validation
-        SpecListTool,
-        SpecLookupTool,
-        SpecRecordTool,
-        SpecValidateTool,
-        // GRACE graph — navigable structure + governance edges
-        GraphQueryTool,
-        GraphNeighborsTool,
-        GraphReindexTool,
-        // GRACE context bundle — minimal precise context assembled from the graph
-        ContextBundleTool,
-        // GRACE tiered routing — delegate code authoring to the strong tier
-        EscalateAuthorTool,
         // User interaction (clarifying questions, confirmations)
         AskUserTool,
         // Navigation & reading
@@ -81,6 +68,23 @@ object GeaiToolset {
         SelfInfoTool,
         SelfPatchTool,
     )
+
+    /** GRACE layer: anchors, specs, graph, context bundle, tiered routing. Gated by [graceEnabled]. */
+    private val GRACE: List<AgentTool> = listOf(
+        ResolveRefTool,
+        SpecListTool,
+        SpecLookupTool,
+        SpecRecordTool,
+        SpecValidateTool,
+        GraphQueryTool,
+        GraphNeighborsTool,
+        GraphReindexTool,
+        ContextBundleTool,
+        EscalateAuthorTool,
+    )
+
+    fun all(): List<AgentTool> =
+        if (GeaiSettings.getInstance().state.graceEnabled) GRACE + CORE else CORE
 
     fun registry(): ToolRegistry = ToolRegistry(all())
 }
