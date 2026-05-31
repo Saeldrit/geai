@@ -88,7 +88,12 @@ class AgentLoop(
                     return
                 }
 
-                val outgoing = ContextCompressor.compress(session.messages, settings.maxContextTokens, settings.maxTokens)
+                val outgoing = ContextCompressor.compress(
+                    session.messages,
+                    settings.maxContextTokens,
+                    settings.maxTokens,
+                    systemPrompt.length,
+                )
                 val request = ChatRequest(
                     model = settings.loopModel(),
                     system = systemPrompt,

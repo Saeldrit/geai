@@ -20,8 +20,13 @@ object ContextCompressor {
     private const val TRUNCATED_HEAD = 400
     private const val MIN_BUDGET = 20_000
 
-    fun compress(messages: List<ChatMessage>, contextWindowTokens: Int, outputReserveTokens: Int): List<ChatMessage> {
-        val budget = charBudget(contextWindowTokens, outputReserveTokens)
+    fun compress(
+        messages: List<ChatMessage>,
+        contextWindowTokens: Int,
+        outputReserveTokens: Int,
+        systemPromptChars: Int = 0,
+    ): List<ChatMessage> {
+        val budget = charBudget(contextWindowTokens, outputReserveTokens, systemPromptChars)
         if (estimateChars(messages) <= budget) return messages
 
         val working = messages.toMutableList()
@@ -33,6 +38,10 @@ object ContextCompressor {
 
         // Pass 2: still over — trim old assistant/user text, but never the original task at index 0.
         compactRange(working, protectedFrom, budget) { it.role == Role.ASSISTANT || it.role == Role.USER }
+        if (estimateChars(working) <= budget) return working
+
+        // Pass 3: emergency — even recent messages are too large, truncate them (but never index 0).
+        compactRange(working, working.size, budget) { true }
         return working
     }
 
@@ -69,9 +78,10 @@ object ContextCompressor {
         is ContentBlock.ToolUse -> block
     }
 
-    private fun charBudget(contextWindowTokens: Int, outputReserveTokens: Int): Int {
+    private fun charBudget(contextWindowTokens: Int, outputReserveTokens: Int, systemPromptChars: Int = 0): Int {
         val usableTokens = (contextWindowTokens - outputReserveTokens).coerceAtLeast(0)
-        return (usableTokens * CHARS_PER_TOKEN * SAFETY).toInt().coerceAtLeast(MIN_BUDGET)
+        val totalBudget = (usableTokens * CHARS_PER_TOKEN * SAFETY).toInt().coerceAtLeast(MIN_BUDGET)
+        return (totalBudget - systemPromptChars).coerceAtLeast(MIN_BUDGET)
     }
 
     private fun estimateChars(messages: List<ChatMessage>): Int =
