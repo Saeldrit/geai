@@ -66,6 +66,7 @@ class AgentLoop(
         try {
             var iteration = 0
             var turnUsage = TokenUsage.ZERO
+            var lastToolSignature: String? = null
             while (true) {
                 if (indicator.isCanceled) {
                     listener.onEvent(AgentEvent.Cancelled())
@@ -104,6 +105,18 @@ class AgentLoop(
                     listener.onEvent(AgentEvent.Done(session.totalUsage))
                     return
                 }
+
+                // Loop guard: if the model asks for the EXACT same tool call(s) as the previous step,
+                // it is stuck (a broken tool round-trip or a confused model). Abort immediately rather
+                // than burn the full iteration budget on identical paid requests.
+                val signature = toolUses.joinToString("|") { "${it.name}(${it.inputJson})" }
+                if (signature == lastToolSignature) {
+                    listener.onEvent(AgentEvent.Error("Stopped: the model repeated the identical tool call(s) — likely stuck in a loop. Aborted to avoid wasting tokens."))
+                    listener.onEvent(AgentEvent.Info(UsageFormat.summary(settings.loopModel(), turnUsage, session.totalUsage, settings.modelPrices)))
+                    listener.onEvent(AgentEvent.Done(session.totalUsage))
+                    return
+                }
+                lastToolSignature = signature
 
                 // Every tool_use MUST get a matching tool_result, even on cancellation — otherwise the
                 // persisted transcript is invalid and a resumed session is rejected by the provider.

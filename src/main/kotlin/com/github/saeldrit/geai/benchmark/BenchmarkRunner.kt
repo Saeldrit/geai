@@ -5,6 +5,8 @@ import com.github.saeldrit.geai.agent.AgentListener
 import com.github.saeldrit.geai.agent.AgentLoop
 import com.github.saeldrit.geai.agent.AgentSession
 import com.github.saeldrit.geai.cost.Pricing
+import com.github.saeldrit.geai.graph.GeaiGraphStore
+import com.github.saeldrit.geai.graph.GraphIndexer
 import com.github.saeldrit.geai.llm.TokenUsage
 import com.github.saeldrit.geai.settings.GeaiSettings
 import com.github.saeldrit.geai.settings.loopModel
@@ -26,6 +28,9 @@ import java.nio.file.Paths
  */
 object BenchmarkRunner {
 
+    /** Hard ceiling on agent iterations per benchmark run — a backstop against runaway API cost. */
+    private const val BENCH_MAX_ITERATIONS = 12
+
     data class Task(val id: String, val prompt: String)
     data class Config(val name: String, val graceEnabled: Boolean)
 
@@ -41,19 +46,30 @@ object BenchmarkRunner {
         val settings = GeaiSettings.getInstance().state
         val savedGrace = settings.graceEnabled
         val savedAutoEdit = settings.autoApproveEditTools
-        // Run unattended: no modal approval dialogs mid-benchmark. Restored in finally.
+        val savedIterations = settings.maxAgentIterations
+        // Run unattended: no modal approval dialogs mid-benchmark. Hard-cap iterations so a runaway
+        // loop can never burn the full budget here. Both restored in finally.
         settings.autoApproveEditTools = true
+        settings.maxAgentIterations = settings.maxAgentIterations.coerceAtMost(BENCH_MAX_ITERATIONS)
         val results = ArrayList<RunResult>()
         try {
             for (task in tasks) {
                 for (cfg in configs) {
                     settings.graceEnabled = cfg.graceEnabled
+                    // Auto-reindex before grace runs so context_bundle has a populated graph
+                    if (cfg.graceEnabled) {
+                        runCatching {
+                            val graph = GraphIndexer.reindex(project)
+                            GeaiGraphStore.getInstance(project).replaceAll(graph)
+                        }
+                    }
                     results.add(runOne(project, task, cfg, settings.loopModel(), settings.modelPrices, indicator))
                 }
             }
         } finally {
             settings.graceEnabled = savedGrace
             settings.autoApproveEditTools = savedAutoEdit
+            settings.maxAgentIterations = savedIterations
         }
         return BenchmarkReport(results, stampMs)
     }

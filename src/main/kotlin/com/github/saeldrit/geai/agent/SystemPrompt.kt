@@ -55,6 +55,13 @@ object SystemPrompt {
         `GOVERNED_BY` from a symbol/contract to the specs that constrain it, which you MUST consult
         before changing that code. If the graph is empty or stale after structural edits, run
         `graph_reindex` (safe, derived index). Prefer the graph and bundle over blind search_text.
+
+        ## Pre-injected context bundle (CRITICAL)
+        When the system prompt contains a `<context_bundle>` section, it means the engine has already
+        gathered the relevant context for your task. **DO NOT call `read_file`, `search_text`, or
+        `find_files` to re-discover what is already in the bundle.** Work directly from the atoms
+        provided. If the bundle is insufficient, use `resolve_ref` or `graph_query` to fetch additional
+        anchors — but never fall back to blind file reading. The bundle is your starting point; trust it.
     """
 
     /**
