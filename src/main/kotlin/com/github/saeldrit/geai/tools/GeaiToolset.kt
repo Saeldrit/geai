@@ -14,16 +14,8 @@ import com.github.saeldrit.geai.tools.fs.ListFilesTool
 import com.github.saeldrit.geai.tools.fs.ReadFileTool
 import com.github.saeldrit.geai.tools.fs.SearchTextTool
 import com.github.saeldrit.geai.tools.fs.WriteFileTool
-import com.github.saeldrit.geai.tools.grace.ContextBundleTool
-import com.github.saeldrit.geai.tools.grace.EscalateAuthorTool
-import com.github.saeldrit.geai.tools.grace.GraphNeighborsTool
 import com.github.saeldrit.geai.tools.grace.GraphQueryTool
-import com.github.saeldrit.geai.tools.grace.GraphReindexTool
 import com.github.saeldrit.geai.tools.grace.ResolveRefTool
-import com.github.saeldrit.geai.tools.grace.SpecListTool
-import com.github.saeldrit.geai.tools.grace.SpecLookupTool
-import com.github.saeldrit.geai.tools.grace.SpecRecordTool
-import com.github.saeldrit.geai.tools.grace.SpecValidateTool
 import com.github.saeldrit.geai.tools.knowledge.KbForgetTool
 import com.github.saeldrit.geai.tools.knowledge.KbLookupTool
 import com.github.saeldrit.geai.tools.knowledge.KbRecordTool
@@ -69,18 +61,17 @@ object GeaiToolset {
         SelfPatchTool,
     )
 
-    /** GRACE layer: anchors, specs, graph, context bundle, tiered routing. Gated by [graceEnabled]. */
+    /**
+     * Lean GRACE surface advertised to the model. Only the two tools it actually needs at runtime:
+     * resolve_ref (live Category-B truth) and graph_query (dig deeper if the injected bundle is thin).
+     * The heavier tools (spec_*, graph_neighbors/reindex, context_bundle, escalate_author) are PARKED
+     * — their classes remain, but they are not advertised: the bundle is auto-injected, the graph
+     * auto-reindexes, and every advertised schema is re-sent each turn (pure cost on non-caching
+     * providers). Re-add here if interactive use is needed again.
+     */
     private val GRACE: List<AgentTool> = listOf(
         ResolveRefTool,
-        SpecListTool,
-        SpecLookupTool,
-        SpecRecordTool,
-        SpecValidateTool,
         GraphQueryTool,
-        GraphNeighborsTool,
-        GraphReindexTool,
-        ContextBundleTool,
-        EscalateAuthorTool,
     )
 
     fun all(): List<AgentTool> =

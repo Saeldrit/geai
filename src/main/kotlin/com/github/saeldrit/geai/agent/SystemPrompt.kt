@@ -29,39 +29,13 @@ object SystemPrompt {
     fun doctrine(): String = BASE.trimIndent() + graceDoctrine()
 
     private val GRACE = """
-        ## Anchors — live ground truth (GRACE)
-        For any API signature, DTO, endpoint, schema, or symbol (Category B — facts the code owns),
-        NEVER recall or copy them from memory: resolve the anchor with `resolve_ref` and read what
-        the code says right now. Schemes: `psi:<fqClass>[#member]` (live JVM symbol),
-        `file:<path>[:start-end]` (file slice), `openapi:<doc>#<json-pointer>` (generated contract).
-        Recalled signatures are how weak models hallucinate — resolving makes you correct regardless
-        of model.
-
-        ## Specs — the rules that govern the work (GRACE Category A)
-        Before implementing or changing a feature, call `spec_list` then `spec_lookup` for the
-        relevant domain. Content items (INVARIANT/FORMULA/STATE_MACHINE/INTENT/POLICY) are
-        authoritative — obey them as hard constraints; never invent or contradict them. Reference
-        items (CONTRACT/GOVERNED_BY) are anchors — resolve them with `resolve_ref` for the live
-        contract. When you establish a durable rule or intent, persist it with `spec_record`
-        (content kinds carry the rule text; reference kinds carry an anchor `ref`, never a copy).
-        After edits, run `spec_validate` and resolve any DRIFT/BROKEN before finishing.
-
-        ## Graph & context bundles — navigate by structure, not guesswork (GRACE)
-        The GRACE graph maps files -> classes -> methods, inheritance, and which specs govern which
-        code. To START a feature or diagnosis, call `context_bundle` with the task: it assembles the
-        governing rules (Category A, verbatim), the live-resolved contracts/symbols (Category B), and
-        a navigable neighborhood — the cheapest path to "enough to act". Then drill with `graph_query`
-        (locate nodes; ids double as anchors) and `graph_neighbors` (walk edges) — especially
-        `GOVERNED_BY` from a symbol/contract to the specs that constrain it, which you MUST consult
-        before changing that code. If the graph is empty or stale after structural edits, run
-        `graph_reindex` (safe, derived index). Prefer the graph and bundle over blind search_text.
-
-        ## Pre-injected context bundle (CRITICAL)
-        When the system prompt contains a `<context_bundle>` section, it means the engine has already
-        gathered the relevant context for your task. **DO NOT call `read_file`, `search_text`, or
-        `find_files` to re-discover what is already in the bundle.** Work directly from the atoms
-        provided. If the bundle is insufficient, use `resolve_ref` or `graph_query` to fetch additional
-        anchors — but never fall back to blind file reading. The bundle is your starting point; trust it.
+        ## Context bundle (GRACE) — start here, don't re-discover
+        The engine has pre-gathered the relevant context into the `<context_bundle>` section of this
+        prompt (whole XML atoms: rules, live symbols/contracts, neighbourhood). Work FROM it. Do NOT
+        call `read_file`/`search_text`/`find_files` to re-find what the bundle already gives.
+        - Need a live signature/DTO/endpoint not in the bundle? Resolve its anchor with `resolve_ref`
+          (`psi:<fqClass>[#member]`, `file:<path>[:a-b]`, `openapi:<doc>#<ptr>`) — never recall it.
+        - Need to locate more nodes? Use `graph_query`. Only fall back to file reading as a last resort.
     """
 
     /**
