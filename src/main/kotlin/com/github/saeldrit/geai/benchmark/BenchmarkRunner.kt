@@ -40,6 +40,9 @@ object BenchmarkRunner {
     ): BenchmarkReport {
         val settings = GeaiSettings.getInstance().state
         val savedGrace = settings.graceEnabled
+        val savedAutoEdit = settings.autoApproveEditTools
+        // Run unattended: no modal approval dialogs mid-benchmark. Restored in finally.
+        settings.autoApproveEditTools = true
         val results = ArrayList<RunResult>()
         try {
             for (task in tasks) {
@@ -50,6 +53,7 @@ object BenchmarkRunner {
             }
         } finally {
             settings.graceEnabled = savedGrace
+            settings.autoApproveEditTools = savedAutoEdit
         }
         return BenchmarkReport(results, stampMs)
     }

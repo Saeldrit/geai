@@ -14,6 +14,15 @@
 
     <resource-bundle>messages.GeaiBundle</resource-bundle>
 
+    <actions>
+        <action id="geai.runBenchmark"
+                class="com.github.saeldrit.geai.benchmark.GeaiRunBenchmarkAction"
+                text="Geai: Run A/B Benchmark"
+                description="Run the same task under baseline vs GRACE and write a token/cost comparison report">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+    </actions>
+
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow
             factoryClass="com.github.saeldrit.geai.toolWindow.GeaiToolWindowFactory"

@@ -20,7 +20,8 @@ object LlmClientFactory {
         val baseUrl = state.effectiveBaseUrl()
         return when (provider) {
             LlmProvider.ANTHROPIC -> AnthropicClient(baseUrl, apiKey)
-            LlmProvider.OPENAI_COMPATIBLE -> OpenAiCompatibleClient(baseUrl, apiKey)
+            // OpenRouter speaks the OpenAI Chat-Completions dialect — same client, different base URL.
+            LlmProvider.OPENAI_COMPATIBLE, LlmProvider.OPENROUTER -> OpenAiCompatibleClient(baseUrl, apiKey)
         }
     }
 

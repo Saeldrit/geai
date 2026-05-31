@@ -39,4 +39,17 @@ enum class LlmProvider(
             "gpt-4o-mini",
         ),
     ),
+    OPENROUTER(
+        displayName = "OpenRouter (one key, many models)",
+        defaultBaseUrl = "https://openrouter.ai/api/v1",
+        defaultModel = "anthropic/claude-sonnet-4",
+        suggestedModels = listOf(
+            "anthropic/claude-sonnet-4",
+            "anthropic/claude-3.5-sonnet",
+            "deepseek/deepseek-chat",
+            "qwen/qwen-2.5-coder-32b-instruct",
+            "google/gemini-2.0-flash-001",
+            "openai/gpt-4o-mini",
+        ),
+    ),
 }
