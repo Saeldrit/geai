@@ -18,7 +18,9 @@ import kotlin.io.path.relativeTo
  * because it makes real LLM calls. Writes the comparison Markdown to `benchmark/results/`.
  *
  * Run:  GEAI_BENCH_KEY=sk-... ./gradlew test --tests "*BenchmarkRunTest*"
- * Opt:  GEAI_BENCH_MODEL (default claude-sonnet-4-6), GEAI_BENCH_PRICES (price table lines).
+ * Env:  GEAI_BENCH_PROVIDER (ANTHROPIC | OPENAI_COMPATIBLE | OPENROUTER, default ANTHROPIC),
+ *       GEAI_BENCH_MODEL (default = provider default; e.g. qwen/qwen3-max for OpenRouter),
+ *       GEAI_BENCH_BASEURL (optional override), GEAI_BENCH_PRICES (price table lines, optional).
  */
 class BenchmarkRunTest : HeavyPlatformTestCase() {
 
@@ -50,13 +52,18 @@ class BenchmarkRunTest : HeavyPlatformTestCase() {
 
     private fun configure(apiKey: String) {
         val state = GeaiSettings.getInstance().state
-        state.provider = LlmProvider.ANTHROPIC
-        state.model = System.getenv("GEAI_BENCH_MODEL") ?: "claude-sonnet-4-6"
+        val provider = System.getenv("GEAI_BENCH_PROVIDER")
+            ?.let { runCatching { LlmProvider.valueOf(it.trim().uppercase()) }.getOrNull() }
+            ?: LlmProvider.ANTHROPIC
+        state.provider = provider
+        state.model = System.getenv("GEAI_BENCH_MODEL")?.takeIf { it.isNotBlank() } ?: provider.defaultModel
+        state.baseUrl = System.getenv("GEAI_BENCH_BASEURL")?.takeIf { it.isNotBlank() }
         state.autoApproveEditTools = true
         state.autoApproveReadTools = true
         state.useClaudeCodeEngine = false
-        state.modelPrices = System.getenv("GEAI_BENCH_PRICES") ?: "claude-sonnet-4-6=3,15,0.3,3.75"
-        GeaiSecrets.setApiKey(LlmProvider.ANTHROPIC, apiKey)
+        // No default price table: a wrong (e.g. Claude) price on a qwen run would lie. Set GEAI_BENCH_PRICES explicitly.
+        state.modelPrices = System.getenv("GEAI_BENCH_PRICES")?.takeIf { it.isNotBlank() }
+        GeaiSecrets.setApiKey(provider, apiKey)
     }
 
     private fun copySampleIntoProject() {
