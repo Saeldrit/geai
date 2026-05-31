@@ -1,5 +1,6 @@
 package com.github.saeldrit.geai.agent
 
+import com.github.saeldrit.geai.bundle.ContextBundler
 import com.github.saeldrit.geai.context.ContextCompressor
 import com.github.saeldrit.geai.cost.UsageFormat
 import com.github.saeldrit.geai.llm.ChatMessage
@@ -43,7 +44,23 @@ class AgentLoop(
         }
 
         val settings = GeaiSettings.getInstance().state
-        val systemPrompt = SystemPrompt.build(project)
+        val baseSystemPrompt = SystemPrompt.build(project)
+        val systemPrompt = if (settings.graceEnabled) {
+            // Auto-inject context bundle: engine calls context_bundle before first LLM call,
+            // prepends atoms to system prompt. Model sees ready context immediately, cannot ignore.
+            val bundle = try {
+                ContextBundler.build(project, userText, emptyList(), maxNodes = 24, hops = 2)
+            } catch (e: Exception) {
+                null
+            }
+            if (bundle != null && bundle.text.isNotBlank()) {
+                "$baseSystemPrompt\n\n<context_bundle>\n${bundle.text}\n</context_bundle>"
+            } else {
+                baseSystemPrompt
+            }
+        } else {
+            baseSystemPrompt
+        }
         val maxIterations = settings.maxAgentIterations.coerceAtLeast(1)
 
         try {
