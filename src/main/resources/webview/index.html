@@ -141,6 +141,7 @@
     <button class="iconbtn" id="btnSteps" title="Только шаги — скрыть рассуждения">≡</button>
     <button class="iconbtn" id="btnNew" title="Новая сессия">＋</button>
     <button class="iconbtn" id="btnHistory" title="История сессий">🕘</button>
+    <button class="iconbtn" id="btnBench" title="A/B бенчмарк: baseline vs GRACE">⚖</button>
     <button class="iconbtn" id="btnSettings" title="Настройки">⚙</button>
   </div>
 
@@ -348,6 +349,7 @@
   el('btnNew').onclick=function(){ send2k({action:'newSession'}); };
   el('btnSettings').onclick=function(){ send2k({action:'openSettings'}); };
   el('btnHistory').onclick=function(){ send2k({action:'history'}); };
+  el('btnBench').onclick=function(){ send2k({action:'benchmark'}); };
   el('btnSteps').onclick=function(){ var on=chat.classList.toggle('steps-only'); this.classList.toggle('active',on); };
   chat.addEventListener('click', function(e){
     var btn = e.target.closest ? e.target.closest('.copybtn') : null; if(!btn) return;

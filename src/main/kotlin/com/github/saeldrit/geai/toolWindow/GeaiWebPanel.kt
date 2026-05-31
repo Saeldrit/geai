@@ -97,6 +97,7 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
             }
 
             "openSettings" -> ShowSettingsUtil.getInstance().showSettingsDialog(project, GeaiSettingsConfigurable::class.java)
+            "benchmark" -> com.github.saeldrit.geai.benchmark.BenchmarkLauncher.launch(project)
             "history" -> exec("window.geaiHistory(${JsonSupport.gson.toJson(historyList())});")
             "loadSession" -> obj.get("id")?.asString?.let { loadSession(it) }
             "copy" -> obj.get("text")?.asString?.let { CopyPasteManager.getInstance().setContents(StringSelection(it)) }

@@ -26,7 +26,10 @@ class GeaiSettingsConfigurable : Configurable {
     private val claudePathField = JBTextField()
 
     private val providerCombo = ComboBox(DefaultComboBoxModel(LlmProvider.entries.toTypedArray()))
-    private val modelCombo = ComboBox<String>().apply { isEditable = true }
+    private val modelCombo = ComboBox<String>().apply {
+        isEditable = true
+        toolTipText = "Editable — pick a suggestion or type any model id (e.g. an OpenRouter model like anthropic/claude-sonnet-4)"
+    }
     private val baseUrlField = JBTextField()
     private val apiKeyField = JBPasswordField()
     private val maxTokensSpinner = JSpinner(SpinnerNumberModel(8192, 256, 200_000, 256))
