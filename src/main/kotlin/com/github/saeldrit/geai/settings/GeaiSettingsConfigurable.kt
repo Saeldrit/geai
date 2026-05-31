@@ -43,6 +43,8 @@ class GeaiSettingsConfigurable : Configurable {
     private val navigatorModelField = JBTextField()
     private val vectorRankerCheck =
         JBCheckBox("GRACE: prefer the semantic (vector) ranker for context bundles when available")
+    private val telemetryCheck =
+        JBCheckBox("GRACE telemetry (dev): log per-bundle atom pulled/dropped/sizes to .geai/telemetry")
     private val modelPricesArea = JBTextArea(4, 40)
 
     override fun getDisplayName(): String = GeaiBundle.message("geai.settings.title")
@@ -77,6 +79,7 @@ class GeaiSettingsConfigurable : Configurable {
             .addComponent(tieredRoutingCheck)
             .addLabeledComponent("Navigator model:", navigatorModelField)
             .addComponent(vectorRankerCheck)
+            .addComponent(telemetryCheck)
             .addLabeledComponent("Model prices ($/1M):", modelPricesArea)
             .addComponentFillVertically(JPanel(), 0)
             .panel
@@ -102,6 +105,7 @@ class GeaiSettingsConfigurable : Configurable {
         val grace = !claudeEngine && graceEnabledCheck.isSelected
         tieredRoutingCheck.isEnabled = grace
         vectorRankerCheck.isEnabled = grace
+        telemetryCheck.isEnabled = grace
         navigatorModelField.isEnabled = grace && tieredRoutingCheck.isSelected
     }
 
@@ -123,6 +127,7 @@ class GeaiSettingsConfigurable : Configurable {
             tieredRoutingCheck.isSelected != state.tieredRoutingEnabled ||
             navigatorModelField.text != state.navigatorModel.orEmpty() ||
             vectorRankerCheck.isSelected != state.graceVectorRanker ||
+            telemetryCheck.isSelected != state.graceTelemetry ||
             modelPricesArea.text != state.modelPrices.orEmpty() ||
             String(apiKeyField.password) != storedKey
     }
@@ -144,6 +149,7 @@ class GeaiSettingsConfigurable : Configurable {
         state.tieredRoutingEnabled = tieredRoutingCheck.isSelected
         state.navigatorModel = navigatorModelField.text.trim().ifBlank { null }
         state.graceVectorRanker = vectorRankerCheck.isSelected
+        state.graceTelemetry = telemetryCheck.isSelected
         state.modelPrices = modelPricesArea.text.trim().ifBlank { null }
         GeaiSecrets.setApiKey(provider, String(apiKeyField.password).trim().ifBlank { null })
     }
@@ -169,6 +175,7 @@ class GeaiSettingsConfigurable : Configurable {
         navigatorModelField.text = state.navigatorModel.orEmpty()
         navigatorModelField.emptyText.text = "cheap model of the same provider, e.g. claude-haiku-4-5 / deepseek-chat (blank = main model)"
         vectorRankerCheck.isSelected = state.graceVectorRanker
+        telemetryCheck.isSelected = state.graceTelemetry
         modelPricesArea.text = state.modelPrices.orEmpty()
         modelPricesArea.emptyText.text = "one per line: model=input,output,cacheRead,cacheWrite ($/1M) — e.g. claude-opus-4-8=15,75,1.5,18.75"
         apiKeyField.text = GeaiSecrets.apiKey(state.provider).orEmpty()

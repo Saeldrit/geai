@@ -34,7 +34,7 @@ object ContextBundleTool : AgentTool {
         val hops = args.int("hops", 2).coerceIn(1, 5)
 
         val bundle = ContextBundler.build(context.project, query, seedIds, maxNodes, hops)
-        val footer = "\n\n(${bundle.nodeIds.size} nodes, ${bundle.resolved} anchors resolved, ${bundle.rules} governing spec(s))"
+        val footer = "\n\n(${bundle.nodeIds.size} atoms, ${bundle.resolved} resolved, ${bundle.rules} rules, ${bundle.dropped} dropped to fit budget)"
         return ToolResult.ok(bundle.text + footer)
     }
 }

@@ -35,6 +35,9 @@ class GeaiSettingsState : BaseState() {
     /** Master switch for the GRACE toolset + doctrine (anchors/specs/graph/bundle/routing). Off = lean baseline. */
     var graceEnabled by property(true)
 
+    /** Dev-only: log per-bundle atom telemetry (pulled/dropped/sizes) to .geai/telemetry. Off in prod. */
+    var graceTelemetry by property(false)
+
     /** GRACE: prefer the semantic (vector) ranker for context bundles when available; else deterministic. */
     var graceVectorRanker by property(false)
 
