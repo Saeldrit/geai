@@ -3,6 +3,8 @@ package com.github.saeldrit.geai.agent
 import com.github.saeldrit.geai.bundle.ContextBundler
 import com.github.saeldrit.geai.context.ContextCompressor
 import com.github.saeldrit.geai.cost.UsageFormat
+import com.github.saeldrit.geai.graph.GeaiGraphStore
+import com.github.saeldrit.geai.graph.GraphIndexer
 import com.github.saeldrit.geai.llm.ChatMessage
 import com.github.saeldrit.geai.llm.ChatRequest
 import com.github.saeldrit.geai.llm.ContentBlock
@@ -46,10 +48,17 @@ class AgentLoop(
         val settings = GeaiSettings.getInstance().state
         val baseSystemPrompt = SystemPrompt.build(project)
         val systemPrompt = if (settings.graceEnabled) {
+            // The bundle is useless on an empty graph (→ "Graph is empty" → the model greps files).
+            // Build it once here so the auto-injected context is actually populated.
+            if (GeaiGraphStore.getInstance(project).graph().nodes.isEmpty()) {
+                runCatching { GeaiGraphStore.getInstance(project).replaceAll(GraphIndexer.reindex(project)) }
+            }
             // Auto-inject context bundle: engine calls context_bundle before first LLM call,
             // prepends atoms to system prompt. Model sees ready context immediately, cannot ignore.
+            // Kept COMPACT: this prefix is re-sent every iteration, and without prompt caching
+            // (e.g. qwen via OpenRouter) a fat bundle is paid N times. Small budget bounds that.
             val bundle = try {
-                ContextBundler.build(project, userText, emptyList(), maxNodes = 24, hops = 2)
+                ContextBundler.build(project, userText, emptyList(), maxNodes = 10, hops = 2, charBudget = 4_000)
             } catch (e: Exception) {
                 null
             }

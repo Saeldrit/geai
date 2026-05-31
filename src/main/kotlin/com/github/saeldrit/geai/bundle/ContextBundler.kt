@@ -31,7 +31,7 @@ object ContextBundler {
         val dropped: Int,
     )
 
-    fun build(project: Project, query: String, seedIds: List<String>, maxNodes: Int, hops: Int): Bundle {
+    fun build(project: Project, query: String, seedIds: List<String>, maxNodes: Int, hops: Int, charBudget: Int = CHAR_BUDGET): Bundle {
         val store = GeaiGraphStore.getInstance(project)
         val graph = store.graph()
         if (graph.nodes.isEmpty()) {
@@ -89,14 +89,14 @@ object ContextBundler {
         val ordered = ruleAtoms + resolvedAtoms + navAtoms
         var used = 0
         val decided = ordered.map { atom ->
-            val include = atom.protected || used + atom.chars <= CHAR_BUDGET
+            val include = atom.protected || used + atom.chars <= charBudget
             if (include) used += atom.chars
             atom to include
         }
         val included = decided.filter { it.second }.map { it.first }
         val dropped = decided.count { !it.second }
 
-        GraceTelemetry.getInstance(project).recordBundle(query, decided, CHAR_BUDGET, used, System.currentTimeMillis())
+        GraceTelemetry.getInstance(project).recordBundle(query, decided, charBudget, used, System.currentTimeMillis())
 
         val text = buildString {
             appendLine("<bundle query=\"${query.replace("\"", "'")}\" atoms=\"${included.size}\" dropped=\"$dropped\">")
