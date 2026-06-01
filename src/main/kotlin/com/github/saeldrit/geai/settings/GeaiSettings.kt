@@ -26,11 +26,29 @@ class GeaiSettingsState : BaseState() {
     var provider by enum(LlmProvider.ANTHROPIC)
     var model by string()
     var baseUrl by string()
+    // Output cap per reply. Internal default — not surfaced in the UI; tunable via geai.xml if needed.
     var maxTokens by property(8192)
-    var maxAgentIterations by property(32)
+
+    /**
+     * Hard cost ceiling for a single turn (billed input + output, incl. delegated sub-agents): when
+     * reached the loop stops with an "ask me to continue" message instead of burning more. The real
+     * cost guard — the iteration ceiling is just a safety backstop (see LoopProfile). Internal default,
+     * not surfaced in the UI; 0 = no ceiling. (The user-facing loop's iteration cap is a constant, so
+     * nobody has to tune a number for the agent to "just work".)
+     */
+    var maxTurnTokens by property(250_000)
 
     /** Model context window (tokens) used to size transcript compaction. Default ~200k (Claude). */
     var maxContextTokens by property(200_000)
+
+    /**
+     * Active working window the transcript is compacted to (see [transcriptWindow]) — applies to ALL
+     * providers. The loop resends the whole transcript every iteration, so it is kept near this budget
+     * rather than the full [maxContextTokens] window, and deliberately BELOW the model ceiling so
+     * compaction runs during a normal session, not only at the limit. Raise for more retained context,
+     * lower to spend less.
+     */
+    var maxTranscriptTokens by property(48_000)
 
     /** Master switch for the GRACE toolset + doctrine (anchors/specs/graph/bundle/routing). Off = lean baseline. */
     var graceEnabled by property(true)
@@ -83,6 +101,16 @@ fun GeaiSettingsState.effectiveModel(): String =
 
 fun GeaiSettingsState.effectiveBaseUrl(): String =
     baseUrl?.takeIf { it.isNotBlank() }?.trimEnd('/') ?: provider.defaultBaseUrl
+
+/**
+ * Token budget the transcript is compacted to — the active working window, applied for ALL providers.
+ * The growing transcript is re-sent as fresh input on every iteration, so it is compacted to
+ * [GeaiSettingsState.maxTranscriptTokens] (never above the model's actual [GeaiSettingsState.maxContextTokens]
+ * window). Prompt caching only cheapens the STABLE prefix (system + tools) — it is NOT attached to the
+ * transcript and gives no discount here, so there is no provider special-case.
+ */
+fun GeaiSettingsState.transcriptWindow(): Int =
+    minOf(maxContextTokens, maxTranscriptTokens)
 
 /** Model the agent loop runs on: the cheap navigator when tiered, otherwise the main model. */
 fun GeaiSettingsState.loopModel(): String =

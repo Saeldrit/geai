@@ -86,6 +86,16 @@ class ClaudeCodeEngine(private val project: Project) {
             "--output-format", "stream-json",
             "--verbose",
             "--mcp-config", configFile.toString(),
+            // Scope the spawned CLI to ONLY geai's MCP server. Without this the CLI merges in every
+            // MCP server from the user's own config (computer-use, chrome, gmail, agentmemory, …),
+            // and each advertises its full tool catalog on every turn — tens of thousands of tokens
+            // of schemas the embedded agent never uses. geai exposes its own IDE-backed toolset here.
+            "--strict-mcp-config",
+            // Load only project/local settings, NOT the user's global ~/.claude (rules, CLAUDE.md).
+            // Those global rules are large (re-sent every turn) and written for Claude Code's own agent
+            // ecosystem — they misdirect the embedded agent, which already carries its own doctrine via
+            // --append-system-prompt-file. The geai project's committed .claude/settings still apply.
+            "--setting-sources", "project,local",
             "--allowedTools", allowedTools,
             "--permission-mode", "acceptEdits",
             "--append-system-prompt-file", promptFile.toString(),

@@ -1,5 +1,6 @@
 package com.github.saeldrit.geai.tools.fs
 
+import com.github.saeldrit.geai.graph.GraphRefresher
 import com.github.saeldrit.geai.tools.AgentTool
 import com.github.saeldrit.geai.tools.ToolArgs
 import com.github.saeldrit.geai.tools.ToolContext
@@ -43,6 +44,8 @@ object WriteFileTool : AgentTool {
                                 "Cannot create '$path': use a project-relative path with an existing or creatable parent.",
                             )
                         VfsUtil.saveText(file, content)
+                        // Code changed — schedule a debounced graph reindex so GRACE doesn't go stale.
+                        GraphRefresher.getInstance(project).markDirty()
                         ToolResult.ok("Wrote ${content.length} chars to ${FsPaths.relativize(project, file)}")
                     }.getOrElse { ToolResult.error("Write failed: ${it.message}") },
                 )

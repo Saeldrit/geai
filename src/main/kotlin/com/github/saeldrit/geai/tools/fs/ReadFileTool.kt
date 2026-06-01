@@ -22,6 +22,7 @@ object ReadFileTool : AgentTool {
     """.trimIndent()
 
     private const val MAX_BYTES = 2_000_000L
+    private const val MAX_LINES_WITHOUT_RANGE = 400
 
     override fun execute(args: ToolArgs, context: ToolContext): ToolResult {
         val path = args.string("path")
@@ -37,13 +38,24 @@ object ReadFileTool : AgentTool {
             val document = FileDocumentManager.getInstance().getDocument(file)
                 ?: return@compute ToolResult.error("Cannot load file content: $path")
             val lines = document.charsSequence.toString().split("\n")
+            val noRange = startLine == null && endLine == null
             val from = (startLine ?: 1).coerceAtLeast(1)
-            val to = (endLine ?: lines.size).coerceAtMost(lines.size)
+            var to = (endLine ?: lines.size).coerceAtMost(lines.size)
             if (from > to) return@compute ToolResult.error("Invalid range: start_line ($from) > end_line ($to)")
+
+            // A whole-file request on a long file is capped to a head so one read can't flood the
+            // context; an explicit [start_line, end_line] range is always honoured verbatim.
+            val capped = noRange && lines.size > MAX_LINES_WITHOUT_RANGE
+            if (capped) to = MAX_LINES_WITHOUT_RANGE
 
             val body = (from..to).joinToString("\n") { i -> "$i\t${lines[i - 1]}" }
             val header = "// ${FsPaths.relativize(context.project, file)} (lines $from-$to of ${lines.size})"
-            ToolResult.ok("$header\n$body")
+            val note = if (capped) {
+                "\n…[файл обрезан на $MAX_LINES_WITHOUT_RANGE из ${lines.size} строк; запроси конкретный диапазон через start_line/end_line]"
+            } else {
+                ""
+            }
+            ToolResult.ok("$header\n$body$note")
         }
     }
 }

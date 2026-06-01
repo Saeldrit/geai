@@ -5,47 +5,56 @@ import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBPasswordField
+import com.intellij.ui.components.JBTabbedPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.FormBuilder
 import javax.swing.DefaultComboBoxModel
 import javax.swing.JComponent
 import javax.swing.JPanel
-import javax.swing.JSpinner
-import javax.swing.SpinnerNumberModel
 
 /**
- * Settings page under **Settings | Tools | Geai**. The engine toggle gates which fields apply:
- * with the Claude Code engine on, the provider/model/key fields are disabled (Claude Code brings
- * its own login and model). API keys are written to [GeaiSecrets]; everything else to [GeaiSettings].
+ * Settings page under **Settings | Tools | Geai**. Deliberately minimal: the everyday tab ("Model")
+ * holds only what a user must set to get going — engine and model — while optional/expert flags live
+ * under "Advanced". The mechanical loop knobs (iteration ceiling, transcript/turn token budgets) are
+ * NOT exposed at all: they have sound internal defaults so the agent just works without anyone tuning
+ * a number. The UI is dynamic — the engine toggle swaps the Claude-CLI path for the API provider
+ * block, and the navigator model appears only when tiered routing is on. API keys go to [GeaiSecrets].
  */
 class GeaiSettingsConfigurable : Configurable {
 
+    // --- Engine & model (the essentials) ------------------------------------------------------
     private val engineCheck =
         JBCheckBox("Use Claude Code CLI as the engine (your Claude subscription login — no API key needed)")
     private val claudePathField = JBTextField()
 
     private val providerCombo = ComboBox(DefaultComboBoxModel(LlmProvider.entries.toTypedArray()))
-    private val modelCombo = ComboBox<String>().apply { isEditable = true }
+    private val modelCombo = ComboBox<String>().apply {
+        isEditable = true
+        toolTipText = "Editable — pick a suggestion or type any model id (e.g. an OpenRouter model like anthropic/claude-sonnet-4)"
+    }
     private val baseUrlField = JBTextField()
     private val apiKeyField = JBPasswordField()
-    private val maxTokensSpinner = JSpinner(SpinnerNumberModel(8192, 256, 200_000, 256))
-    private val maxIterationsSpinner = JSpinner(SpinnerNumberModel(32, 1, 200, 1))
 
-    private val autoReadCheck = JBCheckBox("Auto-approve read-only tools (read / list / search / navigate)")
-    private val autoEditCheck = JBCheckBox("Auto-approve mutating tools (write / edit / run / self-modify) — ON by default; uncheck to require per-call confirmation")
-    private val sourcePathField = JBTextField()
-
+    // --- Advanced / expert --------------------------------------------------------------------
     private val graceEnabledCheck =
         JBCheckBox("Enable GRACE (anchors / specs / graph / context bundle / tiered routing) — off = lean baseline")
     private val tieredRoutingCheck =
-        JBCheckBox("GRACE tiered routing: navigate on a cheap model, escalate code authoring to the main model (same provider/key)")
+        JBCheckBox("Tiered routing: navigate on a cheap model, escalate code authoring to the main model (same provider/key)")
     private val navigatorModelField = JBTextField()
     private val vectorRankerCheck =
-        JBCheckBox("GRACE: prefer the semantic (vector) ranker for context bundles when available")
+        JBCheckBox("Prefer the semantic (vector) ranker for context bundles when available")
     private val telemetryCheck =
         JBCheckBox("GRACE telemetry (dev): log per-bundle atom pulled/dropped/sizes to .geai/telemetry")
+    private val autoReadCheck = JBCheckBox("Auto-approve read-only tools (read / list / search / navigate)")
+    private val autoEditCheck = JBCheckBox("Auto-approve mutating tools (write / edit / run / self-modify) — ON by default; uncheck to require per-call confirmation")
+    private val sourcePathField = JBTextField()
     private val modelPricesArea = JBTextArea(4, 40)
+
+    // Sub-panels whose visibility is toggled dynamically.
+    private lateinit var cliPanel: JPanel
+    private lateinit var providerPanel: JPanel
+    private lateinit var navigatorPanel: JPanel
 
     override fun getDisplayName(): String = GeaiBundle.message("geai.settings.title")
 
@@ -60,31 +69,46 @@ class GeaiSettingsConfigurable : Configurable {
                 baseUrlField.emptyText.text = provider.defaultBaseUrl
             }
         }
-        val panel = FormBuilder.createFormBuilder()
-            .addComponent(engineCheck)
+
+        cliPanel = FormBuilder.createFormBuilder()
             .addLabeledComponent("Claude CLI path:", claudePathField)
-            .addSeparator()
+            .panel
+        providerPanel = FormBuilder.createFormBuilder()
             .addLabeledComponent("Provider:", providerCombo)
             .addLabeledComponent("Model:", modelCombo)
             .addLabeledComponent("Base URL:", baseUrlField)
             .addLabeledComponent("API key:", apiKeyField)
-            .addLabeledComponent("Max tokens:", maxTokensSpinner)
-            .addLabeledComponent("Max agent iterations:", maxIterationsSpinner)
+            .panel
+        val modelTab = FormBuilder.createFormBuilder()
+            .addComponent(engineCheck)
+            .addComponent(cliPanel)
+            .addComponent(providerPanel)
+            .addComponentFillVertically(JPanel(), 0)
+            .panel
+
+        navigatorPanel = FormBuilder.createFormBuilder()
+            .addLabeledComponent("Navigator model:", navigatorModelField)
+            .panel
+        val advancedTab = FormBuilder.createFormBuilder()
+            .addComponent(graceEnabledCheck)
+            .addComponent(tieredRoutingCheck)
+            .addComponent(navigatorPanel)
+            .addComponent(vectorRankerCheck)
+            .addComponent(telemetryCheck)
             .addSeparator()
             .addComponent(autoReadCheck)
             .addComponent(autoEditCheck)
-            .addLabeledComponent("Geai source path:", sourcePathField)
             .addSeparator()
-            .addComponent(graceEnabledCheck)
-            .addComponent(tieredRoutingCheck)
-            .addLabeledComponent("Navigator model:", navigatorModelField)
-            .addComponent(vectorRankerCheck)
-            .addComponent(telemetryCheck)
+            .addLabeledComponent("Geai source path:", sourcePathField)
             .addLabeledComponent("Model prices ($/1M):", modelPricesArea)
             .addComponentFillVertically(JPanel(), 0)
             .panel
+
+        val tabs = JBTabbedPane()
+        tabs.addTab("Model", modelTab)
+        tabs.addTab("Advanced", advancedTab)
         reset()
-        return panel
+        return tabs
     }
 
     private fun populateModels(provider: LlmProvider) {
@@ -95,17 +119,23 @@ class GeaiSettingsConfigurable : Configurable {
     private fun currentModel(): String =
         ((modelCombo.editor.item as? String) ?: (modelCombo.selectedItem as? String)).orEmpty().trim()
 
-    /** Disable the fields that do not apply to the active engine, so it is obvious what to fill in. */
+    /**
+     * Show only what applies right now. The engine fork swaps the CLI-path block for the API provider
+     * block; the GRACE flags gray out under the Claude Code engine (they drive the native loop only);
+     * the navigator model surfaces only when tiered routing is on. Auto-approve applies to both engines
+     * (geai's own tools are gated by it either way), so it is never disabled.
+     */
     private fun updateEnabled() {
         val claudeEngine = engineCheck.isSelected
-        claudePathField.isEnabled = claudeEngine
-        listOf<JComponent>(providerCombo, modelCombo, baseUrlField, apiKeyField, maxTokensSpinner, maxIterationsSpinner, graceEnabledCheck)
-            .forEach { it.isEnabled = !claudeEngine }
-        // GRACE sub-options apply only with the native engine AND GRACE enabled.
+        cliPanel.isVisible = claudeEngine
+        providerPanel.isVisible = !claudeEngine
+
+        graceEnabledCheck.isEnabled = !claudeEngine
         val grace = !claudeEngine && graceEnabledCheck.isSelected
         tieredRoutingCheck.isEnabled = grace
         vectorRankerCheck.isEnabled = grace
         telemetryCheck.isEnabled = grace
+        navigatorPanel.isVisible = grace && tieredRoutingCheck.isSelected
         navigatorModelField.isEnabled = grace && tieredRoutingCheck.isSelected
     }
 
@@ -116,8 +146,6 @@ class GeaiSettingsConfigurable : Configurable {
         return provider != state.provider ||
             currentModel() != state.model.orEmpty() ||
             baseUrlField.text != state.baseUrl.orEmpty() ||
-            (maxTokensSpinner.value as Int) != state.maxTokens ||
-            (maxIterationsSpinner.value as Int) != state.maxAgentIterations ||
             autoReadCheck.isSelected != state.autoApproveReadTools ||
             autoEditCheck.isSelected != state.autoApproveEditTools ||
             sourcePathField.text != state.geaiSourcePath.orEmpty() ||
@@ -138,8 +166,6 @@ class GeaiSettingsConfigurable : Configurable {
         state.provider = provider
         state.model = currentModel().ifBlank { null }
         state.baseUrl = baseUrlField.text.trim().ifBlank { null }
-        state.maxTokens = maxTokensSpinner.value as Int
-        state.maxAgentIterations = maxIterationsSpinner.value as Int
         state.autoApproveReadTools = autoReadCheck.isSelected
         state.autoApproveEditTools = autoEditCheck.isSelected
         state.geaiSourcePath = sourcePathField.text.trim().ifBlank { null }
@@ -161,8 +187,6 @@ class GeaiSettingsConfigurable : Configurable {
         modelCombo.selectedItem = state.model?.takeIf { it.isNotBlank() }
         baseUrlField.text = state.baseUrl.orEmpty()
         baseUrlField.emptyText.text = state.provider.defaultBaseUrl
-        maxTokensSpinner.value = state.maxTokens
-        maxIterationsSpinner.value = state.maxAgentIterations
         autoReadCheck.isSelected = state.autoApproveReadTools
         autoEditCheck.isSelected = state.autoApproveEditTools
         sourcePathField.text = state.geaiSourcePath.orEmpty()

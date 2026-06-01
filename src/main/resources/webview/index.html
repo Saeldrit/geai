@@ -126,10 +126,14 @@
   #histbox{background:var(--card);border:1px solid var(--border);border-radius:12px;width:min(440px,86vw);
     max-height:70vh;overflow:auto;padding:10px}
   #histbox h3{margin:6px 8px 10px;font-size:14px}
-  .histitem{padding:9px 10px;border-radius:8px;cursor:pointer}
+  .histitem{position:relative;padding:9px 34px 9px 10px;border-radius:8px;cursor:pointer}
   .histitem:hover{background:var(--card-hover)}
   .histitem .t{font-weight:600}
   .histitem .m{color:var(--muted);font-size:12px}
+  .histdel{position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;
+    color:var(--muted);cursor:pointer;opacity:0;font-size:13px;border-radius:6px;padding:3px 6px}
+  .histitem:hover .histdel{opacity:.75}
+  .histdel:hover{opacity:1;color:#e06c75;background:var(--bg)}
 </style>
 </head>
 <body>
@@ -141,6 +145,8 @@
     <button class="iconbtn" id="btnSteps" title="Только шаги — скрыть рассуждения">≡</button>
     <button class="iconbtn" id="btnNew" title="Новая сессия">＋</button>
     <button class="iconbtn" id="btnHistory" title="История сессий">🕘</button>
+    <button class="iconbtn" id="btnBench" title="A/B бенчмарк: baseline vs GRACE">⚖</button>
+    <button class="iconbtn" id="btnCompact" title="Сжать контекст — сложить старое в конспект (роняет расход, не теряя нить)">🗜</button>
     <button class="iconbtn" id="btnSettings" title="Настройки">⚙</button>
   </div>
 
@@ -325,6 +331,18 @@
   function oneLine(s){ s=(s||'').replace(/\s+/g,' ').trim(); return s.length>180?s.slice(0,180)+'…':s; }
   function setTokens(i,o){ tokensEl.textContent='↑'+fmt(i)+' ↓'+fmt(o); }
   function fmt(n){ n=n||0; return n>=1000?(n/1000).toFixed(1)+'k':(''+n); }
+  // Token panel: current context fill / active window / % used / session cost. Warns as the window fills.
+  function setUsage(u){
+    if(!u){ return; }
+    var ctx=u.contextTokens||0, win=u.contextWindow||0;
+    var pct=win>0?Math.round(100*ctx/win):0;
+    var s='контекст '+fmt(ctx)+(win?' / '+fmt(win):'')+' · '+pct+'%';
+    if(u.costUsd!=null) s+=' · ~$'+(u.costUsd).toFixed(4);
+    else if((u.tokensIn||0)+(u.tokensOut||0)>0) s+=' · ↑'+fmt(u.tokensIn)+' ↓'+fmt(u.tokensOut);
+    tokensEl.textContent=s;
+    tokensEl.title='Контекст ~'+ctx+' токенов из окна '+win+' ('+pct+'%). За сессию ↑'+(u.tokensIn||0)+' ↓'+(u.tokensOut||0)+(u.costUsd!=null?' · ~$'+u.costUsd.toFixed(4):'')+'. 🗜 — сжать.';
+    tokensEl.style.color = pct>=80 ? '#e06c75' : (pct>=60 ? '#d19a66' : '');
+  }
 
   function renderSkills(skills){
     var host=el('skills'); host.innerHTML='';
@@ -348,6 +366,8 @@
   el('btnNew').onclick=function(){ send2k({action:'newSession'}); };
   el('btnSettings').onclick=function(){ send2k({action:'openSettings'}); };
   el('btnHistory').onclick=function(){ send2k({action:'history'}); };
+  el('btnBench').onclick=function(){ send2k({action:'benchmark'}); };
+  el('btnCompact').onclick=function(){ send2k({action:'compact'}); };
   el('btnSteps').onclick=function(){ var on=chat.classList.toggle('steps-only'); this.classList.toggle('active',on); };
   chat.addEventListener('click', function(e){
     var btn = e.target.closest ? e.target.closest('.copybtn') : null; if(!btn) return;
@@ -366,22 +386,32 @@
     renderSkills(state.skills);
     chat.innerHTML=''; started=false; welcome.classList.remove('hidden'); chat.classList.add('hidden');
     if(state.transcript && state.transcript.length){ state.transcript.forEach(renderEvent); }
-    setTokens(state.tokensIn||0, state.tokensOut||0);
+    if(state.usage) setUsage(state.usage); else setTokens(state.tokensIn||0, state.tokensOut||0);
     setRunning(!!state.running);
     if(state.configured===false){ showChat(); line('info','Geai не настроен. Откройте Settings | Tools | Geai и добавьте API-ключ, либо включите движок Claude Code.'); }
   };
   window.geaiEvent=function(ev){ renderEvent(ev); };
+  window.geaiUsage=function(u){ setUsage(u); };
   window.geaiReset=function(){ chat.innerHTML=''; started=false; welcome.classList.remove('hidden');
     chat.classList.add('hidden'); statusEl.textContent='Новая сессия'; setRunning(false); };
+  function fmtDate(ts){ try{ var d=new Date(ts);
+    return d.toLocaleDateString()+' '+('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2); }catch(e){ return ''; } }
   window.geaiHistory=function(list){
+    var prev=el('overlay'); if(prev) prev.remove(); // replace, never stack (delete re-sends the list)
     var ov=document.createElement('div'); ov.id='overlay';
     var box=document.createElement('div'); box.id='histbox'; box.innerHTML='<h3>История сессий</h3>';
     if(!list||!list.length){ box.innerHTML+='<div class="info" style="padding:8px">Пока нет сохранённых сессий.</div>'; }
-    (list||[]).forEach(function(s){ var it=document.createElement('div'); it.className='histitem';
-      it.innerHTML='<div class="t">'+esc(s.title)+'</div><div class="m">'+s.messageCount+' сообщений</div>';
-      it.onclick=function(){ document.body.removeChild(ov); send2k({action:'loadSession',id:s.id}); };
-      box.appendChild(it); });
-    ov.appendChild(box); ov.onclick=function(e){ if(e.target===ov) document.body.removeChild(ov); };
+    (list||[]).forEach(function(s){
+      var it=document.createElement('div'); it.className='histitem';
+      var when=s.updatedAt?' · '+fmtDate(s.updatedAt):'';
+      it.innerHTML='<div class="t">'+esc(s.title)+'</div><div class="m">'+s.messageCount+' сообщений'+when+'</div>';
+      var del=document.createElement('button'); del.className='histdel'; del.textContent='🗑'; del.title='Удалить сессию';
+      del.onclick=function(e){ e.stopPropagation(); send2k({action:'deleteSession',id:s.id}); };
+      it.appendChild(del);
+      it.onclick=function(){ ov.remove(); send2k({action:'loadSession',id:s.id}); };
+      box.appendChild(it);
+    });
+    ov.appendChild(box); ov.onclick=function(e){ if(e.target===ov) ov.remove(); };
     document.body.appendChild(ov);
   };
 

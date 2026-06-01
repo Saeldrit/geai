@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 
 /**
@@ -24,6 +25,8 @@ import java.nio.file.StandardOpenOption
 class GraceTelemetry(private val project: Project) {
 
     companion object {
+        private const val MAX_BYTES = 5L * 1024 * 1024
+
         fun getInstance(project: Project): GraceTelemetry = project.service()
     }
 
@@ -51,8 +54,13 @@ class GraceTelemetry(private val project: Project) {
                     }
                 })
             }
+            val target = file()
+            // Cap this dev log: roll over to a single .1 backup once it grows past the limit.
+            if (Files.exists(target) && Files.size(target) > MAX_BYTES) {
+                Files.move(target, target.resolveSibling("bundles.jsonl.1"), StandardCopyOption.REPLACE_EXISTING)
+            }
             Files.writeString(
-                file(),
+                target,
                 record.toString() + "\n",
                 StandardCharsets.UTF_8,
                 StandardOpenOption.CREATE,

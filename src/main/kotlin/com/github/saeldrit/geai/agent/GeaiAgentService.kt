@@ -1,8 +1,14 @@
 package com.github.saeldrit.geai.agent
 
+import com.github.saeldrit.geai.context.ContextCompressor
+import com.github.saeldrit.geai.context.TranscriptSummary
 import com.github.saeldrit.geai.engine.ClaudeCodeEngine
+import com.github.saeldrit.geai.llm.LlmClientFactory
+import com.github.saeldrit.geai.llm.LlmException
+import com.github.saeldrit.geai.llm.TokenUsage
 import com.github.saeldrit.geai.session.GeaiSessionStore
 import com.github.saeldrit.geai.settings.GeaiSettings
+import com.github.saeldrit.geai.settings.loopModel
 import com.github.saeldrit.geai.tools.GeaiToolset
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
@@ -21,6 +27,14 @@ class GeaiAgentService(private val project: Project) {
 
     companion object {
         fun getInstance(project: Project): GeaiAgentService = project.service()
+
+        /**
+         * Manual /compact folds the transcript toward this size. The effective budget is
+         * `target * CHARS_PER_TOKEN * SAFETY` chars — NOT exactly this many tokens, and with no output
+         * reserve subtracted (/compact generates no reply). So ~24_000 * 4 * 0.6 ≈ 57.6k chars ≈ 14k
+         * tokens — aggressive on purpose (the SAFETY factor stays; we only dropped the parasitic reserve).
+         */
+        private const val COMPACT_TARGET_TOKENS = 24_000
     }
 
     @Volatile
@@ -93,6 +107,67 @@ class GeaiAgentService(private val project: Project) {
                     }
                 } finally {
                     store.save(session)
+                    running = false
+                    currentIndicator = null
+                }
+            }
+        })
+    }
+
+    /**
+     * Manual "/compact": fold the current session's transcript into a dense recap so the next turn
+     * re-sends far fewer tokens, without losing the thread. One cheap summariser call. The VISIBLE
+     * chat is untouched (it stays for the human); only the model's context shrinks. No-op while a turn
+     * runs — guarded by [running] so it can't race a turn mutating the same transcript.
+     */
+    fun compact(listener: AgentListener) {
+        if (running) {
+            listener.onEvent(AgentEvent.Info("Geai сейчас работает — сожму контекст после завершения хода."))
+            return
+        }
+        running = true
+        val session = currentSession()
+        val store = GeaiSessionStore.getInstance(project)
+        ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Geai: сжатие контекста", true) {
+            override fun run(indicator: ProgressIndicator) {
+                currentIndicator = indicator
+                try {
+                    val before = ContextCompressor.estimatedTokens(session.messages)
+                    val client = try {
+                        LlmClientFactory.create()
+                    } catch (e: LlmException) {
+                        listener.onEvent(AgentEvent.Info("Не могу сжать: ${e.message ?: "LLM не настроен"}."))
+                        return
+                    }
+                    val settings = GeaiSettings.getInstance().state
+                    var spent = TokenUsage.ZERO
+                    val summarizer = TranscriptSummary.summarizer(client, settings.loopModel(), indicator) { used -> spent += used }
+                    val compacted = runCatching {
+                        // outputReserve = 0: /compact does not generate a reply, so no reserve to subtract.
+                        ContextCompressor.compress(session.messages, COMPACT_TARGET_TOKENS, 0, 0, summarizer)
+                    }.getOrNull()
+                    if (compacted.isNullOrEmpty()) {
+                        listener.onEvent(AgentEvent.Info("Сжатие не удалось — контекст не изменён."))
+                        return
+                    }
+                    session.totalUsage += spent
+                    if (compacted !== session.messages) {
+                        session.messages.clear()
+                        session.messages.addAll(compacted)
+                    }
+                    store.save(session)
+                    val after = ContextCompressor.estimatedTokens(session.messages)
+                    listener.onEvent(
+                        AgentEvent.Info(
+                            if (after < before) {
+                                "🗜 Контекст сжат: ~$before → ~$after токенов (на сжатие ушло ↑${spent.inputTokens} ↓${spent.outputTokens})."
+                            } else {
+                                "Контекст уже компактный (~$after токенов) — сжимать нечего."
+                            },
+                        ),
+                    )
+                    listener.onEvent(AgentEvent.Done(session.totalUsage))
+                } finally {
                     running = false
                     currentIndicator = null
                 }
