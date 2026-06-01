@@ -4,6 +4,7 @@ import com.github.saeldrit.geai.llm.ChatMessage
 import com.github.saeldrit.geai.llm.ChatRequest
 import com.github.saeldrit.geai.llm.LlmClient
 import com.github.saeldrit.geai.llm.TokenUsage
+import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.progress.ProgressIndicator
 
 /**
@@ -40,6 +41,6 @@ object TranscriptSummary {
             )
             bill(result.usage)
             result.message.text
-        }.getOrDefault("")
+        }.getOrElse { thisLogger().warn("Geai /compact summary failed", it); "" }
     }
 }

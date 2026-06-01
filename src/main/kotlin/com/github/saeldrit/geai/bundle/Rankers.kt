@@ -2,6 +2,7 @@ package com.github.saeldrit.geai.bundle
 
 import com.github.saeldrit.geai.settings.GeaiSettings
 import com.intellij.openapi.diagnostic.thisLogger
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Selects the active [Ranker]. The deterministic ranker is always available; a future
@@ -11,8 +12,11 @@ import com.intellij.openapi.diagnostic.thisLogger
  */
 object Rankers {
 
+    // active() runs on every bundle; log the "not available yet" notice once per IDE session, not per call.
+    private val warned = AtomicBoolean(false)
+
     fun active(): Ranker {
-        if (GeaiSettings.getInstance().state.graceVectorRanker) {
+        if (GeaiSettings.getInstance().state.graceVectorRanker && warned.compareAndSet(false, true)) {
             thisLogger().info("Geai GRACE: vector ranker requested but not yet available — using deterministic.")
         }
         return DeterministicRanker
