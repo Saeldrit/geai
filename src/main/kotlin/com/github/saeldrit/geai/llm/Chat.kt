@@ -8,6 +8,13 @@ data class ChatRequest(
     val tools: List<ToolSpec> = emptyList(),
     val maxTokens: Int = 8192,
     val temperature: Double = 0.0,
+    /**
+     * Volatile system content that changes every turn (e.g. the per-turn context bundle). Kept apart
+     * from [system] so it can be placed AFTER the prompt-cache breakpoint: the stable [system] keeps
+     * hitting the cache across turns while only this suffix is re-processed. Providers without caching
+     * simply append it to the system text.
+     */
+    val systemVolatileSuffix: String = "",
 )
 
 enum class StopReason {

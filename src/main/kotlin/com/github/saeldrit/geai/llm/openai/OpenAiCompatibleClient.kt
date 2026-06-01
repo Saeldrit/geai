@@ -52,10 +52,14 @@ class OpenAiCompatibleClient(
             addProperty("temperature", request.temperature)
         }
         val messages = JsonArray()
-        if (request.system.isNotBlank()) {
+        // No prompt caching here, so the volatile suffix is simply folded into the system message.
+        val systemText = listOf(request.system, request.systemVolatileSuffix)
+            .filter { it.isNotBlank() }
+            .joinToString("\n\n")
+        if (systemText.isNotBlank()) {
             messages.add(JsonObject().apply {
                 addProperty("role", "system")
-                addProperty("content", request.system)
+                addProperty("content", systemText)
             })
         }
         request.messages.forEach { message -> appendWireMessages(messages, message) }

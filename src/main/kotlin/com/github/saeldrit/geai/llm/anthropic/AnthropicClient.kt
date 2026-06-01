@@ -46,14 +46,24 @@ class AnthropicClient(
             addProperty("max_tokens", request.maxTokens)
             addProperty("temperature", request.temperature)
             // System prompt as a cacheable block: it is large and identical across a session, so a
-            // cache breakpoint here turns repeated reads into cheap cache hits.
-            if (request.system.isNotBlank()) {
+            // cache breakpoint here turns repeated reads into cheap cache hits. Any per-turn volatile
+            // suffix (the context bundle) goes in a SECOND block AFTER the breakpoint — uncached — so
+            // the stable doctrine above keeps hitting the cache across turns instead of being rewritten.
+            if (request.system.isNotBlank() || request.systemVolatileSuffix.isNotBlank()) {
                 add("system", JsonArray().apply {
-                    add(JsonObject().apply {
-                        addProperty("type", "text")
-                        addProperty("text", request.system)
-                        add("cache_control", ephemeral())
-                    })
+                    if (request.system.isNotBlank()) {
+                        add(JsonObject().apply {
+                            addProperty("type", "text")
+                            addProperty("text", request.system)
+                            add("cache_control", ephemeral())
+                        })
+                    }
+                    if (request.systemVolatileSuffix.isNotBlank()) {
+                        add(JsonObject().apply {
+                            addProperty("type", "text")
+                            addProperty("text", request.systemVolatileSuffix)
+                        })
+                    }
                 })
             }
         }

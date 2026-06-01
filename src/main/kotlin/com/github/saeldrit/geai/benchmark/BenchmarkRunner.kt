@@ -4,6 +4,7 @@ import com.github.saeldrit.geai.agent.AgentEvent
 import com.github.saeldrit.geai.agent.AgentListener
 import com.github.saeldrit.geai.agent.AgentLoop
 import com.github.saeldrit.geai.agent.AgentSession
+import com.github.saeldrit.geai.agent.LoopProfile
 import com.github.saeldrit.geai.cost.Pricing
 import com.github.saeldrit.geai.graph.GeaiGraphStore
 import com.github.saeldrit.geai.graph.GraphIndexer
@@ -46,11 +47,10 @@ object BenchmarkRunner {
         val settings = GeaiSettings.getInstance().state
         val savedGrace = settings.graceEnabled
         val savedAutoEdit = settings.autoApproveEditTools
-        val savedIterations = settings.maxAgentIterations
-        // Run unattended: no modal approval dialogs mid-benchmark. Hard-cap iterations so a runaway
-        // loop can never burn the full budget here. Both restored in finally.
+        // Run unattended: no modal approval dialogs mid-benchmark. The iteration cap is passed per-run
+        // via LoopProfile.main(BENCH_MAX_ITERATIONS) so a runaway loop can't burn the full budget here
+        // and we never mutate the user's (now internal) iteration setting. Restored in finally.
         settings.autoApproveEditTools = true
-        settings.maxAgentIterations = settings.maxAgentIterations.coerceAtMost(BENCH_MAX_ITERATIONS)
         val results = ArrayList<RunResult>()
         try {
             for (task in tasks) {
@@ -69,7 +69,6 @@ object BenchmarkRunner {
         } finally {
             settings.graceEnabled = savedGrace
             settings.autoApproveEditTools = savedAutoEdit
-            settings.maxAgentIterations = savedIterations
         }
         return BenchmarkReport(results, stampMs)
     }
@@ -86,7 +85,7 @@ object BenchmarkRunner {
         val session = AgentSession()
         val start = System.currentTimeMillis()
         runCatching {
-            AgentLoop(project, GeaiToolset.registry()).run(session, task.prompt, collector, indicator)
+            AgentLoop(project, GeaiToolset.registry(), LoopProfile.main(BENCH_MAX_ITERATIONS)).run(session, task.prompt, collector, indicator)
         }.onFailure { collector.error = it.message ?: it.javaClass.simpleName }
         val wall = System.currentTimeMillis() - start
 

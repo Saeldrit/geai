@@ -26,11 +26,29 @@ class GeaiSettingsState : BaseState() {
     var provider by enum(LlmProvider.ANTHROPIC)
     var model by string()
     var baseUrl by string()
+    // Output cap per reply. Internal default — not surfaced in the UI; tunable via geai.xml if needed.
     var maxTokens by property(8192)
-    var maxAgentIterations by property(32)
+
+    /**
+     * Hard cost ceiling for a single turn (billed input + output, incl. delegated sub-agents): when
+     * reached the loop stops with an "ask me to continue" message instead of burning more. The real
+     * cost guard — the iteration ceiling is just a safety backstop (see LoopProfile). Internal default,
+     * not surfaced in the UI; 0 = no ceiling. (The user-facing loop's iteration cap is a constant, so
+     * nobody has to tune a number for the agent to "just work".)
+     */
+    var maxTurnTokens by property(250_000)
 
     /** Model context window (tokens) used to size transcript compaction. Default ~200k (Claude). */
     var maxContextTokens by property(200_000)
+
+    /**
+     * Cost cap on the re-sent transcript for providers WITHOUT prompt caching (e.g. qwen via
+     * OpenRouter, local models). The agent loop resends the whole transcript every iteration; with no
+     * caching every token is paid again, so it is compacted toward this budget instead of the full
+     * [maxContextTokens] window. Anthropic re-ships cheaply via cache_control and is exempt (see
+     * [transcriptWindow]). Raise for more retained context (costs more without caching); lower to spend less.
+     */
+    var maxTranscriptTokens by property(32_000)
 
     /** Master switch for the GRACE toolset + doctrine (anchors/specs/graph/bundle/routing). Off = lean baseline. */
     var graceEnabled by property(true)
@@ -83,6 +101,15 @@ fun GeaiSettingsState.effectiveModel(): String =
 
 fun GeaiSettingsState.effectiveBaseUrl(): String =
     baseUrl?.takeIf { it.isNotBlank() }?.trimEnd('/') ?: provider.defaultBaseUrl
+
+/**
+ * Token budget the transcript is compacted to. Anthropic re-ships the transcript cheaply via prompt
+ * caching, so it uses the full [GeaiSettingsState.maxContextTokens] window; other providers (notably
+ * non-caching qwen) cap it to [GeaiSettingsState.maxTranscriptTokens] to bound the per-iteration cost
+ * of resending a growing transcript. The cap never exceeds the model's actual window.
+ */
+fun GeaiSettingsState.transcriptWindow(): Int =
+    if (provider == LlmProvider.ANTHROPIC) maxContextTokens else minOf(maxContextTokens, maxTranscriptTokens)
 
 /** Model the agent loop runs on: the cheap navigator when tiered, otherwise the main model. */
 fun GeaiSettingsState.loopModel(): String =
