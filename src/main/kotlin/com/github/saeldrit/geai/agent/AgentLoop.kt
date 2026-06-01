@@ -331,7 +331,7 @@ class AgentLoop(
         if (profile.isSubAgent) {
             registry.specs()
         } else {
-            GeaiToolset.advertisedTools(settings.graceEnabled, activeGroups).map { it.spec() } +
+            GeaiToolset.advertisedTools(settings.graceEnabled, activeGroups, settings.tieredRoutingEnabled).map { it.spec() } +
                 GeaiToolset.loaderSpec() + GeaiToolset.delegateSpec() + GeaiToolset.noteSpec()
         }
 

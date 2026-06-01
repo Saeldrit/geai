@@ -15,6 +15,7 @@ import com.github.saeldrit.geai.tools.fs.ListFilesTool
 import com.github.saeldrit.geai.tools.fs.ReadFileTool
 import com.github.saeldrit.geai.tools.fs.SearchTextTool
 import com.github.saeldrit.geai.tools.fs.WriteFileTool
+import com.github.saeldrit.geai.tools.grace.EscalateAuthorTool
 import com.github.saeldrit.geai.tools.grace.GraphQueryTool
 import com.github.saeldrit.geai.tools.grace.ResolveRefTool
 import com.github.saeldrit.geai.tools.psi.FindSymbolTool
@@ -121,15 +122,22 @@ object GeaiToolset {
 
     private fun base(graceEnabled: Boolean): List<AgentTool> = if (graceEnabled) GRACE + CORE else CORE
 
-    /** Full catalog (every tool) — used by the registry for execution and by the Claude Code engine. */
+    /** Full catalog (every tool) — used by the registry for execution and by the Claude Code engine.
+     *  escalate_author is always present for EXECUTION; it is only ADVERTISED under tiered routing. */
     fun all(): List<AgentTool> =
-        base(GeaiSettings.getInstance().state.graceEnabled) + ON_DEMAND.values.flatten()
+        base(GeaiSettings.getInstance().state.graceEnabled) + ON_DEMAND.values.flatten() + EscalateAuthorTool
 
     fun registry(): ToolRegistry = ToolRegistry(all())
 
-    /** Tools advertised to the model right now: CORE (+GRACE) plus any on-demand groups already loaded. */
-    fun advertisedTools(graceEnabled: Boolean, activeGroups: Set<String>): List<AgentTool> =
-        base(graceEnabled) + activeGroups.flatMap { ON_DEMAND[it] ?: emptyList() }
+    /**
+     * Tools advertised to the model right now: CORE (+GRACE) plus any on-demand groups already loaded.
+     * Under [tieredRouting] (and GRACE enabled) the navigator can hand authoring to the strong tier, so
+     * `escalate_author` is advertised; with a single model (author == navigator) it would be dead weight.
+     */
+    fun advertisedTools(graceEnabled: Boolean, activeGroups: Set<String>, tieredRouting: Boolean = false): List<AgentTool> {
+        val tools = base(graceEnabled) + activeGroups.flatMap { ON_DEMAND[it] ?: emptyList() }
+        return if (tieredRouting && graceEnabled) tools + EscalateAuthorTool else tools
+    }
 
     fun isGroup(name: String): Boolean = ON_DEMAND.containsKey(name)
 
