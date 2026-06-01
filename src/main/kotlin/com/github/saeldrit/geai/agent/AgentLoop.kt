@@ -213,7 +213,7 @@ class AgentLoop(
                                 ToolResult.error("Turn token budget reached — do NOT delegate more; synthesize from the findings you have.")
                             else -> {
                                 delegationCount++
-                                val outcome = runDelegate(call, indicator)
+                                val outcome = runDelegate(call, indicator, listener)
                                 // Bill the sub-agent's spend to this turn so the budget reflects true cost.
                                 turnUsage += outcome.usage
                                 session.totalUsage += outcome.usage
@@ -352,6 +352,9 @@ class AgentLoop(
 
     private data class SubOutcome(val result: ToolResult, val usage: TokenUsage)
 
+    /** Collapse whitespace and cap — a compact one-line label for streamed sub-agent narration. */
+    private fun oneLine(s: String): String = s.replace(Regex("\\s+"), " ").trim().take(140)
+
     /**
      * Run a delegated sub-task in a fresh, ISOLATED [AgentLoop] with a read-only toolset and a tight
      * budget. The sub-agent explores in its own throwaway session; only its final text comes back as
@@ -359,7 +362,7 @@ class AgentLoop(
      * the caller can bill it to the turn. Cancellation/errors inside the sub end it gracefully (its
      * own run() handles them) and we return whatever it produced.
      */
-    private fun runDelegate(call: ContentBlock.ToolUse, indicator: ProgressIndicator): SubOutcome {
+    private fun runDelegate(call: ContentBlock.ToolUse, indicator: ProgressIndicator, parentListener: AgentListener): SubOutcome {
         val args = ToolArgs.parse(call.inputJson)
         val task = args.stringOrNull("task")?.takeIf { it.isNotBlank() }
             ?: return SubOutcome(ToolResult.error("delegate needs a non-empty 'task'."), TokenUsage.ZERO)
@@ -367,13 +370,22 @@ class AgentLoop(
         val prompt = if (hint == null) task else "$task\n\nLeads/anchors to start from: $hint"
 
         val subSession = AgentSession()
-        // The sub-agent's final answer is its last assistant text; keep only that — its intermediate
-        // narration and tool churn stay in the throwaway sub-session, never in the orchestrator.
+        // The sub-agent's final answer is its last assistant text; keep only that for the RETURN — its
+        // intermediate narration and tool churn never enter the orchestrator's context (session.messages).
+        // Its progress IS streamed to the UI (parentListener) as info lines — UI-only, not context.
         val captured = StringBuilder()
         val subListener = AgentListener { event ->
-            if (event is AgentEvent.AssistantText) {
-                captured.setLength(0)
-                captured.append(event.text)
+            when (event) {
+                is AgentEvent.AssistantText -> {
+                    captured.setLength(0)
+                    captured.append(event.text)
+                    parentListener.onEvent(AgentEvent.Info("↳ [sub-agent] ${oneLine(event.text)}"))
+                }
+
+                is AgentEvent.ToolStarted ->
+                    parentListener.onEvent(AgentEvent.Info("↳ [sub-agent] ${event.tool} ${oneLine(event.argsJson)}"))
+
+                else -> Unit // suppress sub lifecycle (Done/UserMessage/Thinking/Cancelled/Error/…)
             }
         }
         runCatching {

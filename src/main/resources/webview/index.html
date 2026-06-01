@@ -126,10 +126,14 @@
   #histbox{background:var(--card);border:1px solid var(--border);border-radius:12px;width:min(440px,86vw);
     max-height:70vh;overflow:auto;padding:10px}
   #histbox h3{margin:6px 8px 10px;font-size:14px}
-  .histitem{padding:9px 10px;border-radius:8px;cursor:pointer}
+  .histitem{position:relative;padding:9px 34px 9px 10px;border-radius:8px;cursor:pointer}
   .histitem:hover{background:var(--card-hover)}
   .histitem .t{font-weight:600}
   .histitem .m{color:var(--muted);font-size:12px}
+  .histdel{position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;
+    color:var(--muted);cursor:pointer;opacity:0;font-size:13px;border-radius:6px;padding:3px 6px}
+  .histitem:hover .histdel{opacity:.75}
+  .histdel:hover{opacity:1;color:#e06c75;background:var(--bg)}
 </style>
 </head>
 <body>
@@ -390,15 +394,24 @@
   window.geaiUsage=function(u){ setUsage(u); };
   window.geaiReset=function(){ chat.innerHTML=''; started=false; welcome.classList.remove('hidden');
     chat.classList.add('hidden'); statusEl.textContent='Новая сессия'; setRunning(false); };
+  function fmtDate(ts){ try{ var d=new Date(ts);
+    return d.toLocaleDateString()+' '+('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2); }catch(e){ return ''; } }
   window.geaiHistory=function(list){
+    var prev=el('overlay'); if(prev) prev.remove(); // replace, never stack (delete re-sends the list)
     var ov=document.createElement('div'); ov.id='overlay';
     var box=document.createElement('div'); box.id='histbox'; box.innerHTML='<h3>История сессий</h3>';
     if(!list||!list.length){ box.innerHTML+='<div class="info" style="padding:8px">Пока нет сохранённых сессий.</div>'; }
-    (list||[]).forEach(function(s){ var it=document.createElement('div'); it.className='histitem';
-      it.innerHTML='<div class="t">'+esc(s.title)+'</div><div class="m">'+s.messageCount+' сообщений</div>';
-      it.onclick=function(){ document.body.removeChild(ov); send2k({action:'loadSession',id:s.id}); };
-      box.appendChild(it); });
-    ov.appendChild(box); ov.onclick=function(e){ if(e.target===ov) document.body.removeChild(ov); };
+    (list||[]).forEach(function(s){
+      var it=document.createElement('div'); it.className='histitem';
+      var when=s.updatedAt?' · '+fmtDate(s.updatedAt):'';
+      it.innerHTML='<div class="t">'+esc(s.title)+'</div><div class="m">'+s.messageCount+' сообщений'+when+'</div>';
+      var del=document.createElement('button'); del.className='histdel'; del.textContent='🗑'; del.title='Удалить сессию';
+      del.onclick=function(e){ e.stopPropagation(); send2k({action:'deleteSession',id:s.id}); };
+      it.appendChild(del);
+      it.onclick=function(){ ov.remove(); send2k({action:'loadSession',id:s.id}); };
+      box.appendChild(it);
+    });
+    ov.appendChild(box); ov.onclick=function(e){ if(e.target===ov) ov.remove(); };
     document.body.appendChild(ov);
   };
 

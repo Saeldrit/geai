@@ -105,6 +105,11 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
             "compact" -> service.compact(webListener())
             "history" -> exec("window.geaiHistory(${JsonSupport.gson.toJson(historyList())});")
             "loadSession" -> obj.get("id")?.asString?.let { loadSession(it) }
+            "deleteSession" -> obj.get("id")?.asString?.let {
+                GeaiSessionStore.getInstance(project).delete(it)
+                exec("window.geaiHistory(${JsonSupport.gson.toJson(historyList())});")
+            }
+
             "copy" -> obj.get("text")?.asString?.let { CopyPasteManager.getInstance().setContents(StringSelection(it)) }
         }
     }
@@ -182,6 +187,8 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
     }
 
     private fun transcriptJson(session: AgentSession): JsonArray = JsonArray().apply {
+        // Map tool_use id -> name so a replayed tool_result can show the real tool, not a "tool" stub.
+        val toolNames = HashMap<String, String>()
         session.messages.forEach { message ->
             when (message.role) {
                 Role.USER -> message.text.takeIf { it.isNotBlank() }
@@ -191,6 +198,7 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
                     message.text.takeIf { it.isNotBlank() }
                         ?.let { add(event("assistantText").apply { addProperty("text", it) }) }
                     message.toolUses.forEach { use ->
+                        toolNames[use.id] = use.name
                         add(event("toolStarted").apply {
                             addProperty("tool", use.name)
                             addProperty("args", preview(use.inputJson))
@@ -200,7 +208,7 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
 
                 Role.TOOL -> message.content.filterIsInstance<ContentBlock.ToolResult>().forEach { result ->
                     add(event("toolFinished").apply {
-                        addProperty("tool", "tool")
+                        addProperty("tool", toolNames[result.toolUseId] ?: "tool")
                         addProperty("content", result.content)
                         addProperty("error", result.isError)
                     })
@@ -244,6 +252,7 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
                 addProperty("id", meta.id)
                 addProperty("title", meta.title)
                 addProperty("messageCount", meta.messageCount)
+                addProperty("updatedAt", meta.updatedAtEpochMs)
             })
         }
     }
