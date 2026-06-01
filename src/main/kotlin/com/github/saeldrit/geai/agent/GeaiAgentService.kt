@@ -28,7 +28,12 @@ class GeaiAgentService(private val project: Project) {
     companion object {
         fun getInstance(project: Project): GeaiAgentService = project.service()
 
-        /** Token target the manual /compact folds the transcript toward — aggressive on purpose. */
+        /**
+         * Manual /compact folds the transcript toward this size. The effective budget is
+         * `target * CHARS_PER_TOKEN * SAFETY` chars — NOT exactly this many tokens, and with no output
+         * reserve subtracted (/compact generates no reply). So ~24_000 * 4 * 0.6 ≈ 57.6k chars ≈ 14k
+         * tokens — aggressive on purpose (the SAFETY factor stays; we only dropped the parasitic reserve).
+         */
         private const val COMPACT_TARGET_TOKENS = 24_000
     }
 
@@ -138,7 +143,8 @@ class GeaiAgentService(private val project: Project) {
                     var spent = TokenUsage.ZERO
                     val summarizer = TranscriptSummary.summarizer(client, settings.loopModel(), indicator) { used -> spent += used }
                     val compacted = runCatching {
-                        ContextCompressor.compress(session.messages, COMPACT_TARGET_TOKENS, settings.maxTokens, 0, summarizer)
+                        // outputReserve = 0: /compact does not generate a reply, so no reserve to subtract.
+                        ContextCompressor.compress(session.messages, COMPACT_TARGET_TOKENS, 0, 0, summarizer)
                     }.getOrNull()
                     if (compacted.isNullOrEmpty()) {
                         listener.onEvent(AgentEvent.Info("Сжатие не удалось — контекст не изменён."))
