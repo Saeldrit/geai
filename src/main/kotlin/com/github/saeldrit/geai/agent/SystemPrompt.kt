@@ -40,6 +40,9 @@ object SystemPrompt {
         - Need to know WHO reads/writes/calls a symbol, or to trace where a value flows? Use
           `find_usages` with that anchor — this is the semantic answer. `search_text` is a LAST resort
           for plain text (string literals, comments, config), NOT for finding or relating code.
+        - Need what IMPLEMENTS an interface / OVERRIDES a method? Use `find_implementations` with the anchor.
+        - Want to know if a file has errors WITHOUT a build? Use `diagnostics` (syntax always; analyzer
+          errors/warnings when the file was analyzed) — for an authoritative compile, build via run_command.
         - Need to locate more nodes? Use `graph_query`. Only fall back to file reading as a last resort.
     """
 

@@ -35,11 +35,11 @@ class GeaiToolsetTest {
     @Test
     fun `psi semantic tools are advertised with grace and available to sub-agents`() {
         val grace = names(GeaiToolset.advertisedTools(graceEnabled = true, activeGroups = emptySet()))
-        assertTrue("find_symbol advertised with GRACE", grace.contains("find_symbol"))
-        assertTrue("find_usages advertised with GRACE", grace.contains("find_usages"))
         val sub = names(GeaiToolset.delegateTools())
-        assertTrue("sub-agent gets find_symbol", sub.contains("find_symbol"))
-        assertTrue("sub-agent gets find_usages", sub.contains("find_usages"))
+        listOf("find_symbol", "find_usages", "find_implementations", "diagnostics").forEach { tool ->
+            assertTrue("$tool advertised with GRACE", grace.contains(tool))
+            assertTrue("sub-agent gets $tool", sub.contains(tool))
+        }
         assertFalse(
             "lean baseline (grace off) excludes them",
             names(GeaiToolset.advertisedTools(graceEnabled = false, activeGroups = emptySet())).contains("find_usages"),

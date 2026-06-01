@@ -18,6 +18,8 @@ import com.github.saeldrit.geai.tools.fs.WriteFileTool
 import com.github.saeldrit.geai.tools.grace.EscalateAuthorTool
 import com.github.saeldrit.geai.tools.grace.GraphQueryTool
 import com.github.saeldrit.geai.tools.grace.ResolveRefTool
+import com.github.saeldrit.geai.tools.psi.DiagnosticsTool
+import com.github.saeldrit.geai.tools.psi.FindImplementationsTool
 import com.github.saeldrit.geai.tools.psi.FindSymbolTool
 import com.github.saeldrit.geai.tools.psi.FindUsagesTool
 import com.github.saeldrit.geai.tools.knowledge.KbForgetTool
@@ -73,6 +75,8 @@ object GeaiToolset {
         GraphQueryTool,
         FindSymbolTool,
         FindUsagesTool,
+        FindImplementationsTool,
+        DiagnosticsTool,
     )
 
     /**
@@ -118,6 +122,8 @@ object GeaiToolset {
         GraphQueryTool,
         FindSymbolTool,
         FindUsagesTool,
+        FindImplementationsTool,
+        DiagnosticsTool,
     )
 
     private fun base(graceEnabled: Boolean): List<AgentTool> = if (graceEnabled) GRACE + CORE else CORE
