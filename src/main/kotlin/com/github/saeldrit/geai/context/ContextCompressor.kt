@@ -18,7 +18,7 @@ import com.github.saeldrit.geai.llm.Role
 object ContextCompressor {
 
     private const val CHARS_PER_TOKEN = 4
-    private const val SAFETY = 0.8
+    private const val SAFETY = 0.6
     private const val KEEP_RECENT = 6
     private const val TRUNCATED_HEAD = 400
     private const val MIN_BUDGET = 20_000
@@ -145,6 +145,9 @@ object ContextCompressor {
         val totalBudget = (usableTokens * CHARS_PER_TOKEN * SAFETY).toInt().coerceAtLeast(MIN_BUDGET)
         return (totalBudget - systemPromptChars).coerceAtLeast(MIN_BUDGET)
     }
+
+    /** Rough token estimate of a transcript (~chars/token) — for the usage panel and manual /compact. */
+    fun estimatedTokens(messages: List<ChatMessage>): Int = estimateChars(messages) / CHARS_PER_TOKEN
 
     private fun estimateChars(messages: List<ChatMessage>): Int =
         messages.sumOf { message -> message.content.sumOf(::blockLength) }

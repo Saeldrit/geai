@@ -17,6 +17,8 @@ import com.github.saeldrit.geai.tools.fs.SearchTextTool
 import com.github.saeldrit.geai.tools.fs.WriteFileTool
 import com.github.saeldrit.geai.tools.grace.GraphQueryTool
 import com.github.saeldrit.geai.tools.grace.ResolveRefTool
+import com.github.saeldrit.geai.tools.psi.FindSymbolTool
+import com.github.saeldrit.geai.tools.psi.FindUsagesTool
 import com.github.saeldrit.geai.tools.knowledge.KbForgetTool
 import com.github.saeldrit.geai.tools.knowledge.KbLookupTool
 import com.github.saeldrit.geai.tools.knowledge.KbRecordTool
@@ -39,6 +41,7 @@ object GeaiToolset {
 
     const val LOAD_TOOLS = "load_tools"
     const val DELEGATE = "delegate"
+    const val NOTE = "note"
 
     /** Always advertised: knowledge axes, interaction, navigation, reading, editing. */
     private val CORE: List<AgentTool> = listOf(
@@ -60,12 +63,15 @@ object GeaiToolset {
     )
 
     /**
-     * Lean GRACE surface (small, central): live Category-B truth (resolve_ref) and graph dig
-     * (graph_query). Advertised alongside CORE whenever GRACE is enabled.
+     * Lean GRACE / semantic surface (small, central): live Category-B truth (resolve_ref), graph dig
+     * (graph_query), and PSI semantic search (find_symbol, find_usages) — the IDE-native alternative
+     * to grepping a name. Advertised alongside CORE whenever GRACE is enabled.
      */
     private val GRACE: List<AgentTool> = listOf(
         ResolveRefTool,
         GraphQueryTool,
+        FindSymbolTool,
+        FindUsagesTool,
     )
 
     /**
@@ -109,6 +115,8 @@ object GeaiToolset {
         SearchTextTool,
         ResolveRefTool,
         GraphQueryTool,
+        FindSymbolTool,
+        FindUsagesTool,
     )
 
     private fun base(graceEnabled: Boolean): List<AgentTool> = if (graceEnabled) GRACE + CORE else CORE
@@ -145,6 +153,19 @@ object GeaiToolset {
         val schema =
             """{"type":"object","properties":{"task":{"type":"string","description":"The focused, self-contained instruction for the sub-agent, including exactly what it should return."},"hint":{"type":"string","description":"Optional leads — file paths, anchors, symbols — to save the sub-agent discovery time."}},"required":["task"]}"""
         return ToolSpec(DELEGATE, description, schema)
+    }
+
+    /** The `note` meta-tool spec: the model's external working memory (findings/decisions/next steps). */
+    fun noteSpec(): ToolSpec {
+        val description =
+            "Record a concise finding, decision or next step to your persistent NOTES. Notes are always " +
+                "visible to you and survive context compaction, so use this as you work — never lose what " +
+                "you found. Include file:line. One item per call. Build your final answer FROM your notes; " +
+                "do not keep raw file contents in context (older ones are dropped to save tokens) — note the " +
+                "finding and move on, re-reading specific lines later only if needed."
+        val schema =
+            """{"type":"object","properties":{"text":{"type":"string","description":"A concise finding/decision/next-step, with file:line where relevant."}},"required":["text"]}"""
+        return ToolSpec(NOTE, description, schema)
     }
 
     /** The `load_tools` meta-tool spec, advertised by the agent loop so the model can pull groups in. */

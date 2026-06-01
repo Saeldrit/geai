@@ -142,6 +142,7 @@
     <button class="iconbtn" id="btnNew" title="Новая сессия">＋</button>
     <button class="iconbtn" id="btnHistory" title="История сессий">🕘</button>
     <button class="iconbtn" id="btnBench" title="A/B бенчмарк: baseline vs GRACE">⚖</button>
+    <button class="iconbtn" id="btnCompact" title="Сжать контекст — сложить старое в конспект (роняет расход, не теряя нить)">🗜</button>
     <button class="iconbtn" id="btnSettings" title="Настройки">⚙</button>
   </div>
 
@@ -326,6 +327,18 @@
   function oneLine(s){ s=(s||'').replace(/\s+/g,' ').trim(); return s.length>180?s.slice(0,180)+'…':s; }
   function setTokens(i,o){ tokensEl.textContent='↑'+fmt(i)+' ↓'+fmt(o); }
   function fmt(n){ n=n||0; return n>=1000?(n/1000).toFixed(1)+'k':(''+n); }
+  // Token panel: current context fill / active window / % used / session cost. Warns as the window fills.
+  function setUsage(u){
+    if(!u){ return; }
+    var ctx=u.contextTokens||0, win=u.contextWindow||0;
+    var pct=win>0?Math.round(100*ctx/win):0;
+    var s='контекст '+fmt(ctx)+(win?' / '+fmt(win):'')+' · '+pct+'%';
+    if(u.costUsd!=null) s+=' · ~$'+(u.costUsd).toFixed(4);
+    else if((u.tokensIn||0)+(u.tokensOut||0)>0) s+=' · ↑'+fmt(u.tokensIn)+' ↓'+fmt(u.tokensOut);
+    tokensEl.textContent=s;
+    tokensEl.title='Контекст ~'+ctx+' токенов из окна '+win+' ('+pct+'%). За сессию ↑'+(u.tokensIn||0)+' ↓'+(u.tokensOut||0)+(u.costUsd!=null?' · ~$'+u.costUsd.toFixed(4):'')+'. 🗜 — сжать.';
+    tokensEl.style.color = pct>=80 ? '#e06c75' : (pct>=60 ? '#d19a66' : '');
+  }
 
   function renderSkills(skills){
     var host=el('skills'); host.innerHTML='';
@@ -350,6 +363,7 @@
   el('btnSettings').onclick=function(){ send2k({action:'openSettings'}); };
   el('btnHistory').onclick=function(){ send2k({action:'history'}); };
   el('btnBench').onclick=function(){ send2k({action:'benchmark'}); };
+  el('btnCompact').onclick=function(){ send2k({action:'compact'}); };
   el('btnSteps').onclick=function(){ var on=chat.classList.toggle('steps-only'); this.classList.toggle('active',on); };
   chat.addEventListener('click', function(e){
     var btn = e.target.closest ? e.target.closest('.copybtn') : null; if(!btn) return;
@@ -368,11 +382,12 @@
     renderSkills(state.skills);
     chat.innerHTML=''; started=false; welcome.classList.remove('hidden'); chat.classList.add('hidden');
     if(state.transcript && state.transcript.length){ state.transcript.forEach(renderEvent); }
-    setTokens(state.tokensIn||0, state.tokensOut||0);
+    if(state.usage) setUsage(state.usage); else setTokens(state.tokensIn||0, state.tokensOut||0);
     setRunning(!!state.running);
     if(state.configured===false){ showChat(); line('info','Geai не настроен. Откройте Settings | Tools | Geai и добавьте API-ключ, либо включите движок Claude Code.'); }
   };
   window.geaiEvent=function(ev){ renderEvent(ev); };
+  window.geaiUsage=function(u){ setUsage(u); };
   window.geaiReset=function(){ chat.innerHTML=''; started=false; welcome.classList.remove('hidden');
     chat.classList.add('hidden'); statusEl.textContent='Новая сессия'; setRunning(false); };
   window.geaiHistory=function(list){

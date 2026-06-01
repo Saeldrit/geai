@@ -16,6 +16,14 @@ class AgentSession(
 ) {
     var totalUsage: TokenUsage = TokenUsage.ZERO
 
+    /**
+     * The agent's running notes (findings, decisions, next steps) — its working memory that lives
+     * OUTSIDE the transcript: always re-injected compactly and never compacted away, so a long
+     * multi-file task keeps what it found while the raw file contents that produced it can be dropped.
+     * Persists across turns within a live session so a "continue" accumulates rather than re-discovers.
+     */
+    val scratchpad: MutableList<String> = mutableListOf()
+
     /** Claude Code's own session id, used with `--resume` to continue context across turns. */
     var claudeSessionId: String? = null
 

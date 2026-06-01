@@ -4,6 +4,8 @@ import com.github.saeldrit.geai.agent.AgentEvent
 import com.github.saeldrit.geai.agent.AgentListener
 import com.github.saeldrit.geai.agent.AgentSession
 import com.github.saeldrit.geai.agent.GeaiAgentService
+import com.github.saeldrit.geai.context.ContextCompressor
+import com.github.saeldrit.geai.cost.Pricing
 import com.github.saeldrit.geai.llm.ContentBlock
 import com.github.saeldrit.geai.llm.LlmClientFactory
 import com.github.saeldrit.geai.llm.Role
@@ -12,6 +14,8 @@ import com.github.saeldrit.geai.session.GeaiSessionStore
 import com.github.saeldrit.geai.settings.GeaiSettings
 import com.github.saeldrit.geai.settings.GeaiSettingsConfigurable
 import com.github.saeldrit.geai.settings.effectiveModel
+import com.github.saeldrit.geai.settings.loopModel
+import com.github.saeldrit.geai.settings.transcriptWindow
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -98,6 +102,7 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
 
             "openSettings" -> ShowSettingsUtil.getInstance().showSettingsDialog(project, GeaiSettingsConfigurable::class.java)
             "benchmark" -> com.github.saeldrit.geai.benchmark.BenchmarkLauncher.launch(project)
+            "compact" -> service.compact(webListener())
             "history" -> exec("window.geaiHistory(${JsonSupport.gson.toJson(historyList())});")
             "loadSession" -> obj.get("id")?.asString?.let { loadSession(it) }
             "copy" -> obj.get("text")?.asString?.let { CopyPasteManager.getInstance().setContents(StringSelection(it)) }
@@ -120,7 +125,26 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
 
     private fun webListener(): AgentListener = AgentListener { event ->
         val json = JsonSupport.gson.toJson(eventToJson(event))
-        ApplicationManager.getApplication().invokeLater({ exec("window.geaiEvent($json);") }, ModalityState.any())
+        ApplicationManager.getApplication().invokeLater({
+            exec("window.geaiEvent($json);")
+            // Refresh the token panel (context fill / window / cost) once the turn or /compact settles.
+            if (event is AgentEvent.Done) exec("window.geaiUsage(${JsonSupport.gson.toJson(usageJson())});")
+        }, ModalityState.any())
+    }
+
+    /** Live usage for the token panel: current context fill, the active window, totals, and cost if priced. */
+    private fun usageJson(): JsonObject {
+        val settings = GeaiSettings.getInstance().state
+        val session = service.currentSession()
+        val cost = Pricing.rateFor(Pricing.parse(settings.modelPrices), settings.loopModel())
+            ?.let { Pricing.costUsd(session.totalUsage, it) }
+        return JsonObject().apply {
+            addProperty("contextTokens", ContextCompressor.estimatedTokens(session.messages))
+            addProperty("contextWindow", settings.transcriptWindow())
+            addProperty("tokensIn", session.totalUsage.inputTokens)
+            addProperty("tokensOut", session.totalUsage.outputTokens)
+            cost?.let { addProperty("costUsd", it) }
+        }
     }
 
     private fun initState(): JsonObject {
@@ -139,6 +163,7 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
             addProperty("running", service.isRunning())
             addProperty("tokensIn", session.totalUsage.inputTokens)
             addProperty("tokensOut", session.totalUsage.outputTokens)
+            add("usage", usageJson())
             add("skills", skillsJson())
             add("transcript", transcriptJson(session))
         }

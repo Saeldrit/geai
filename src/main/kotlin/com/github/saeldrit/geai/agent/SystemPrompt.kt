@@ -35,6 +35,11 @@ object SystemPrompt {
         call `read_file`/`search_text`/`find_files` to re-find what the bundle already gives.
         - Need a live signature/DTO/endpoint not in the bundle? Resolve its anchor with `resolve_ref`
           (`psi:<fqClass>[#member]`, `file:<path>[:a-b]`, `openapi:<doc>#<ptr>`) — never recall it.
+        - Need to LOCATE a symbol but don't know its fully-qualified name? Use `find_symbol` (by short
+          name) instead of grepping — it returns the `psi:` anchor for resolve_ref / find_usages.
+        - Need to know WHO reads/writes/calls a symbol, or to trace where a value flows? Use
+          `find_usages` with that anchor — this is the semantic answer. `search_text` is a LAST resort
+          for plain text (string literals, comments, config), NOT for finding or relating code.
         - Need to locate more nodes? Use `graph_query`. Only fall back to file reading as a last resort.
     """
 
@@ -102,6 +107,12 @@ object SystemPrompt {
         in ONE step (multiple tool calls at once) instead of one per step. Prefer targeted reads
         (resolve_ref, the bundle, narrow line ranges) over broad repeated searches, and move to a
         conclusion as soon as the evidence is sufficient rather than over-exploring.
+
+        Keep a running memory with `note`: the moment you find something relevant (a fact, a file:line,
+        a decision, a next step) record it. Your notes are always shown back to you and survive context
+        compaction, so you never lose progress — but the raw file contents you read are NOT kept forever
+        (older ones get dropped to save tokens). Extract the finding into a note and move on; re-read
+        specific lines later only if you truly need them. Build your final answer FROM your notes.
 
         Heavier capabilities are loaded ON DEMAND to keep every turn cheap. You start with navigation,
         reading, editing, and knowledge tools. To debug, run commands, or modify yourself you must

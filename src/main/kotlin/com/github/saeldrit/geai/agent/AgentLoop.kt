@@ -99,7 +99,6 @@ class AgentLoop(
         } else {
             ""
         }
-        val systemChars = systemPrompt.length + bundleSuffix.length
         val maxIterations = profile.maxIterations.coerceAtLeast(1)
         val turnTokenBudget = if (profile.isSubAgent) profile.maxTurnTokens else settings.maxTurnTokens
 
@@ -139,19 +138,23 @@ class AgentLoop(
                     return
                 }
 
+                // Bundle + the running notes form the volatile (uncached) suffix, rebuilt each step so the
+                // model always sees its latest notes. Notes are tiny and live OUTSIDE the transcript, so
+                // they survive compaction while the raw reads that produced them can be folded away.
+                val volatileSuffix = appendNotes(bundleSuffix, session.scratchpad)
                 val outgoing = ContextCompressor.compress(
                     session.messages,
                     settings.transcriptWindow(),
                     settings.maxTokens,
-                    systemChars,
+                    systemPrompt.length + volatileSuffix.length,
                     summarizer,
                 )
                 val request = ChatRequest(
                     model = settings.loopModel(),
                     system = systemPrompt,
-                    // Per-turn bundle as a volatile suffix: kept out of the cached system block so the
-                    // stable doctrine keeps hitting the prompt cache across turns (Anthropic).
-                    systemVolatileSuffix = bundleSuffix,
+                    // Volatile suffix (bundle + notes) lives AFTER the cached system block so the stable
+                    // doctrine keeps hitting the prompt cache across turns (Anthropic).
+                    systemVolatileSuffix = volatileSuffix,
                     messages = outgoing,
                     tools = advertisedSpecs(settings, activeGroups),
                     maxTokens = settings.maxTokens,
@@ -199,6 +202,7 @@ class AgentLoop(
                     }
                     listener.onEvent(AgentEvent.ToolStarted(call.name, call.inputJson))
                     val toolResult = when {
+                        call.name == GeaiToolset.NOTE -> recordNote(call, session.scratchpad)
                         call.name == GeaiToolset.LOAD_TOOLS -> loadTools(call, activeGroups)
                         call.name == GeaiToolset.DELEGATE -> when {
                             profile.isSubAgent ->
@@ -328,8 +332,23 @@ class AgentLoop(
             registry.specs()
         } else {
             GeaiToolset.advertisedTools(settings.graceEnabled, activeGroups).map { it.spec() } +
-                GeaiToolset.loaderSpec() + GeaiToolset.delegateSpec()
+                GeaiToolset.loaderSpec() + GeaiToolset.delegateSpec() + GeaiToolset.noteSpec()
         }
+
+    /** Append a finding to the session notes (the model's external working memory). */
+    private fun recordNote(call: ContentBlock.ToolUse, scratchpad: MutableList<String>): ToolResult {
+        val text = ToolArgs.parse(call.inputJson).stringOrNull("text")?.trim().orEmpty()
+        if (text.isEmpty()) return ToolResult.error("note needs a non-empty 'text'.")
+        scratchpad.add(text)
+        return ToolResult.ok("Noted (${scratchpad.size} total). Build your final answer from your notes.")
+    }
+
+    /** Render the running notes into the volatile suffix so the model always sees its latest memory. */
+    private fun appendNotes(bundleSuffix: String, scratchpad: List<String>): String {
+        if (scratchpad.isEmpty()) return bundleSuffix
+        val notes = "<your_notes>\n" + scratchpad.joinToString("\n") { "- $it" } + "\n</your_notes>"
+        return if (bundleSuffix.isBlank()) notes else "$bundleSuffix\n\n$notes"
+    }
 
     private data class SubOutcome(val result: ToolResult, val usage: TokenUsage)
 
