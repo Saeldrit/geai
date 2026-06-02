@@ -2,6 +2,7 @@ package com.github.saeldrit.geai.tools
 
 import com.github.saeldrit.geai.llm.ToolSpec
 import com.github.saeldrit.geai.tools.debug.AwaitPauseTool
+import com.github.saeldrit.geai.tools.debug.DebugDumpObjectTool
 import com.github.saeldrit.geai.tools.debug.DebugEvaluateTool
 import com.github.saeldrit.geai.tools.debug.DebugStateTool
 import com.github.saeldrit.geai.tools.debug.DebugStepTool
@@ -96,6 +97,7 @@ object GeaiToolset {
             DebugStepTool,
             DebugVariablesTool,
             DebugEvaluateTool,
+            DebugDumpObjectTool,
         ),
         "run" to listOf(RunCommandTool),
         "selfmod" to listOf(SelfInfoTool, SelfPatchTool),
@@ -103,7 +105,7 @@ object GeaiToolset {
 
     /** One-line purpose per group, shown to the model in the `load_tools` description. */
     private val GROUP_SUMMARY: Map<String, String> = linkedMapOf(
-        "debug" to "set/remove/list breakpoints, start a debug session, await a pause, STEP (over/into/out/resume) the debugger yourself, inspect state & variables, evaluate expressions",
+        "debug" to "set/remove/list breakpoints, start a debug session, await a pause, STEP (over/into/out/resume) the debugger yourself, inspect state & variables, evaluate expressions (batch), dump a whole object tree",
         "run" to "run_command — run shell/build/test/git commands in the project",
         "selfmod" to "self_info, self_patch — inspect and modify geai's own source",
     )
