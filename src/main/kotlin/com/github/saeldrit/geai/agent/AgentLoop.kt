@@ -138,23 +138,26 @@ class AgentLoop(
                     return
                 }
 
-                // Bundle + the running notes form the volatile (uncached) suffix, rebuilt each step so the
-                // model always sees its latest notes. Notes are tiny and live OUTSIDE the transcript, so
-                // they survive compaction while the raw reads that produced them can be folded away.
-                val volatileSuffix = appendNotes(bundleSuffix, session.scratchpad)
-                val outgoing = ContextCompressor.compress(
+                // Bundle is stable within a turn (built once from userText) — keep it in the system
+                // suffix so providers' prompt caching (Anthropic explicit cache_control, OpenAI/DeepSeek
+                // auto-prefix) can hit it across iterations. Notes grow each step, so they go LAST as a
+                // trailing user note in the outgoing message list — they don't invalidate the cached
+                // prefix and live OUTSIDE the persisted transcript so compaction can fold raw reads away.
+                val outgoingBase = ContextCompressor.compress(
                     session.messages,
                     settings.transcriptWindow(),
                     settings.maxTokens,
-                    systemPrompt.length + volatileSuffix.length,
+                    systemPrompt.length + bundleSuffix.length,
                     summarizer,
                 )
+                val outgoing = appendNotesAsTrailingUser(outgoingBase, session.scratchpad)
                 val request = ChatRequest(
                     model = settings.loopModel(),
                     system = systemPrompt,
-                    // Volatile suffix (bundle + notes) lives AFTER the cached system block so the stable
-                    // doctrine keeps hitting the prompt cache across turns (Anthropic).
-                    systemVolatileSuffix = volatileSuffix,
+                    // Bundle is per-turn stable: lives in the system block AFTER the doctrine cache
+                    // breakpoint, so the doctrine keeps caching across turns and the bundle caches
+                    // across iterations within a turn (Anthropic) or via auto-prefix (OpenAI).
+                    systemVolatileSuffix = bundleSuffix,
                     messages = outgoing,
                     tools = advertisedSpecs(settings, activeGroups),
                     maxTokens = settings.maxTokens,
@@ -343,11 +346,22 @@ class AgentLoop(
         return ToolResult.ok("Noted (${scratchpad.size} total). Build your final answer from your notes.")
     }
 
-    /** Render the running notes into the volatile suffix so the model always sees its latest memory. */
-    private fun appendNotes(bundleSuffix: String, scratchpad: List<String>): String {
-        if (scratchpad.isEmpty()) return bundleSuffix
-        val notes = "<your_notes>\n" + scratchpad.joinToString("\n") { "- $it" } + "\n</your_notes>"
-        return if (bundleSuffix.isBlank()) notes else "$bundleSuffix\n\n$notes"
+    /**
+     * Render the running notes as a TRAILING user message appended to the outgoing list (not to the
+     * persisted session.messages). Kept outside the cached system prefix so notes growing each
+     * iteration do NOT invalidate the prompt cache — only this small tail is fresh input every turn.
+     *
+     * Soft cap: if the scratchpad exceeds [MAX_NOTES_RETAINED], only the most recent notes are shown
+     * to the model with a one-line marker that older notes were folded away. Prevents unbounded growth
+     * from inflating the trailing tail on very long multi-turn sessions.
+     */
+    private fun appendNotesAsTrailingUser(outgoing: List<ChatMessage>, scratchpad: List<String>): List<ChatMessage> {
+        if (scratchpad.isEmpty()) return outgoing
+        val visible = if (scratchpad.size <= MAX_NOTES_RETAINED) scratchpad else scratchpad.takeLast(MAX_NOTES_RETAINED)
+        val dropped = scratchpad.size - visible.size
+        val header = if (dropped > 0) "<your_notes> (showing the last ${visible.size} of ${scratchpad.size}; $dropped older notes folded)\n" else "<your_notes>\n"
+        val notesText = header + visible.joinToString("\n") { "- $it" } + "\n</your_notes>"
+        return outgoing + ChatMessage.user(notesText)
     }
 
     private data class SubOutcome(val result: ToolResult, val usage: TokenUsage)
@@ -443,6 +457,11 @@ class AgentLoop(
     private companion object {
         /** Hard ceiling on delegations per turn — a backstop against a model that fans out endlessly. */
         const val MAX_DELEGATIONS = 16
+
+        /** Soft cap on notes shown to the model. Older notes are folded with a one-line marker so the
+         *  trailing tail stays compact on very long multi-turn sessions (the agent already has its
+         *  final answer built from earlier notes; the cap protects the per-iteration payload). */
+        const val MAX_NOTES_RETAINED = 50
 
         /** A delegated sub-agent is focused: a tight iteration cap and token budget keep each unit cheap.
          *  Kept small so several delegations in one step can't overshoot the parent's turn budget. */

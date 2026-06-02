@@ -46,9 +46,10 @@ class AnthropicClient(
             addProperty("max_tokens", request.maxTokens)
             addProperty("temperature", request.temperature)
             // System prompt as a cacheable block: it is large and identical across a session, so a
-            // cache breakpoint here turns repeated reads into cheap cache hits. Any per-turn volatile
-            // suffix (the context bundle) goes in a SECOND block AFTER the breakpoint — uncached — so
-            // the stable doctrine above keeps hitting the cache across turns instead of being rewritten.
+            // cache breakpoint here turns repeated reads into cheap cache hits. The per-turn bundle
+            // suffix goes in a SECOND block WITHOUT its own breakpoint — Anthropic auto-extends the
+            // cached prefix up to the NEXT breakpoint (tools), so a turn-stable bundle is implicitly
+            // cached anyway. Saves one of the 4 available breakpoints for transcript caching.
             if (request.system.isNotBlank() || request.systemVolatileSuffix.isNotBlank()) {
                 add("system", JsonArray().apply {
                     if (request.system.isNotBlank()) {
@@ -81,18 +82,25 @@ class AnthropicClient(
             root.add("tools", tools)
         }
         val messages = JsonArray()
-        request.messages.forEach { message -> toWireMessage(message)?.let(messages::add) }
+        // Incremental transcript caching: cache_control on the LAST tool_result of the MOST RECENT
+        // TOOL message caches the entire transcript prefix up to that point, so the next iteration
+        // reads it from cache (10% of input price) instead of resending. Anthropic allows ≤4 cache
+        // breakpoints — we use 4: doctrine, bundle, tools, last-tool-result.
+        val lastToolIndex = request.messages.indexOfLast { it.role == Role.TOOL }
+        request.messages.forEachIndexed { index, message ->
+            toWireMessage(message, withCacheBreakpoint = index == lastToolIndex)?.let(messages::add)
+        }
         root.add("messages", messages)
         return root
     }
 
     private fun ephemeral(): JsonObject = JsonObject().apply { addProperty("type", "ephemeral") }
 
-    private fun toWireMessage(message: ChatMessage): JsonObject? = when (message.role) {
+    private fun toWireMessage(message: ChatMessage, withCacheBreakpoint: Boolean = false): JsonObject? = when (message.role) {
         Role.SYSTEM -> null // system prompt is a top-level field, never a message
         Role.USER -> wire("user", textBlocks(message.content))
         Role.ASSISTANT -> wire("assistant", assistantBlocks(message.content))
-        Role.TOOL -> wire("user", toolResultBlocks(message.content))
+        Role.TOOL -> wire("user", toolResultBlocks(message.content, withCacheBreakpoint))
     }
 
     private fun wire(role: String, content: JsonArray): JsonObject = JsonObject().apply {
@@ -129,13 +137,17 @@ class AnthropicClient(
         }
     }
 
-    private fun toolResultBlocks(blocks: List<ContentBlock>): JsonArray = JsonArray().apply {
-        blocks.filterIsInstance<ContentBlock.ToolResult>().forEach { result ->
+    private fun toolResultBlocks(blocks: List<ContentBlock>, withCacheBreakpoint: Boolean = false): JsonArray = JsonArray().apply {
+        val results = blocks.filterIsInstance<ContentBlock.ToolResult>()
+        results.forEachIndexed { index, result ->
             add(JsonObject().apply {
                 addProperty("type", "tool_result")
                 addProperty("tool_use_id", result.toolUseId)
                 addProperty("content", result.content)
                 if (result.isError) addProperty("is_error", true)
+                // Breakpoint on the LAST tool_result of the message caches the entire transcript prefix
+                // up to (and including) this point — the next turn reads it instead of resending.
+                if (withCacheBreakpoint && index == results.lastIndex) add("cache_control", ephemeral())
             })
         }
     }

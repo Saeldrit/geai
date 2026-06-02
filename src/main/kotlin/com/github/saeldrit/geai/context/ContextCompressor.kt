@@ -23,6 +23,15 @@ object ContextCompressor {
     private const val TRUNCATED_HEAD = 400
     private const val MIN_BUDGET = 20_000
 
+    /**
+     * Eager truncation: protect the N most recent TOOL messages verbatim (the model is still working
+     * with them), and aggressively shrink every older tool_result to a fixed head — regardless of
+     * budget. This stops the transcript from ballooning between compactions (file dumps, search
+     * tables) and keeps caching cheap: stable older content stays small and reusable.
+     */
+    private const val EAGER_KEEP_RECENT_TOOLS = 4
+    private const val EAGER_TOOL_HEAD = 800
+
     /** Summarises a rendered transcript segment into a dense recap. Returns null/blank to decline. */
     fun interface Summarizer {
         fun summarize(renderedSegment: String): String
@@ -35,18 +44,46 @@ object ContextCompressor {
         systemPromptChars: Int = 0,
         summarizer: Summarizer? = null,
     ): List<ChatMessage> {
+        // Eager pass: shrink stale tool_result blocks unconditionally so even short transcripts stay
+        // lean. Runs even when under-budget — the goal is small payloads, not just not-exceeding.
+        val eagerlyTrimmed = eagerlyTruncateOldToolResults(messages)
         val budget = charBudget(contextWindowTokens, outputReserveTokens, systemPromptChars)
-        if (estimateChars(messages) <= budget) return messages
+        if (estimateChars(eagerlyTrimmed) <= budget) return eagerlyTrimmed
 
         // Preferred: fold the old middle into a recap (keeps findings, not just the first 400 chars).
         if (summarizer != null) {
-            val summarised = runCatching { summarizeOldContext(messages, summarizer) }.getOrNull()
-            if (summarised != null && summarised !== messages) {
+            val summarised = runCatching { summarizeOldContext(eagerlyTrimmed, summarizer) }.getOrNull()
+            if (summarised != null && summarised !== eagerlyTrimmed) {
                 return if (estimateChars(summarised) <= budget) summarised else truncateToBudget(summarised, budget)
             }
         }
         // Fallback: deterministic truncation.
-        return truncateToBudget(messages, budget)
+        return truncateToBudget(eagerlyTrimmed, budget)
+    }
+
+    /**
+     * Replace every tool_result older than the last [EAGER_KEEP_RECENT_TOOLS] TOOL messages with its
+     * head ([EAGER_TOOL_HEAD] chars). Operates on a shallow copy; returns the original list when no
+     * trimming applies, so identity-equality short-circuits work upstream.
+     */
+    private fun eagerlyTruncateOldToolResults(messages: List<ChatMessage>): List<ChatMessage> {
+        val toolIndices = messages.withIndex().filter { it.value.role == Role.TOOL }.map { it.index }
+        if (toolIndices.size <= EAGER_KEEP_RECENT_TOOLS) return messages
+        val protectedIndices = toolIndices.takeLast(EAGER_KEEP_RECENT_TOOLS).toSet()
+        var modified = false
+        val result = messages.mapIndexed { index, message ->
+            if (message.role != Role.TOOL || index in protectedIndices) return@mapIndexed message
+            val shrunk = message.content.map { block ->
+                if (block is ContentBlock.ToolResult && block.content.length > EAGER_TOOL_HEAD) {
+                    modified = true
+                    block.copy(content = block.content.take(EAGER_TOOL_HEAD) + "\n…[truncated to save context]")
+                } else {
+                    block
+                }
+            }
+            if (shrunk === message.content) message else message.copy(content = shrunk)
+        }
+        return if (modified) result else messages
     }
 
     /**

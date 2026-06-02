@@ -23,11 +23,21 @@ import com.intellij.openapi.progress.ProgressIndicator
  * Client for any OpenAI Chat-Completions-compatible endpoint (`POST /v1/chat/completions`):
  * DeepSeek, Alibaba Qwen / DashScope compatible-mode, OpenRouter, Ollama, LM Studio, vLLM.
  * Tool calls are expressed via the `tools` / `tool_calls` function-calling convention.
+ *
+ * Prompt caching by provider:
+ *  - DeepSeek / Qwen: automatic prefix-cache (no opt-in needed; works on stable system prefix).
+ *  - OpenRouter: supports an OpenAI-shaped `cache_control: {"type":"ephemeral"}` extension that
+ *    is forwarded to Anthropic/Gemini back-ends and gives the same 90% input discount. Detected
+ *    by base URL and enabled automatically.
+ *  - OpenAI proper, Ollama, vLLM: auto-cache only on the stable prefix.
  */
 class OpenAiCompatibleClient(
     private val baseUrl: String,
     private val apiKey: String,
 ) : LlmClient {
+
+    /** OpenRouter is the only OpenAI-compatible endpoint that honours explicit cache_control blocks. */
+    private val supportsExplicitCacheControl: Boolean = baseUrl.contains("openrouter.ai", ignoreCase = true)
 
     override fun chat(request: ChatRequest, indicator: ProgressIndicator): ChatResult {
         val raw = HttpTransport.postJson(
@@ -52,17 +62,13 @@ class OpenAiCompatibleClient(
             addProperty("temperature", request.temperature)
         }
         val messages = JsonArray()
-        // No prompt caching here, so the volatile suffix is simply folded into the system message.
-        val systemText = listOf(request.system, request.systemVolatileSuffix)
-            .filter { it.isNotBlank() }
-            .joinToString("\n\n")
-        if (systemText.isNotBlank()) {
-            messages.add(JsonObject().apply {
-                addProperty("role", "system")
-                addProperty("content", systemText)
-            })
+        appendSystem(messages, request)
+        // For OpenRouter we also tag the last tool_result with cache_control so the growing
+        // transcript prefix caches between iterations (mirrors the AnthropicClient strategy).
+        val lastToolIndex = if (supportsExplicitCacheControl) request.messages.indexOfLast { it.role == Role.TOOL } else -1
+        request.messages.forEachIndexed { index, message ->
+            appendWireMessages(messages, message, withCacheBreakpoint = index == lastToolIndex)
         }
-        request.messages.forEach { message -> appendWireMessages(messages, message) }
         root.add("messages", messages)
 
         if (request.tools.isNotEmpty()) {
@@ -83,17 +89,68 @@ class OpenAiCompatibleClient(
         return root
     }
 
-    private fun appendWireMessages(target: JsonArray, message: ChatMessage) {
+    /**
+     * Build the system message. On OpenRouter we emit a multi-part content array so the stable
+     * doctrine and per-turn bundle each get their own cache_control breakpoint — the OpenRouter
+     * proxy forwards these to Anthropic/Gemini back-ends for a 90% input discount on hits.
+     * Elsewhere we fold both into a single string (auto-prefix caching handles it).
+     */
+    private fun appendSystem(target: JsonArray, request: ChatRequest) {
+        if (supportsExplicitCacheControl) {
+            val parts = JsonArray()
+            if (request.system.isNotBlank()) {
+                parts.add(textPart(request.system, withCacheBreakpoint = true))
+            }
+            if (request.systemVolatileSuffix.isNotBlank()) {
+                parts.add(textPart(request.systemVolatileSuffix, withCacheBreakpoint = true))
+            }
+            if (parts.size() > 0) {
+                target.add(JsonObject().apply {
+                    addProperty("role", "system")
+                    add("content", parts)
+                })
+            }
+        } else {
+            val systemText = listOf(request.system, request.systemVolatileSuffix)
+                .filter { it.isNotBlank() }
+                .joinToString("\n\n")
+            if (systemText.isNotBlank()) {
+                target.add(JsonObject().apply {
+                    addProperty("role", "system")
+                    addProperty("content", systemText)
+                })
+            }
+        }
+    }
+
+    private fun textPart(text: String, withCacheBreakpoint: Boolean): JsonObject = JsonObject().apply {
+        addProperty("type", "text")
+        addProperty("text", text)
+        if (withCacheBreakpoint) {
+            add("cache_control", JsonObject().apply { addProperty("type", "ephemeral") })
+        }
+    }
+
+    private fun appendWireMessages(target: JsonArray, message: ChatMessage, withCacheBreakpoint: Boolean = false) {
         when (message.role) {
             Role.SYSTEM -> target.add(simpleMessage("system", message.text))
             Role.USER -> target.add(simpleMessage("user", message.text))
             Role.ASSISTANT -> target.add(assistantMessage(message))
-            Role.TOOL -> message.content.filterIsInstance<ContentBlock.ToolResult>().forEach { result ->
-                target.add(JsonObject().apply {
-                    addProperty("role", "tool")
-                    addProperty("tool_call_id", result.toolUseId)
-                    addProperty("content", result.content)
-                })
+            Role.TOOL -> {
+                val results = message.content.filterIsInstance<ContentBlock.ToolResult>()
+                results.forEachIndexed { index, result ->
+                    target.add(JsonObject().apply {
+                        addProperty("role", "tool")
+                        addProperty("tool_call_id", result.toolUseId)
+                        // OpenRouter accepts cache_control on the last tool message in a string
+                        // content (Anthropic-style). For other providers we keep plain string content.
+                        if (withCacheBreakpoint && index == results.lastIndex && supportsExplicitCacheControl) {
+                            add("content", JsonArray().apply { add(textPart(result.content, withCacheBreakpoint = true)) })
+                        } else {
+                            addProperty("content", result.content)
+                        }
+                    })
+                }
             }
         }
     }

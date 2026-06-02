@@ -22,7 +22,10 @@ object ReadFileTool : AgentTool {
     """.trimIndent()
 
     private const val MAX_BYTES = 2_000_000L
-    private const val MAX_LINES_WITHOUT_RANGE = 400
+    // Whole-file read cap — kept tight because the dump lives in the transcript forever. The agent
+    // is instructed to pass start_line/end_line for anything longer; a 150-line head is enough to
+    // orient and decide what range to actually fetch.
+    private const val MAX_LINES_WITHOUT_RANGE = 150
 
     override fun execute(args: ToolArgs, context: ToolContext): ToolResult {
         val path = args.string("path")

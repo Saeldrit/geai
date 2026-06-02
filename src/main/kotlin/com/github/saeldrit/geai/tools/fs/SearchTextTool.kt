@@ -19,7 +19,7 @@ object SearchTextTool : AgentTool {
           "query":{"type":"string","description":"Substring or regex to find"},
           "regex":{"type":"boolean","description":"Treat query as a regex (default false)"},
           "file_glob":{"type":"string","description":"Limit to files matching a glob, e.g. *.kt"},
-          "max_results":{"type":"integer","description":"Cap on matches (default 100)"}
+          "max_results":{"type":"integer","description":"Cap on matches (default 30, max 1000). Narrow with file_glob/regex before raising."}
         },"required":["query"]}
     """.trimIndent()
 
@@ -31,7 +31,9 @@ object SearchTextTool : AgentTool {
         val query = args.string("query")
         val isRegex = args.boolean("regex", false)
         val glob = args.stringOrNull("file_glob")
-        val maxResults = args.int("max_results", 100).coerceIn(1, 1000)
+        // Default kept low: a 100-row table is ~24KB and lives in the transcript forever. If the
+        // model needs more, it can ask explicitly — but usually it should narrow file_glob/regex first.
+        val maxResults = args.int("max_results", 30).coerceIn(1, 1000)
 
         val regex = if (isRegex) {
             runCatching { Regex(query) }.getOrElse { return ToolResult.error("Invalid regex: ${it.message}") }
