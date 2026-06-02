@@ -29,15 +29,6 @@ class GeaiSettingsState : BaseState() {
     // Output cap per reply. Internal default — not surfaced in the UI; tunable via geai.xml if needed.
     var maxTokens by property(8192)
 
-    /**
-     * Hard cost ceiling for a single turn (billed input + output, incl. delegated sub-agents): when
-     * reached the loop stops with an "ask me to continue" message instead of burning more. The real
-     * cost guard — the iteration ceiling is just a safety backstop (see LoopProfile). Internal default,
-     * not surfaced in the UI; 0 = no ceiling. (The user-facing loop's iteration cap is a constant, so
-     * nobody has to tune a number for the agent to "just work".)
-     */
-    var maxTurnTokens by property(250_000)
-
     /** Model context window (tokens) used to size transcript compaction. Default ~200k (Claude). */
     var maxContextTokens by property(200_000)
 

@@ -41,13 +41,15 @@ data class LoopProfile(
 ) {
     companion object {
         /**
-         * Iteration ceiling for the user-facing loop — a safety backstop, NOT a cost lever (the
-         * per-turn token budget caps cost). Internal: never exposed as a user setting, so "it just
-         * works" without anyone tuning a number.
+         * Pure anti-runaway backstop for the user-facing loop — NOT a work limit. The loop runs
+         * CONTINUOUSLY until the model is done (no more tool calls), gets stuck (the duplicate-call
+         * guard), or is cancelled; it compacts the context to keep going rather than stopping. This
+         * high ceiling only caps a pathological non-repeating runaway. Internal — never a tunable knob.
          */
-        const val DEFAULT_MAIN_ITERATIONS = 50
+        const val DEFAULT_MAIN_ITERATIONS = 500
 
-        /** Main loop with the default backstop; maxTurnTokens = 0 means "read it from settings". */
+        /** Main loop: high anti-runaway backstop, no cumulative-cost terminal (maxTurnTokens is unused
+         *  for the main loop — only sub-agents are token-bounded). It compacts context and works on. */
         val MAIN = LoopProfile(isSubAgent = false, maxIterations = DEFAULT_MAIN_ITERATIONS, maxTurnTokens = 0)
 
         /** Main loop with an explicit iteration cap — used by the benchmark to bound unattended runs. */
@@ -100,12 +102,18 @@ class AgentLoop(
             ""
         }
         val maxIterations = profile.maxIterations.coerceAtLeast(1)
-        val turnTokenBudget = if (profile.isSubAgent) profile.maxTurnTokens else settings.maxTurnTokens
+        // Only a sub-agent carries a cumulative-cost terminal (it is a bounded, fanned-out unit). The
+        // main loop runs continuously — it compacts the context and keeps working — so it has none.
+        val subTokenBudget = if (profile.isSubAgent) profile.maxTurnTokens else 0
 
         try {
             var iteration = 0
             var turnUsage = TokenUsage.ZERO
+            // Stuck-loop detection compares BOTH the call signature and the result signature of
+            // consecutive steps: identical call + identical result = no progress (abort); identical call
+            // with a NEW result = legitimate progress (e.g. debug_step walking the program) = keep going.
             var lastToolSignature: String? = null
+            var lastResultSignature: String? = null
             // On-demand tool groups the model has pulled in this turn (progressive disclosure). Starts
             // empty: only CORE (+GRACE) + the load_tools meta-tool are advertised until the model asks.
             val activeGroups = linkedSetOf<String>()
@@ -121,36 +129,53 @@ class AgentLoop(
                     listener.onEvent(AgentEvent.Cancelled())
                     return
                 }
+                // Safety backstop ONLY — not a work limit. The main loop runs until the model is done,
+                // gets stuck (identical repeated calls, caught below), or the user cancels. This high
+                // ceiling just stops a pathological non-repeating runaway; a real task never reaches it.
                 if (iteration++ >= maxIterations) {
                     summarizeAndFinish(
-                        "Reached the max iteration budget ($maxIterations). Summarizing what I have so far — ask me to continue for more.",
+                        "Safety stop: $maxIterations iterations without finishing — likely stuck. " +
+                            "Summarizing progress so far; ask me to continue if it's genuinely unfinished.",
                         session, client, systemPrompt, bundleSuffix, settings, turnUsage, indicator, listener,
                     )
                     return
                 }
-                // Hard cost ceiling for the turn. Checked at the top (never mid tool round-trip) so the
-                // transcript stays valid for resume. Billed tokens only — cache reads are cheap and excluded.
-                if (turnTokenBudget > 0 && turnUsage.inputTokens + turnUsage.outputTokens >= turnTokenBudget) {
+                // A sub-agent is a bounded, fanned-out unit: it MUST stop at its token budget so the
+                // orchestrator's cost stays predictable. The MAIN loop has NO such cumulative-cost
+                // terminal — it compacts the context (below) and keeps working until the task is done.
+                if (subTokenBudget > 0 && turnUsage.inputTokens + turnUsage.outputTokens >= subTokenBudget) {
                     summarizeAndFinish(
-                        "Reached the per-turn token budget ($turnTokenBudget). Summarizing what I have so far — ask me to continue, or raise it in Settings | Tools | Geai.",
+                        "Sub-agent reached its token budget ($subTokenBudget) — returning findings.",
                         session, client, systemPrompt, bundleSuffix, settings, turnUsage, indicator, listener,
                     )
                     return
                 }
 
-                // Bundle is stable within a turn (built once from userText) — keep it in the system
-                // suffix so providers' prompt caching (Anthropic explicit cache_control, OpenAI/DeepSeek
-                // auto-prefix) can hit it across iterations. Notes grow each step, so they go LAST as a
-                // trailing user note in the outgoing message list — they don't invalidate the cached
-                // prefix and live OUTSIDE the persisted transcript so compaction can fold raw reads away.
-                val outgoingBase = ContextCompressor.compress(
+                // Continuous operation hinges on this: keep the STORED transcript within the working
+                // window so a long turn never grows the context — or its per-iteration re-send cost —
+                // without bound. Fold the old middle into a dense recap ONCE and drop stale raw tool
+                // dumps, then write the result BACK into the session so the next iteration starts from
+                // the compact form (the summariser does NOT re-run over the same middle every step).
+                // The original task, the recent turns, and the separate scratchpad of findings are
+                // always preserved. The volatile bundle stays in the system suffix (so the doctrine
+                // keeps hitting the prompt cache) and the running notes go LAST as a trailing user
+                // message — outside the persisted transcript — so neither invalidates the cached prefix.
+                val compacted = ContextCompressor.compress(
                     session.messages,
                     settings.transcriptWindow(),
                     settings.maxTokens,
                     systemPrompt.length + bundleSuffix.length,
                     summarizer,
                 )
-                val outgoing = appendNotesAsTrailingUser(outgoingBase, session.scratchpad)
+                if (compacted !== session.messages) {
+                    val foldedAway = session.messages.size - compacted.size
+                    session.messages.clear()
+                    session.messages.addAll(compacted)
+                    if (foldedAway > 0) {
+                        listener.onEvent(AgentEvent.Info("🗜 Folded $foldedAway earlier step(s) into a recap to keep the context lean — continuing."))
+                    }
+                }
+                val outgoing = appendNotesAsTrailingUser(session.messages, session.scratchpad)
                 val request = ChatRequest(
                     model = settings.loopModel(),
                     system = systemPrompt,
@@ -181,18 +206,6 @@ class AgentLoop(
                     return
                 }
 
-                // Loop guard: if the model asks for the EXACT same tool call(s) as the previous step,
-                // it is stuck (a broken tool round-trip or a confused model). Abort immediately rather
-                // than burn the full iteration budget on identical paid requests.
-                val signature = toolUses.joinToString("|") { "${it.name}(${it.inputJson})" }
-                if (signature == lastToolSignature) {
-                    listener.onEvent(AgentEvent.Error("Stopped: the model repeated the identical tool call(s) — likely stuck in a loop. Aborted to avoid wasting tokens."))
-                    listener.onEvent(AgentEvent.Info(UsageFormat.summary(settings.loopModel(), turnUsage, session.totalUsage, settings.modelPrices)))
-                    listener.onEvent(AgentEvent.Done(session.totalUsage))
-                    return
-                }
-                lastToolSignature = signature
-
                 // Every tool_use MUST get a matching tool_result, even on cancellation — otherwise the
                 // persisted transcript is invalid and a resumed session is rejected by the provider.
                 val toolResults = ArrayList<ContentBlock.ToolResult>(toolUses.size)
@@ -212,8 +225,6 @@ class AgentLoop(
                                 ToolResult.error("Nested delegation is not allowed — do the analysis yourself and return your finding.")
                             delegationCount >= MAX_DELEGATIONS ->
                                 ToolResult.error("Delegation limit ($MAX_DELEGATIONS) reached this turn — synthesize from the findings you have.")
-                            turnTokenBudget > 0 && turnUsage.inputTokens + turnUsage.outputTokens >= turnTokenBudget ->
-                                ToolResult.error("Turn token budget reached — do NOT delegate more; synthesize from the findings you have.")
                             else -> {
                                 delegationCount++
                                 val outcome = runDelegate(call, indicator, listener)
@@ -238,6 +249,21 @@ class AgentLoop(
                     listener.onEvent(AgentEvent.Cancelled())
                     return
                 }
+
+                // Stuck-loop guard (checked AFTER execution so we can compare results). Abort only when
+                // the model made the EXACT same call(s) AND got the EXACT same result(s) as the previous
+                // step — genuine no-progress (broken round-trip / confused model). Identical calls with a
+                // DIFFERENT result are real progress (debug_step advancing, await_pause polling) and pass.
+                val callSignature = toolUses.joinToString("|") { "${it.name}(${it.inputJson})" }
+                val resultSignature = toolResults.joinToString("|") { "${it.isError}:${it.content.take(400)}" }
+                if (callSignature == lastToolSignature && resultSignature == lastResultSignature) {
+                    listener.onEvent(AgentEvent.Error("Stopped: the model repeated the identical tool call(s) with no new result — likely stuck. Aborted to avoid wasting tokens."))
+                    listener.onEvent(AgentEvent.Info(UsageFormat.summary(settings.loopModel(), turnUsage, session.totalUsage, settings.modelPrices)))
+                    listener.onEvent(AgentEvent.Done(session.totalUsage))
+                    return
+                }
+                lastToolSignature = callSignature
+                lastResultSignature = resultSignature
             }
         } catch (_: ProcessCanceledException) {
             listener.onEvent(AgentEvent.Cancelled())

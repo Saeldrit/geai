@@ -58,6 +58,49 @@ class ContextCompressorTest {
     }
 
     @Test
+    fun `re-compressing an already folded transcript is stable and does not re-summarise`() {
+        // The agent loop persists compaction back into the transcript, so compacting the SAME (already
+        // folded, now under-budget) transcript again must be a no-op — otherwise a long continuous turn
+        // would re-pay the summariser's token cost every iteration.
+        val task = ChatMessage.user("original task")
+        val middle = (1..10).flatMap { i ->
+            listOf(
+                ChatMessage.assistant(listOf(ContentBlock.ToolUse("t$i", "read_file", """{"path":"F$i"}"""))),
+                ChatMessage.toolResults(listOf(ContentBlock.ToolResult("t$i", "CONTENT ".repeat(700)))),
+            )
+        }
+        val recent = (1..6).map { ChatMessage.assistantText("recent $it") }
+        val messages = listOf(task) + middle + recent
+
+        var summariserCalls = 0
+        val summariser = ContextCompressor.Summarizer { summariserCalls++; "DENSE-RECAP" }
+
+        val once = ContextCompressor.compress(messages, 1_000, 100, 0, summariser)
+        val callsAfterFirst = summariserCalls
+        val twice = ContextCompressor.compress(once, 1_000, 100, 0, summariser)
+
+        assertEquals("first pass folds the middle exactly once", 1, callsAfterFirst)
+        assertSame("a folded transcript is returned unchanged", once, twice)
+        assertEquals("summariser is not called again on the compact form", 1, summariserCalls)
+    }
+
+    @Test
+    fun `eager truncation is idempotent — a second pass does not re-trim`() {
+        // 5+ tool messages so eager truncation engages on the older ones; persisted back, a re-run must
+        // leave them untouched (the truncation marker is a fixed point).
+        val task = ChatMessage.user("task")
+        val tools = (1..6).map { i ->
+            ChatMessage.toolResults(listOf(ContentBlock.ToolResult("t$i", "DATA ".repeat(400))))
+        }
+        val messages = listOf(task) + tools
+
+        val once = ContextCompressor.compress(messages, 200_000, 8192)
+        val twice = ContextCompressor.compress(once, 200_000, 8192)
+
+        assertSame("already-trimmed transcript passes through untouched", once, twice)
+    }
+
+    @Test
     fun `summariser cut never orphans a tool_result`() {
         // Many tool pairs so the recent window would otherwise begin on a TOOL message; the cut must
         // back up to that result's tool_use so nothing is left dangling.

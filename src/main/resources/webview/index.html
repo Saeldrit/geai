@@ -60,6 +60,9 @@
   .tool{color:var(--muted);font-size:12px;margin:0 0 6px;font-family:ui-monospace,Consolas,monospace;overflow-wrap:anywhere;word-break:break-word}
   .tool.err{color:#e06c75}
   .info{color:var(--muted);font-style:italic;margin:0 0 8px;overflow-wrap:anywhere}
+  /* clickable source references (path:line) → open in the editor */
+  .srcref{color:var(--accent);cursor:pointer;text-decoration:none;border-bottom:1px dashed transparent}
+  .srcref:hover{border-bottom-color:var(--accent)}
 
   /* collapsible reasoning — hidden by default, toggled by the arrow */
   .reason{margin:0 0 12px;border:1px solid var(--border);border-radius:8px;background:var(--card);overflow:hidden}
@@ -186,10 +189,16 @@
   function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
   function b64(s){ try{ return btoa(unescape(encodeURIComponent(s))); }catch(e){ return ''; } }
   function unb64(s){ try{ return decodeURIComponent(escape(atob(s))); }catch(e){ return ''; } }
+  // turn `path.ext[:line]` references into clickable links that open the file in the editor
+  function linkify(html){
+    return html.replace(/((?:[\w.$-]+[\/\\])*[\w.$-]+\.(?:java|kt|kts|xml|py|js|jsx|ts|tsx|json|ya?ml|gradle|properties|sql|html|css|cpp|hpp|go|rs|rb|php|cs|swift|scala|groovy))(?::(\d+))?(?::\d+)?/g, function(m, path, ln){
+      return '<a class="srcref" data-path="'+path.replace(/"/g,'&quot;')+'"'+(ln?(' data-line="'+ln+'"'):'')+'>'+m+'</a>';
+    });
+  }
   function inlineMd(s){
-    return esc(s)
+    return linkify(esc(s)
       .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
-      .replace(/`([^`]+)`/g,'<code>$1</code>');
+      .replace(/`([^`]+)`/g,'<code>$1</code>'));
   }
   function renderTable(rows){
     var data=rows.filter(function(l){return !/^\s*\|[\s\-|:]+\|\s*$/.test(l);});
@@ -252,7 +261,7 @@
 
   function bubble(cls,who,text){ var d=document.createElement('div'); d.className='msg '+cls;
     d.innerHTML='<div class="who">'+esc(who)+'</div><div class="body">'+md(text)+'</div>'; append(d); }
-  function line(cls,text){ var d=document.createElement('div'); d.className=cls; d.textContent=text; append(d); }
+  function line(cls,text){ var d=document.createElement('div'); d.className=cls; d.innerHTML=linkify(esc(text)); append(d); }
   function reasoning(text){ var d=document.createElement('details'); d.className='reason';
     d.innerHTML='<summary>Размышления</summary><div class="rbody"></div>';
     d.querySelector('.rbody').textContent=text; append(d); }
@@ -370,6 +379,11 @@
   el('btnCompact').onclick=function(){ send2k({action:'compact'}); };
   el('btnSteps').onclick=function(){ var on=chat.classList.toggle('steps-only'); this.classList.toggle('active',on); };
   chat.addEventListener('click', function(e){
+    var ref = e.target.closest ? e.target.closest('.srcref') : null;
+    if(ref){ e.preventDefault();
+      var ln = parseInt(ref.getAttribute('data-line')||'',10);
+      send2k({action:'openFile', path:ref.getAttribute('data-path'), line:isNaN(ln)?null:ln});
+      return; }
     var btn = e.target.closest ? e.target.closest('.copybtn') : null; if(!btn) return;
     var code = unb64(btn.getAttribute('data-code')||''); if(!code) return;
     send2k({action:'copy', text: code});

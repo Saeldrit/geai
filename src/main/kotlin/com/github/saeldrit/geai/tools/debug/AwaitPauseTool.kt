@@ -11,15 +11,17 @@ object AwaitPauseTool : AgentTool {
     override val name = "await_pause"
     override val description =
         "Wait until a debug session pauses at a breakpoint (or timeout). Returns the paused location " +
-            "so you can read that code and reason about the runtime state that reached it."
+            "so you can read that code and reason about the runtime state that reached it. Returns " +
+            "immediately if already paused. When you need the USER to trigger the request, use a LONG " +
+            "timeout (e.g. 300) and wait here — do NOT end your turn telling the user to go and then stop."
     override val parametersJsonSchema = """
         {"type":"object","properties":{
-          "timeout_seconds":{"type":"integer","description":"Max seconds to wait (default 30, max 300)"}
+          "timeout_seconds":{"type":"integer","description":"Max seconds to wait (default 60, max 600). Use 300+ when waiting for the user to trigger the request."}
         }}
     """.trimIndent()
 
     override fun execute(args: ToolArgs, context: ToolContext): ToolResult {
-        val timeoutSeconds = args.int("timeout_seconds", 30).coerceIn(1, 300)
+        val timeoutSeconds = args.int("timeout_seconds", 60).coerceIn(1, 600)
         val deadline = System.currentTimeMillis() + timeoutSeconds * 1000L
 
         while (System.currentTimeMillis() < deadline) {

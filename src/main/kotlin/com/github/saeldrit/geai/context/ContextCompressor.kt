@@ -32,6 +32,10 @@ object ContextCompressor {
     private const val EAGER_KEEP_RECENT_TOOLS = 4
     private const val EAGER_TOOL_HEAD = 800
 
+    /** Suffix marking an eagerly-truncated tool result, so re-compaction is idempotent (no re-trim) —
+     *  the loop persists compaction back into the transcript, so this must be a fixed point. */
+    private const val EAGER_TRUNC_MARKER = "…[truncated to save context]"
+
     /** Summarises a rendered transcript segment into a dense recap. Returns null/blank to decline. */
     fun interface Summarizer {
         fun summarize(renderedSegment: String): String
@@ -74,9 +78,11 @@ object ContextCompressor {
         val result = messages.mapIndexed { index, message ->
             if (message.role != Role.TOOL || index in protectedIndices) return@mapIndexed message
             val shrunk = message.content.map { block ->
-                if (block is ContentBlock.ToolResult && block.content.length > EAGER_TOOL_HEAD) {
+                if (block is ContentBlock.ToolResult && block.content.length > EAGER_TOOL_HEAD &&
+                    !block.content.endsWith(EAGER_TRUNC_MARKER)
+                ) {
                     modified = true
-                    block.copy(content = block.content.take(EAGER_TOOL_HEAD) + "\n…[truncated to save context]")
+                    block.copy(content = block.content.take(EAGER_TOOL_HEAD) + "\n" + EAGER_TRUNC_MARKER)
                 } else {
                     block
                 }

@@ -11,6 +11,7 @@ import com.github.saeldrit.geai.llm.LlmClientFactory
 import com.github.saeldrit.geai.llm.Role
 import com.github.saeldrit.geai.llm.http.JsonSupport
 import com.github.saeldrit.geai.session.GeaiSessionStore
+import com.github.saeldrit.geai.tools.fs.FsPaths
 import com.github.saeldrit.geai.settings.GeaiSettings
 import com.github.saeldrit.geai.settings.GeaiSettingsConfigurable
 import com.github.saeldrit.geai.settings.effectiveModel
@@ -22,10 +23,15 @@ import com.google.gson.JsonParser
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
+import com.intellij.openapi.application.runReadAction
+import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.psi.search.FilenameIndex
+import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.ui.JBColor
 import com.intellij.ui.jcef.JBCefBrowser
 import com.intellij.ui.jcef.JBCefBrowserBase
@@ -111,6 +117,30 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
             }
 
             "copy" -> obj.get("text")?.asString?.let { CopyPasteManager.getInstance().setContents(StringSelection(it)) }
+            "openFile" -> openInEditor(
+                obj.get("path")?.takeUnless { it.isJsonNull }?.asString,
+                obj.get("line")?.takeUnless { it.isJsonNull }?.asInt,
+            )
+        }
+    }
+
+    /**
+     * Open a source reference cited in the chat (path[:line]) in the editor — powers click-to-navigate
+     * and "jump to where a breakpoint was set". Resolves a project-relative/absolute path directly, and
+     * falls back to a project-wide filename lookup for the bare `Foo.java:42` the agent usually writes.
+     * Runs on the EDT (dispatch already marshals here).
+     */
+    private fun openInEditor(rawPath: String?, line: Int?) {
+        val path = rawPath?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        val file = (FsPaths.resolve(project, path) ?: findByName(path))?.takeIf { !it.isDirectory } ?: return
+        OpenFileDescriptor(project, file, ((line ?: 1) - 1).coerceAtLeast(0), 0).navigate(true)
+    }
+
+    private fun findByName(path: String): VirtualFile? {
+        val name = path.substringAfterLast('/').substringAfterLast('\\')
+        if ('.' !in name) return null
+        return runReadAction {
+            FilenameIndex.getVirtualFilesByName(name, GlobalSearchScope.projectScope(project)).firstOrNull()
         }
     }
 
