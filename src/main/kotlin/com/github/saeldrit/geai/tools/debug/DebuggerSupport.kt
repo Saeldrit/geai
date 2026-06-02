@@ -75,6 +75,13 @@ internal object DebuggerSupport {
         }
     }
 
+    /** Cheap check: is a debug session live (running or paused)? Used to auto-advertise the debug group. */
+    fun hasActiveSession(project: Project): Boolean {
+        val ref = AtomicReference(false)
+        ApplicationManager.getApplication().invokeAndWait { ref.set(manager(project).debugSessions.isNotEmpty()) }
+        return ref.get()
+    }
+
     fun describeState(project: Project): ToolResult = onEdt {
         val sessions = manager(project).debugSessions
         if (sessions.isEmpty()) {

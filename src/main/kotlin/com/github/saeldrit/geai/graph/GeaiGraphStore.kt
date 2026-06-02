@@ -1,9 +1,11 @@
 package com.github.saeldrit.geai.graph
 
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.JDOMUtil
 import org.jdom.Element
@@ -27,6 +29,36 @@ class GeaiGraphStore(private val project: Project) {
 
     @Volatile
     private var cache: CodeGraph? = null
+
+    @Volatile
+    private var building = false
+
+    /**
+     * Build the graph in the BACKGROUND if it is not yet populated — never block the caller. The full
+     * PSI reindex can take many seconds on a large project, so doing it inline on the agent's first
+     * turn stalled the whole turn before the model was even called. This kicks the reindex onto a
+     * pooled thread (idempotent: a second call while one is running is a no-op) so the bundle is ready
+     * for the NEXT turn; the current turn proceeds without it and the model navigates normally.
+     */
+    fun ensureBuiltInBackground() {
+        synchronized(lock) {
+            val current = cache ?: load().also { cache = it }
+            if (current.nodes.isNotEmpty() || building) return
+            building = true
+        }
+        ApplicationManager.getApplication().executeOnPooledThread {
+            try {
+                val graph = GraphIndexer.reindex(project)
+                if (graph.nodes.isNotEmpty()) replaceAll(graph)
+            } catch (_: ProcessCanceledException) {
+                // IDE was indexing / cancelled — leave the graph empty so the next turn retries.
+            } catch (t: Throwable) {
+                thisLogger().warn("Geai: background graph build failed", t)
+            } finally {
+                building = false
+            }
+        }
+    }
 
     private fun file(): Path {
         val base = project.basePath

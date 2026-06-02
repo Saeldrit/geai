@@ -4,7 +4,6 @@ import com.github.saeldrit.geai.bundle.ContextBundler
 import com.github.saeldrit.geai.context.ContextCompressor
 import com.github.saeldrit.geai.cost.UsageFormat
 import com.github.saeldrit.geai.graph.GeaiGraphStore
-import com.github.saeldrit.geai.graph.GraphIndexer
 import com.github.saeldrit.geai.llm.ChatMessage
 import com.github.saeldrit.geai.llm.ChatRequest
 import com.github.saeldrit.geai.llm.ContentBlock
@@ -24,6 +23,7 @@ import com.github.saeldrit.geai.tools.ToolArgs
 import com.github.saeldrit.geai.tools.ToolContext
 import com.github.saeldrit.geai.tools.ToolRegistry
 import com.github.saeldrit.geai.tools.ToolResult
+import com.github.saeldrit.geai.tools.debug.DebuggerSupport
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.project.Project
@@ -83,23 +83,38 @@ class AgentLoop(
 
         val settings = GeaiSettings.getInstance().state
         val systemPrompt = SystemPrompt.build(project)
-        // Per-turn context bundle, kept SEPARATE from the (cacheable) doctrine above so the stable
-        // prompt keeps hitting the prompt cache across turns — only this volatile suffix is re-sent.
-        val bundleSuffix: String = if (settings.graceEnabled) {
-            // The bundle is useless on an empty graph (→ "Graph is empty" → the model greps files).
-            // Build it once here so the auto-injected context is actually populated.
-            if (GeaiGraphStore.getInstance(project).graph().nodes.isEmpty()) {
-                runCatching { GeaiGraphStore.getInstance(project).replaceAll(GraphIndexer.reindex(project)) }
+        // A leading /<cmd> selects a MODE: pre-load its tool group (no load_tools round-trip) and steer
+        // this turn via a focused directive, folded into the volatile suffix below.
+        val command = SlashCommands.parse(userText)
+        // Per-turn volatile suffix: the GRACE context bundle plus any mode directive. Kept SEPARATE from
+        // the (cacheable) doctrine above so the stable prompt keeps hitting the prompt cache across turns
+        // — only this suffix is re-sent (the clients place it AFTER the cache breakpoint).
+        val bundleSuffix: String = run {
+            val bundle: String = if (settings.graceEnabled) {
+                val store = GeaiGraphStore.getInstance(project)
+                if (store.graph().nodes.isEmpty()) {
+                    // Do NOT block the turn on a full-project PSI reindex (seconds-to-minutes on a large
+                    // project — the old inline reindex was the dominant first-turn stall). Build it in the
+                    // background so it's ready NEXT turn; this turn runs without the bundle and the model
+                    // navigates with find_symbol/search, which it would do anyway.
+                    store.ensureBuiltInBackground()
+                    ""
+                } else {
+                    // Kept COMPACT: without prompt caching (e.g. qwen via OpenRouter) it is paid every turn.
+                    val b = try {
+                        ContextBundler.build(project, userText, emptyList(), maxNodes = 10, hops = 2, charBudget = 4_000)
+                    } catch (e: Exception) {
+                        null
+                    }
+                    if (b != null && b.text.isNotBlank()) "<context_bundle>\n${b.text}\n</context_bundle>" else ""
+                }
+            } else {
+                ""
             }
-            // Kept COMPACT: without prompt caching (e.g. qwen via OpenRouter) it is paid every turn.
-            val bundle = try {
-                ContextBundler.build(project, userText, emptyList(), maxNodes = 10, hops = 2, charBudget = 4_000)
-            } catch (e: Exception) {
-                null
-            }
-            if (bundle != null && bundle.text.isNotBlank()) "<context_bundle>\n${bundle.text}\n</context_bundle>" else ""
-        } else {
-            ""
+            listOfNotNull(
+                bundle.takeIf { it.isNotBlank() },
+                command.directive?.let { "<mode>\n$it\n</mode>" },
+            ).joinToString("\n\n")
         }
         val maxIterations = profile.maxIterations.coerceAtLeast(1)
         // Only a sub-agent carries a cumulative-cost terminal (it is a bounded, fanned-out unit). The
@@ -115,8 +130,12 @@ class AgentLoop(
             var lastToolSignature: String? = null
             var lastResultSignature: String? = null
             // On-demand tool groups the model has pulled in this turn (progressive disclosure). Starts
-            // empty: only CORE (+GRACE) + the load_tools meta-tool are advertised until the model asks.
+            // empty: only CORE (+GRACE) + the load_tools meta-tool are advertised until the model asks —
+            // EXCEPT we pre-seed the mode's group (e.g. /debug → debug) and, on a follow-up turn while a
+            // debug session is live, the debug group automatically. Both save a load_tools round-trip.
             val activeGroups = linkedSetOf<String>()
+            activeGroups.addAll(command.preloadGroups)
+            if (!profile.isSubAgent && DebuggerSupport.hasActiveSession(project)) activeGroups.add("debug")
             var delegationCount = 0
             // Compaction summariser: folds the old transcript into a dense recap (keeps findings, not
             // a 400-char head). Its cost is billed to the turn. Created once; mutates the turn counters.
