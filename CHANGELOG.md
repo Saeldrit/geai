@@ -2,6 +2,26 @@
 
 # geai Changelog
 
+## [0.0.24]
+
+### Added
+- Autonomous debugger stepping: the agent drives the debugger itself via the new `debug_step` tool
+  (`over` / `into` / `out` / `resume`). It issues the step and waits for the next pause, returning the
+  new `file:line`, so it walks the suspect path breakpoint-by-breakpoint instead of asking you to step.
+- Clickable source references in the chat: `file:line` mentions open the file in the editor (with a
+  project-wide filename fallback), so you can jump straight to a cited class or a breakpoint location.
+
+### Changed
+- The agent loop now runs continuously until the task is done: the per-turn token ceiling was removed
+  and the iteration cap is now a high anti-runaway backstop. Long turns are handled by persistent
+  context compaction (the old transcript is folded into a recap once and reused) instead of stopping
+  the turn and asking you to type "continue".
+- Debugging is autonomous: `await_pause` now waits up to 10 minutes, and the doctrine instructs the
+  agent to wait for a user-triggered request itself, step through the code, and remove the breakpoints
+  it set when the investigation is done.
+- The stuck-loop guard now compares both the call and its result, so legitimately repeated calls
+  (stepping the debugger, polling for a pause) are no longer mistaken for a stuck loop.
+
 ## [0.0.12]
 
 ### Added
