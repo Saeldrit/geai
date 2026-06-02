@@ -2,6 +2,22 @@
 
 # geai Changelog
 
+## [0.0.25]
+
+### Changed
+- Much faster start. The GRACE graph is no longer reindexed inline on the first turn — a full-project
+  PSI reindex could stall the turn for minutes before the model was even called. It now runs in the
+  background and the turn proceeds immediately (the bundle is ready from the next turn on).
+
+### Added
+- Slash commands select a working MODE. A leading `/debug`, `/run`, `/explain`, `/implement`,
+  `/refactor`, `/test`, `/review`, or `/security` pre-loads the tools that mode needs (no extra
+  `load_tools` round-trip) and steers the agent with a focused directive. `/debug` goes straight to
+  locating the path, setting breakpoints, and driving the debugger — instead of orienting first.
+- The debug tools are advertised automatically on a follow-up turn while a debug session is live, so
+  "continue" turns don't spend a round-trip re-loading them.
+- The welcome-screen presets now insert their `/command`, so the buttons teach the commands.
+
 ## [0.0.24]
 
 ### Added
