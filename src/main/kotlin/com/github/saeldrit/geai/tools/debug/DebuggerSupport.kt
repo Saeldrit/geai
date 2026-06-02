@@ -82,6 +82,23 @@ internal object DebuggerSupport {
         return ref.get()
     }
 
+    /**
+     * One-shot snapshot for await_pause: (paused location or null, whether ANY debug session is live).
+     * Lets await_pause return the instant it is paused, AND bail out when the session has ENDED instead
+     * of polling out the whole timeout for a pause that can never come.
+     */
+    fun pauseSnapshot(project: Project): Pair<String?, Boolean> {
+        val ref = AtomicReference<Pair<String?, Boolean>>(null to false)
+        ApplicationManager.getApplication().invokeAndWait {
+            val mgr = manager(project)
+            val active = mgr.debugSessions.isNotEmpty()
+            val session = mgr.currentSession
+            val paused = if (session != null && session.isPaused) describeSession(project, session) else null
+            ref.set(paused to active)
+        }
+        return ref.get()
+    }
+
     fun describeState(project: Project): ToolResult = onEdt {
         val sessions = manager(project).debugSessions
         if (sessions.isEmpty()) {

@@ -46,6 +46,18 @@ class GeaiAgentService(private val project: Project) {
     @Volatile
     private var currentIndicator: ProgressIndicator? = null
 
+    /** Debounce session saves: skip if the last save was < 300ms ago. Saves are serial (single-threaded
+     *  Loop turns are synchronous inside the Backgroundable), so compare-and-set on a plain volatile is safe. */
+    @Volatile
+    private var lastSaveMs: Long = 0L
+
+    private fun shouldSave(): Boolean {
+        val now = System.currentTimeMillis()
+        if (now - lastSaveMs < 300L) return false
+        lastSaveMs = now
+        return true
+    }
+
     @Synchronized
     fun currentSession(): AgentSession {
         current?.let { return it }
@@ -89,9 +101,8 @@ class GeaiAgentService(private val project: Project) {
         val savingListener = AgentListener { event ->
             listener.onEvent(event)
             when (event) {
-                is AgentEvent.ToolFinished, is AgentEvent.Done, is AgentEvent.Error, is AgentEvent.Cancelled ->
-                    store.save(session)
-
+                is AgentEvent.ToolFinished -> if (shouldSave()) store.save(session)
+                is AgentEvent.Done, is AgentEvent.Error, is AgentEvent.Cancelled -> store.save(session)
                 else -> Unit
             }
         }

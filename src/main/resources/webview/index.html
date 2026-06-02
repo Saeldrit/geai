@@ -183,6 +183,8 @@
       send=el('send'), statusEl=el('status'), tokensEl=el('tokens'), engineEl=el('engine');
   // tool-group state (reset each agent turn)
   var tGroup=null, tEntries=null, tCount=0, tPending={};
+  // streaming: the live assistant bubble body + accumulated raw text, and the live reasoning block body
+  var streamBody=null, streamRaw='', reasonBody=null;
 
   function send2k(obj){ if(window.geaiSend) window.geaiSend(JSON.stringify(obj)); }
 
@@ -266,6 +268,37 @@
     d.innerHTML='<summary>Размышления</summary><div class="rbody"></div>';
     d.querySelector('.rbody').textContent=text; append(d); }
 
+  // ---- streaming: append deltas to ONE bubble, then re-render as markdown on completion ----
+  function streamDelta(text){
+    if(!streamBody){
+      closeToolGroup(stepsLabel(tCount,'✓')); tCount=0; tPending={};
+      var d=document.createElement('div'); d.className='msg assistant';
+      d.innerHTML='<div class="who">geai</div><div class="body"></div>';
+      streamBody=d.querySelector('.body'); streamRaw=''; append(d);
+    }
+    streamRaw+=text; streamBody.textContent=streamRaw;
+    if(atBottom()) scroll.scrollTop=scroll.scrollHeight;
+  }
+  function reasonDelta(text){
+    if(!reasonBody){
+      var d=document.createElement('details'); d.className='reason';
+      d.innerHTML='<summary>Размышления</summary><div class="rbody"></div>';
+      reasonBody=d.querySelector('.rbody'); append(d);
+    }
+    reasonBody.textContent=(reasonBody.textContent||'')+text;
+    if(atBottom()) scroll.scrollTop=scroll.scrollHeight;
+  }
+  // Finalize the live bubble: re-render the streamed text as markdown. Returns true if it consumed a
+  // streaming bubble, so the caller skips creating a fresh one. Also closes any open reasoning stream.
+  function finalizeStream(full){
+    reasonBody=null;
+    if(!streamBody) return false;
+    streamBody.innerHTML=md((full&&full.length)?full:streamRaw);
+    streamBody=null; streamRaw='';
+    if(atBottom()) scroll.scrollTop=scroll.scrollHeight;
+    return true;
+  }
+
   function setRunning(r){ running=r; send.textContent=r?'Стоп':'Отправить'; send.classList.toggle('stop',r);
     input.disabled=r; statusEl.textContent=r?'Работаю…':'Ready'; }
   function closeToolGroup(label){
@@ -279,17 +312,22 @@
   function renderEvent(ev){
     switch(ev.type){
       case 'userMessage':
-        showChat();
+        showChat(); finalizeStream();
         closeToolGroup(stepsLabel(tCount,'✓')); tCount=0; tPending={};
         bubble('user','Вы',ev.text); break;
       case 'thinking': statusEl.textContent='Думаю…'; break;
       case 'reasoning': showChat(); reasoning(ev.text); break;
+      case 'reasoningDelta': showChat(); reasonDelta(ev.text); break;
+      case 'assistantTextDelta': showChat(); streamDelta(ev.text); break;
       case 'assistantText':
         showChat();
-        closeToolGroup(stepsLabel(tCount,'✓')); tCount=0; tPending={};
-        bubble('assistant','geai',ev.text); break;
+        if(!finalizeStream(ev.text)){
+          closeToolGroup(stepsLabel(tCount,'✓')); tCount=0; tPending={};
+          bubble('assistant','geai',ev.text);
+        }
+        break;
       case 'toolStarted': {
-        showChat();
+        showChat(); finalizeStream();
         if(!tGroup){
           tGroup=document.createElement('details');
           tGroup.className='tools-group'; tGroup.setAttribute('open','');
@@ -322,15 +360,16 @@
       }
       case 'info': showChat(); line('info',ev.text); break;
       case 'error':
-        showChat();
+        showChat(); finalizeStream();
         closeToolGroup(stepsLabel(tCount,'✗')); tCount=0; tPending={};
         var e=document.createElement('div'); e.className='errline'; e.textContent='⚠ '+ev.text; append(e);
         setRunning(false); break;
       case 'cancelled':
-        showChat();
+        showChat(); finalizeStream();
         closeToolGroup(stepsLabel(tCount,'✗')); tCount=0; tPending={};
         line('info',ev.text||'Остановлено.'); setRunning(false); break;
       case 'done':
+        finalizeStream();
         closeToolGroup(stepsLabel(tCount,'✓')); tCount=0; tPending={};
         statusEl.textContent='Готово';
         if(ev.tokensIn!=null) setTokens(ev.tokensIn,ev.tokensOut);
@@ -398,7 +437,7 @@
       for(var k in state.theme){ r.setProperty('--'+k, state.theme[k]); } }
     if(state.engine) engineEl.textContent=state.engine;
     renderSkills(state.skills);
-    chat.innerHTML=''; started=false; welcome.classList.remove('hidden'); chat.classList.add('hidden');
+    chat.innerHTML=''; streamBody=null; streamRaw=''; reasonBody=null; started=false; welcome.classList.remove('hidden'); chat.classList.add('hidden');
     if(state.transcript && state.transcript.length){ state.transcript.forEach(renderEvent); }
     if(state.usage) setUsage(state.usage); else setTokens(state.tokensIn||0, state.tokensOut||0);
     setRunning(!!state.running);
@@ -406,7 +445,7 @@
   };
   window.geaiEvent=function(ev){ renderEvent(ev); };
   window.geaiUsage=function(u){ setUsage(u); };
-  window.geaiReset=function(){ chat.innerHTML=''; started=false; welcome.classList.remove('hidden');
+  window.geaiReset=function(){ chat.innerHTML=''; streamBody=null; streamRaw=''; reasonBody=null; started=false; welcome.classList.remove('hidden');
     chat.classList.add('hidden'); statusEl.textContent='Новая сессия'; setRunning(false); };
   function fmtDate(ts){ try{ var d=new Date(ts);
     return d.toLocaleDateString()+' '+('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2); }catch(e){ return ''; } }

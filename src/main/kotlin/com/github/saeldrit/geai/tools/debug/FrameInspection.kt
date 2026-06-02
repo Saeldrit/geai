@@ -44,6 +44,13 @@ internal object FrameInspection {
         val fullEvaluator: XFullValueEvaluator?,
     )
 
+    /** Evaluate a single expression and return its string value (parsed from the ToolResult). */
+    fun evaluateSingle(project: Project, expression: String, timeoutMs: Long): String {
+        val result = evaluateAll(project, listOf(expression), timeoutMs)
+        if (result.isError) return "<eval error: ${result.content}>"
+        return result.content.removePrefix("$expression = ").trim()
+    }
+
     /** Evaluate several expressions in the paused frame in one shot — frame/evaluator resolved once. */
     fun evaluateAll(project: Project, expressions: List<String>, timeoutMs: Long): ToolResult {
         if (expressions.isEmpty()) return ToolResult.error("Provide at least one expression in 'expressions'.")

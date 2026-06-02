@@ -20,5 +20,9 @@ interface AgentTool {
 
     fun execute(args: ToolArgs, context: ToolContext): ToolResult
 
-    fun spec(): ToolSpec = ToolSpec(name, description, parametersJsonSchema)
+    /** Cached ToolSpec — built once, re-used across all turns. */
+    fun spec(): ToolSpec = SpecCache.getOrPut(name) { ToolSpec(name, description, parametersJsonSchema) }
 }
+
+/** Per-tool cache of [ToolSpec] (Kotlin interfaces can't hold mutable state, so this lives here). */
+private val SpecCache = java.util.concurrent.ConcurrentHashMap<String, ToolSpec>()

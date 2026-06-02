@@ -27,6 +27,79 @@ internal object HttpTransport {
 
     private const val MAX_RETRIES = 3
     private val RETRYABLE_STATUS = setOf(429, 502, 503, 504)
+    private const val POLL_MS = 150L
+
+    /** Parse an SSE event line. Returns null for comments, heartbeat, or blank lines. */
+    data class SseEvent(val event: String, val data: String)
+
+    /**
+     * Send a POST request and read the response as an SSE (Server-Sent Events) stream.
+     * Calls [onEvent] for each parsed event. Returns the full response body for non-streaming
+     * fallback. Cancellation aborts the connection immediately.
+     */
+    fun postJsonSse(
+        url: String,
+        headers: Map<String, String>,
+        body: String,
+        indicator: ProgressIndicator,
+        onEvent: (SseEvent) -> Unit,
+    ): SseResult {
+        val request = HttpRequest.newBuilder()
+            .uri(URI.create(url))
+            .timeout(Duration.ofMinutes(10))
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(body, Charsets.UTF_8))
+            .apply { headers.forEach { (key, value) -> header(key, value) } }
+            .build()
+
+        val future = client.sendAsync(request, HttpResponse.BodyHandlers.ofInputStream())
+        val response = awaitCancellable(future, indicator)
+        val status = response.statusCode()
+        if (status !in 200..299) {
+            val errorBody = try { response.body()?.bufferedReader(Charsets.UTF_8)?.readText().orEmpty() } catch (_: Exception) { "" }
+            return SseResult(status, errorBody, isError = true)
+        }
+
+        var eventType = ""
+        var dataBuffer = StringBuilder()
+        try {
+            response.body()?.bufferedReader(Charsets.UTF_8)?.use { reader ->
+                while (true) {
+                    if (indicator.isCanceled) {
+                        future.cancel(true)
+                        return SseResult(0, "", isError = false, isCancelled = true)
+                    }
+                    val line = reader.readLine() ?: break
+                    when {
+                        line.startsWith("event:") -> eventType = line.removePrefix("event:").trim()
+                        line.startsWith("data:") -> {
+                            val data = line.removePrefix("data:").trim()
+                            if (dataBuffer.isNotEmpty()) dataBuffer.append('\n')
+                            dataBuffer.append(data)
+                        }
+                        line.isEmpty() && dataBuffer.isNotEmpty() -> {
+                            // Empty line = end of this event
+                            onEvent(SseEvent(eventType.ifBlank { "message" }, dataBuffer.toString()))
+                            eventType = ""
+                            dataBuffer = StringBuilder()
+                        }
+                        // Ignore comments (:...), heartbeat, other lines
+                    }
+                }
+            }
+        } catch (_: java.io.InterruptedIOException) {
+            // Cancellation during read
+        } catch (e: Exception) {
+            if (!indicator.isCanceled) throw LlmException("SSE stream error: ${e.message}", cause = e)
+        }
+        // Flush any remaining event
+        if (dataBuffer.isNotEmpty()) {
+            onEvent(SseEvent(eventType.ifBlank { "message" }, dataBuffer.toString()))
+        }
+        return SseResult(status, "", isError = false)
+    }
+
+    data class SseResult(val statusCode: Int, val errorBody: String, val isError: Boolean, val isCancelled: Boolean = false)
 
     fun postJson(
         url: String,

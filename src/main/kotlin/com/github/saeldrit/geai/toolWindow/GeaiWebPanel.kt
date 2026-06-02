@@ -253,7 +253,9 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
         is AgentEvent.UserMessage -> event("userMessage").apply { addProperty("text", agentEvent.text) }
         is AgentEvent.Thinking -> event("thinking")
         is AgentEvent.Reasoning -> event("reasoning").apply { addProperty("text", agentEvent.text) }
+        is AgentEvent.ReasoningDelta -> event("reasoningDelta").apply { addProperty("text", agentEvent.text) }
         is AgentEvent.AssistantText -> event("assistantText").apply { addProperty("text", agentEvent.text) }
+        is AgentEvent.AssistantTextDelta -> event("assistantTextDelta").apply { addProperty("text", agentEvent.text) }
         is AgentEvent.ToolStarted -> event("toolStarted").apply {
             addProperty("tool", agentEvent.tool)
             addProperty("args", preview(agentEvent.argsJson))

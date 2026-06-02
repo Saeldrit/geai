@@ -34,17 +34,126 @@ class AnthropicClient(
                 "x-api-key" to apiKey,
                 "anthropic-version" to ANTHROPIC_VERSION,
             ),
-            body = JsonSupport.gson.toJson(buildRequestBody(request)),
+            body = JsonSupport.gson.toJson(buildRequestBody(request, streaming = false)),
             indicator = indicator,
         )
         return parseResponse(raw)
     }
 
-    private fun buildRequestBody(request: ChatRequest): JsonObject {
+    override fun chatStream(
+        request: ChatRequest,
+        indicator: ProgressIndicator,
+        onEvent: (com.github.saeldrit.geai.llm.StreamEvent) -> Unit,
+    ): ChatResult {
+        val body = buildRequestBody(request, streaming = true)
+        val stopReasonRef = kotlinx.atomicfu.atomic("")
+        val usageRef = kotlinx.atomicfu.atomic<TokenUsage?>(null)
+        val textBuilder = StringBuilder()
+        val toolUseBuilders = mutableMapOf<String, StringBuilder>()
+        val toolNames = mutableMapOf<String, String>()
+        val currentToolId = kotlinx.atomicfu.atomic<String?>(null)
+
+        val result = HttpTransport.postJsonSse(
+            url = "$baseUrl/v1/messages",
+            headers = mapOf(
+                "x-api-key" to apiKey,
+                "anthropic-version" to ANTHROPIC_VERSION,
+            ),
+            body = JsonSupport.gson.toJson(body),
+            indicator = indicator,
+        ) { sse ->
+            try {
+                val data = JsonSupport.parseObject(sse.data)
+                when (data.stringOrNull("type")) {
+                    "content_block_start" -> {
+                        val block = data.objectOrNull("content_block") ?: return@postJsonSse
+                        when (block.stringOrNull("type")) {
+                            "text" -> {
+                                val text = block.stringOrNull("text") ?: ""
+                                if (text.isNotEmpty()) {
+                                    textBuilder.append(text)
+                                    onEvent(com.github.saeldrit.geai.llm.StreamEvent.TextDelta(text))
+                                }
+                            }
+                            "tool_use" -> {
+                                val id = block.stringOrNull("id").orEmpty()
+                                val name = block.stringOrNull("name").orEmpty()
+                                currentToolId.value = id
+                                toolNames[id] = name
+                                toolUseBuilders[id] = StringBuilder(block.get("input")?.toString() ?: "")
+                                onEvent(com.github.saeldrit.geai.llm.StreamEvent.ToolUseStarted(id, name))
+                            }
+                        }
+                    }
+                    "content_block_delta" -> {
+                        val delta = data.objectOrNull("delta") ?: return@postJsonSse
+                        when (delta.stringOrNull("type")) {
+                            "text_delta" -> {
+                                val chunk = delta.stringOrNull("text") ?: ""
+                                textBuilder.append(chunk)
+                                onEvent(com.github.saeldrit.geai.llm.StreamEvent.TextDelta(chunk))
+                            }
+                            "input_json_delta" -> {
+                                val chunk = delta.stringOrNull("partial_json") ?: ""
+                                val id = currentToolId.value ?: return@postJsonSse
+                                toolUseBuilders.computeIfAbsent(id) { StringBuilder() }.append(chunk)
+                                onEvent(com.github.saeldrit.geai.llm.StreamEvent.ToolUseInputDelta(id, chunk))
+                            }
+                        }
+                    }
+                    "message_delta" -> {
+                        data.stringOrNull("stop_reason")?.let { stopReasonRef.value = it }
+                        data.objectOrNull("usage")?.let { usageObj ->
+                            usageRef.value = TokenUsage(
+                                inputTokens = usageObj.intOr("input_tokens", 0),
+                                outputTokens = usageObj.intOr("output_tokens", 0),
+                                cacheReadTokens = usageObj.intOr("cache_read_input_tokens", 0),
+                                cacheWriteTokens = usageObj.intOr("cache_creation_input_tokens", 0),
+                            )
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                // Malformed SSE data — skip this event
+            }
+        }
+
+        if (result.isCancelled) throw com.intellij.openapi.progress.ProcessCanceledException()
+        if (result.isError) {
+            throw com.github.saeldrit.geai.llm.LlmException(
+                "Claude API error: ${result.errorBody.take(2000)}",
+                statusCode = result.statusCode,
+            )
+        }
+
+        // Build final content blocks from streamed data. Tool NAMES come from the content_block_start
+        // events captured in toolNames (the streamed name is the only place they appear — the request
+        // body does not echo them back).
+        val blocks = mutableListOf<ContentBlock>()
+        if (textBuilder.isNotEmpty()) blocks.add(ContentBlock.Text(textBuilder.toString()))
+        toolUseBuilders.forEach { (id, jsonBuilder) ->
+            blocks.add(ContentBlock.ToolUse(id, toolNames[id] ?: "tool", jsonBuilder.toString()))
+        }
+        if (blocks.isEmpty()) blocks.add(ContentBlock.Text(""))
+
+        val stopReason = when (stopReasonRef.value) {
+            "tool_use" -> StopReason.TOOL_USE
+            "end_turn", "stop_sequence" -> StopReason.END_TURN
+            "max_tokens" -> StopReason.MAX_TOKENS
+            else -> StopReason.OTHER
+        }
+        val usage = usageRef.value ?: TokenUsage.ZERO
+
+        onEvent(com.github.saeldrit.geai.llm.StreamEvent.Done)
+        return ChatResult(ChatMessage.assistant(blocks), stopReason, usage)
+    }
+
+    private fun buildRequestBody(request: ChatRequest, streaming: Boolean): JsonObject {
         val root = JsonObject().apply {
             addProperty("model", request.model)
             addProperty("max_tokens", request.maxTokens)
             addProperty("temperature", request.temperature)
+            if (streaming) addProperty("stream", true)
             // System prompt as a cacheable block: it is large and identical across a session, so a
             // cache breakpoint here turns repeated reads into cheap cache hits. The per-turn bundle
             // suffix goes in a SECOND block WITHOUT its own breakpoint — Anthropic auto-extends the

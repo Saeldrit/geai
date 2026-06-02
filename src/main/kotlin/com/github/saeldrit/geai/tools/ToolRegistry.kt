@@ -11,5 +11,7 @@ class ToolRegistry(tools: List<AgentTool>) {
 
     fun find(name: String): AgentTool? = byName[name]
 
-    fun specs(): List<ToolSpec> = tools.map { it.spec() }
+    fun specs(): List<ToolSpec> = cachedSpecs
+
+    private val cachedSpecs: List<ToolSpec> = tools.map { it.spec() }
 }

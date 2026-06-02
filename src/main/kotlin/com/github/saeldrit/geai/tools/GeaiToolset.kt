@@ -6,6 +6,7 @@ import com.github.saeldrit.geai.tools.debug.DebugDumpObjectTool
 import com.github.saeldrit.geai.tools.debug.DebugEvaluateTool
 import com.github.saeldrit.geai.tools.debug.DebugStateTool
 import com.github.saeldrit.geai.tools.debug.DebugStepTool
+import com.github.saeldrit.geai.tools.debug.DebugTraceTool
 import com.github.saeldrit.geai.tools.debug.DebugVariablesTool
 import com.github.saeldrit.geai.tools.debug.ListBreakpointsTool
 import com.github.saeldrit.geai.tools.debug.RemoveBreakpointTool
@@ -47,6 +48,7 @@ object GeaiToolset {
     const val LOAD_TOOLS = "load_tools"
     const val DELEGATE = "delegate"
     const val NOTE = "note"
+    const val ESCALATE = "escalate_author"
 
     /** Always advertised: knowledge axes, interaction, navigation, reading, editing. */
     private val CORE: List<AgentTool> = listOf(
@@ -95,6 +97,7 @@ object GeaiToolset {
             StartDebugTool,
             AwaitPauseTool,
             DebugStepTool,
+            DebugTraceTool,
             DebugVariablesTool,
             DebugEvaluateTool,
             DebugDumpObjectTool,

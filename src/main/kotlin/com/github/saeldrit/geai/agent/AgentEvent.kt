@@ -10,7 +10,17 @@ sealed interface AgentEvent {
 
     /** The model's internal reasoning. Rendered collapsed (hidden behind a toggle), never inline. */
     data class Reasoning(val text: String) : AgentEvent
+
+    /** A streamed CHUNK of the model's thinking — appended live to the collapsible reasoning block. */
+    data class ReasoningDelta(val text: String) : AgentEvent
+
+    /** The assistant's complete reply for one step. When streaming, this arrives AFTER the deltas and
+     *  re-renders the live bubble as markdown; it is also the single block used on replay / non-stream. */
     data class AssistantText(val text: String) : AgentEvent
+
+    /** A streamed CHUNK of the assistant's reply — appended live to the SAME bubble (not a new one per
+     *  token). The trailing [AssistantText] then re-renders that bubble as markdown. */
+    data class AssistantTextDelta(val text: String) : AgentEvent
     data class ToolStarted(val tool: String, val argsJson: String) : AgentEvent
     data class ToolFinished(val tool: String, val result: ToolResult) : AgentEvent
     data class Info(val text: String) : AgentEvent

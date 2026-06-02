@@ -50,7 +50,9 @@ object ContextCompressor {
     ): List<ChatMessage> {
         // Eager pass: shrink stale tool_result blocks unconditionally so even short transcripts stay
         // lean. Runs even when under-budget — the goal is small payloads, not just not-exceeding.
-        val eagerlyTrimmed = eagerlyTruncateOldToolResults(messages)
+        // Skip when the transcript is tiny (< 10 tool results): no savings possible, only wasted copy.
+        val toolCount = messages.count { it.role == Role.TOOL }
+        val eagerlyTrimmed = if (toolCount <= EAGER_KEEP_RECENT_TOOLS + 2) messages else eagerlyTruncateOldToolResults(messages)
         val budget = charBudget(contextWindowTokens, outputReserveTokens, systemPromptChars)
         if (estimateChars(eagerlyTrimmed) <= budget) return eagerlyTrimmed
 

@@ -236,6 +236,10 @@ class GeaiChatPanel(private val project: Project) : JPanel(BorderLayout()) {
             is AgentEvent.UserMessage -> appendBlock("You", event.text, USER)
             is AgentEvent.Thinking -> statusLabel.text = "Thinking\u2026"
             is AgentEvent.Reasoning -> appendInline("\u2304 reasoning: ${preview(event.text)}", INFO)
+            // Streaming deltas are ignored in the Swing fallback \u2014 the trailing AssistantText renders
+            // the complete block, so there is no live token-by-token append here.
+            is AgentEvent.ReasoningDelta -> Unit
+            is AgentEvent.AssistantTextDelta -> Unit
             is AgentEvent.AssistantText -> appendBlock("geai", event.text, ASSISTANT)
             is AgentEvent.ToolStarted -> appendInline("\u2192 ${event.tool} ${preview(event.argsJson)}", TOOL)
             is AgentEvent.ToolFinished -> {

@@ -43,10 +43,111 @@ class OpenAiCompatibleClient(
         val raw = HttpTransport.postJson(
             url = chatCompletionsUrl(baseUrl),
             headers = mapOf("Authorization" to "Bearer $apiKey"),
-            body = JsonSupport.gson.toJson(buildRequestBody(request)),
+            body = JsonSupport.gson.toJson(buildRequestBody(request, streaming = false)),
             indicator = indicator,
         )
         return parseResponse(raw)
+    }
+
+    override fun chatStream(
+        request: ChatRequest,
+        indicator: ProgressIndicator,
+        onEvent: (com.github.saeldrit.geai.llm.StreamEvent) -> Unit,
+    ): ChatResult {
+        val textBuilder = StringBuilder()
+        val toolCallBuilders = mutableMapOf<Int, ToolCallAccumulator>()
+        var finishReason: String? = null
+        var usageResult: TokenUsage? = null
+
+        val result = HttpTransport.postJsonSse(
+            url = chatCompletionsUrl(baseUrl),
+            headers = mapOf("Authorization" to "Bearer $apiKey"),
+            body = JsonSupport.gson.toJson(buildRequestBody(request, streaming = true)),
+            indicator = indicator,
+        ) { sse ->
+            try {
+                // OpenAI sends [DONE] as the last event
+                if (sse.data == "[DONE]") return@postJsonSse
+                val data = JsonSupport.parseObject(sse.data)
+                val choice = data.arrayOrEmpty("choices").firstOrNull()?.asJsonObject ?: return@postJsonSse
+                val delta = choice.objectOrNull("delta") ?: return@postJsonSse
+
+                // Text content
+                delta.stringOrNull("content")?.let { chunk ->
+                    if (chunk.isNotEmpty()) {
+                        textBuilder.append(chunk)
+                        onEvent(com.github.saeldrit.geai.llm.StreamEvent.TextDelta(chunk))
+                    }
+                }
+
+                // Tool calls
+                delta.get("tool_calls")?.takeIf { it.isJsonArray }?.asJsonArray?.forEach { element ->
+                    val tc = element.asJsonObject
+                    val index = tc.intOr("index", 0)
+                    val acc = toolCallBuilders.computeIfAbsent(index) { ToolCallAccumulator() }
+                    tc.stringOrNull("id")?.let { if (it.isNotEmpty()) acc.id = it }
+                    tc.objectOrNull("function")?.let { fn ->
+                        fn.stringOrNull("name")?.let { if (it.isNotEmpty()) acc.name = it }
+                        fn.stringOrNull("arguments")?.let { if (it.isNotEmpty()) acc.arguments.append(it) }
+                    }
+                    if (acc.id != null && acc.name != null && !acc.started) {
+                        acc.started = true
+                        onEvent(com.github.saeldrit.geai.llm.StreamEvent.ToolUseStarted(acc.id!!, acc.name!!))
+                    }
+                }
+
+                // Finish reason & usage
+                choice.stringOrNull("finish_reason")?.let { if (it.isNotEmpty()) finishReason = it }
+                data.objectOrNull("usage")?.let { usageObj ->
+                    usageResult = TokenUsage(
+                        inputTokens = usageObj.intOr("prompt_tokens", 0),
+                        outputTokens = usageObj.intOr("completion_tokens", 0),
+                        cacheReadTokens = maxOf(
+                            usageObj.intOr("prompt_cache_hit_tokens", 0),
+                            usageObj.objectOrNull("prompt_tokens_details")?.intOr("cached_tokens", 0) ?: 0,
+                        ),
+                    )
+                }
+            } catch (_: Exception) {
+                // Malformed SSE data — skip
+            }
+        }
+
+        if (result.isCancelled) throw com.intellij.openapi.progress.ProcessCanceledException()
+        if (result.isError) {
+            throw LlmException("Provider API error: ${result.errorBody.take(2000)}")
+        }
+
+        // Assemble final blocks
+        val blocks = mutableListOf<ContentBlock>()
+        if (textBuilder.isNotEmpty()) blocks.add(ContentBlock.Text(textBuilder.toString()))
+        toolCallBuilders.entries.sortedBy { it.key }.forEach { (_, acc) ->
+            blocks.add(ContentBlock.ToolUse(
+                id = acc.id ?: "call_${blocks.size}",
+                name = acc.name ?: "tool",
+                inputJson = acc.arguments.toString().ifBlank { "{}" },
+            ))
+        }
+        if (blocks.isEmpty()) blocks.add(ContentBlock.Text(""))
+
+        val hasToolUse = blocks.any { it is ContentBlock.ToolUse }
+        val stopReason = when (finishReason) {
+            "tool_calls" -> StopReason.TOOL_USE
+            "stop" -> StopReason.END_TURN
+            "length" -> StopReason.MAX_TOKENS
+            else -> if (hasToolUse) StopReason.TOOL_USE else StopReason.OTHER
+        }
+        val usage = usageResult ?: TokenUsage.ZERO
+
+        onEvent(com.github.saeldrit.geai.llm.StreamEvent.Done)
+        return ChatResult(ChatMessage.assistant(blocks), stopReason, usage)
+    }
+
+    private class ToolCallAccumulator {
+        var id: String? = null
+        var name: String? = null
+        val arguments = StringBuilder()
+        var started: Boolean = false
     }
 
     /** Tolerate base URLs given either with or without a trailing `/v1`. */
@@ -55,11 +156,12 @@ class OpenAiCompatibleClient(
         return if (trimmed.endsWith("/v1")) "$trimmed/chat/completions" else "$trimmed/v1/chat/completions"
     }
 
-    private fun buildRequestBody(request: ChatRequest): JsonObject {
+    private fun buildRequestBody(request: ChatRequest, streaming: Boolean): JsonObject {
         val root = JsonObject().apply {
             addProperty("model", request.model)
             addProperty("max_tokens", request.maxTokens)
             addProperty("temperature", request.temperature)
+            if (streaming) addProperty("stream", true)
         }
         val messages = JsonArray()
         appendSystem(messages, request)
