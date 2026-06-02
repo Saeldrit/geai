@@ -2,6 +2,16 @@
 
 # geai Changelog
 
+## [0.0.26]
+
+### Fixed
+- Debugger evaluation now returns real values for lazy/proxy objects (jOOQ records, Hibernate
+  collections, deferred fields) instead of a "Collecting data…" placeholder or a blank. `debug_evaluate`
+  and `debug_variables` now wait for the resolved presentation (pulling the full value via the debugger's
+  full-value evaluator), and when a value still won't materialise they force it with
+  `java.lang.String.valueOf(...)` — which works in both Java and Kotlin frames and is null-safe. This is
+  what was making the agent "see" empty/missing data at a breakpoint.
+
 ## [0.0.25]
 
 ### Changed
