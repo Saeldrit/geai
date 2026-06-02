@@ -2,6 +2,21 @@
 
 # geai Changelog
 
+## [0.0.27]
+
+### Added
+- `debug_dump_object`: dump an object and its fields several levels deep (default 3, max 5) in ONE
+  call. Instead of probing `food.foodItems().get(0).rawText()` field-by-field over a dozen round-trips,
+  the model gets the whole tree at once — large collections are capped per level.
+- `debug_evaluate` now takes an array of `expressions` and evaluates them all in one call (the frame
+  and evaluator are resolved once), so the model stops calling it one expression at a time.
+
+### Changed
+- Faster, more reliable value resolution at a breakpoint: lazy/proxy values (jOOQ, Hibernate, deferred
+  fields) are pulled through the debugger's full-value evaluator instead of waiting out the
+  "Collecting data…" placeholder, with a `java.lang.String.valueOf(...)` backstop for stubborn proxies.
+  `debug_variables` shares the same resolution path.
+
 ## [0.0.26]
 
 ### Fixed
