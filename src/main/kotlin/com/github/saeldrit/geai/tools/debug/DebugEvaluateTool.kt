@@ -10,7 +10,10 @@ object DebugEvaluateTool : AgentTool {
     override val name = "debug_evaluate"
     override val description =
         "Evaluate an expression in the current paused stack frame (e.g. a variable name, a field " +
-            "access, or a call) and return its value. Use this to test hypotheses about the runtime state."
+            "access, or a method call) and return its value. Use this to test hypotheses about the " +
+            "runtime state. Lazy/proxy values (jOOQ, Hibernate, deferred collections) are materialised " +
+            "automatically — to inspect one, just evaluate a concrete accessor (e.g. `order.items()` or " +
+            "`list.size()`) and you get the real value, not a 'Collecting data…' placeholder."
     override val parametersJsonSchema = """
         {"type":"object","properties":{
           "expression":{"type":"string","description":"Expression to evaluate in the paused frame's language"},
