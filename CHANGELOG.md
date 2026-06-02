@@ -2,6 +2,29 @@
 
 # geai Changelog
 
+## [0.0.28]
+
+### Added
+- Streaming responses: the assistant's reply appears in real time as it is generated — text streams into
+  a single bubble and is re-rendered as markdown when complete (no more one-bubble-per-token); thinking
+  streams into a collapsible block.
+- `debug_trace`: walk the debugger N steps in ONE call, evaluating a watched expression at each stop.
+  Returns the full trace (file:line + the value + locals per step) — instead of calling debug_step +
+  debug_evaluate repeatedly.
+- `debug_step` gained a `repeat` parameter to take several steps in one call.
+
+### Changed
+- `await_pause` no longer blocks for its whole timeout when the debug session has ended — it returns as
+  soon as there is no live session left to wait for (a short grace still covers start_debug's launch).
+- Adaptive context savers: drop the tiered-routing hint when the model isn't using `escalate_author`,
+  and stop suggesting `kb_lookup` once the knowledge store is consistently empty.
+- Performance: tool specs are cached, session saves are debounced, and eager compaction is skipped on
+  tiny transcripts.
+
+### Fixed
+- Anthropic streaming lost tool names (every streamed tool call became "tool"); the name is now carried
+  from the stream. Removed unused session bookkeeping.
+
 ## [0.0.27]
 
 ### Added
