@@ -2,6 +2,15 @@
 
 # geai Changelog
 
+## [0.0.36]
+
+### Performance
+- The GRACE graph now carries id and endpoint indexes, built once per snapshot. `graph_neighbors` was
+  O(edges × nodes) — it scanned every node to label each returned edge — and the context bundle rebuilt
+  the full adjacency map on every turn. Both are now O(degree) lookups, cutting latency on graph-heavy
+  navigation and on every turn's bundle assembly. Behaviour is unchanged (parity-tested against the old
+  full scan).
+
 ## [0.0.35]
 
 ### Fixed
