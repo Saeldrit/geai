@@ -2,6 +2,20 @@
 
 # geai Changelog
 
+## [0.0.43]
+
+### Fixed
+- GRACE drift detection now fingerprints the FULL resolved contract/symbol, not the truncated display
+  slice. A change past the cap (a large OpenAPI path object, or a symbol over ~2000 chars) could drift
+  while `spec_validate` still reported OK — silently defeating the drift guarantee. (`file:` anchors were
+  already correct since 0.0.34.)
+- Resolving an OpenAPI node whose `summary` is `null` or non-string no longer throws (both are legal) —
+  it previously aborted the whole resolve with an UnsupportedOperationException.
+- `spec_validate` and the context bundle now degrade a single unresolvable anchor to BROKEN/[unresolved]
+  instead of aborting the entire batch on any non-`AnchorException`.
+- The Claude Code CLI engine threads the `tool_use` id through tool events, so parallel same-named calls
+  no longer collide in the chat UI (a step stuck on the ⏳ spinner) — matching the native loop (0.0.39).
+
 ## [0.0.42]
 
 ### Fixed
