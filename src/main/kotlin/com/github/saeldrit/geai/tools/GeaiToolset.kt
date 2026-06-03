@@ -24,6 +24,10 @@ import com.github.saeldrit.geai.tools.grace.GraphNeighborsTool
 import com.github.saeldrit.geai.tools.grace.GraphQueryTool
 import com.github.saeldrit.geai.tools.grace.GraphReindexTool
 import com.github.saeldrit.geai.tools.grace.ResolveRefTool
+import com.github.saeldrit.geai.tools.grace.SpecListTool
+import com.github.saeldrit.geai.tools.grace.SpecLookupTool
+import com.github.saeldrit.geai.tools.grace.SpecRecordTool
+import com.github.saeldrit.geai.tools.grace.SpecValidateTool
 import com.github.saeldrit.geai.tools.psi.DiagnosticsTool
 import com.github.saeldrit.geai.tools.psi.FindImplementationsTool
 import com.github.saeldrit.geai.tools.psi.FindSymbolTool
@@ -106,6 +110,7 @@ object GeaiToolset {
             DebugDumpObjectTool,
         ),
         "run" to listOf(RunCommandTool),
+        "specs" to listOf(SpecListTool, SpecLookupTool, SpecValidateTool, SpecRecordTool),
         "selfmod" to listOf(SelfInfoTool, SelfPatchTool),
     )
 
@@ -113,6 +118,7 @@ object GeaiToolset {
     private val GROUP_SUMMARY: Map<String, String> = linkedMapOf(
         "debug" to "set/remove/list breakpoints, start a debug session, await a pause, STEP (over/into/out/resume) the debugger yourself, inspect state & variables, evaluate expressions (batch), dump a whole object tree",
         "run" to "run_command — run shell/build/test/git commands in the project",
+        "specs" to "spec_list/spec_lookup (read the Category-A rules that govern code), spec_validate (drift-check specs against live code), spec_record (author/update a rule as an anchor, never a copy)",
         "selfmod" to "self_info, self_patch — inspect and modify geai's own source",
     )
 

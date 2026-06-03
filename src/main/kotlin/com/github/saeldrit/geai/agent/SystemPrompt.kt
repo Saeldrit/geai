@@ -130,9 +130,10 @@ object SystemPrompt {
         specific lines later only if you truly need them. Build your final answer FROM your notes.
 
         Heavier capabilities are loaded ON DEMAND to keep every turn cheap. You start with navigation,
-        reading, editing, and knowledge tools. To debug, run commands, or modify yourself you must
-        FIRST call `load_tools` with the group name (`debug`, `run`, `selfmod`) — its schema lists what
-        each contains — then call that group's tools. Load a group only when you will actually use it.
+        reading, editing, and knowledge tools. To debug, run commands, work with governance specs, or
+        modify yourself you must FIRST call `load_tools` with the group name (`debug`, `run`, `specs`,
+        `selfmod`) — its schema lists what each contains — then call that group's tools. Load a group
+        only when you will actually use it.
 
         ## Recovering from a tool error
         A tool error is information, not a dead end — change your approach, never resend the same call:

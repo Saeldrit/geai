@@ -110,6 +110,19 @@ class GeaiToolsetTest {
     }
 
     @Test
+    fun `specs group is loadable and reveals the governance tools only when loaded`() {
+        assertTrue(GeaiToolset.isGroup("specs"))
+        val loaded = names(GeaiToolset.advertisedTools(graceEnabled = true, activeGroups = setOf("specs")))
+        listOf("spec_list", "spec_lookup", "spec_validate", "spec_record").forEach {
+            assertTrue("specs group reveals '$it'", loaded.contains(it))
+        }
+        assertFalse(
+            "governance tools stay hidden until loaded",
+            names(GeaiToolset.advertisedTools(graceEnabled = true, activeGroups = emptySet())).contains("spec_record"),
+        )
+    }
+
+    @Test
     fun `grace advertises the graph navigation tools the doctrine names`() {
         // Drift guard: the system prompt and tool error texts reference these, so they MUST be
         // advertised+executable when GRACE is on — or a literal model hits an "Unknown tool" dead-end.
