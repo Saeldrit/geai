@@ -168,7 +168,9 @@ object GeaiToolset {
             "Delegate a focused, self-contained sub-task to a fresh sub-agent that has its OWN clean " +
                 "context. Use it for anything that would otherwise flood your context with file contents — " +
                 "reviewing/auditing/tracing a flow across many files. The sub-agent navigates and reads on " +
-                "its own (read-only) and returns ONLY a compact result. Spawn ONE per independent unit (a " +
+                "its own (read-only) and returns ONLY a compact result. It CANNOT edit, run, or change " +
+                "anything — never delegate a task that must modify code; do those yourself with " +
+                "edit_file/write_file. Spawn ONE per independent unit (a " +
                 "file, a module, a question), then synthesize their results. State exactly what to investigate " +
                 "and what to return (findings with file:line — not raw code)."
         val schema =
