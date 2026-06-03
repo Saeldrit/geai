@@ -2,6 +2,17 @@
 
 # geai Changelog
 
+## [0.0.42]
+
+### Fixed
+- The stuck-loop guard no longer aborts legitimate autonomous debugging. Debugger poll/step tools
+  (`await_pause`, `debug_state`, `debug_step`) return the same result while runtime state advances, so the
+  doctrine-ordered wait/step loop looked like A/B/A/B thrashing to the v0.0.38 guard and was killed
+  mid-investigation. Those tools are now flagged `idempotentPoll` and all-poll steps are exempt; genuine
+  read/search thrashing still aborts. (Caught by an adversarial self-review of the v0.0.34–v0.0.41 batch.)
+- A failed atomic session save no longer leaks a `*.json.tmp` file (deleted on write/move failure).
+- The "Unknown tool" recovery hint in the system prompt now lists the `specs` group too.
+
 ## [0.0.41]
 
 ### Fixed
