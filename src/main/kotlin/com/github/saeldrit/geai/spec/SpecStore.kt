@@ -24,6 +24,7 @@ class SpecStore(private val project: Project) {
     companion object {
         fun getInstance(project: Project): SpecStore = project.service()
         private const val SUFFIX = ".spec.xml"
+        private val SAFE_ID = Regex("[A-Za-z0-9._-]+")
     }
 
     private val lock = Any()
@@ -35,7 +36,18 @@ class SpecStore(private val project: Project) {
         return dir
     }
 
-    private fun fileFor(specId: String): Path = specDir().resolve("$specId$SUFFIX")
+    private fun fileFor(specId: String): Path {
+        // spec_id comes straight from model output, so reject anything that could escape the spec dir
+        // (path separators, traversal): allow only a flat id of safe characters, then verify the
+        // resolved path still sits directly under spec/.
+        require(specId.isNotBlank() && SAFE_ID.matches(specId)) {
+            "Invalid spec id (allowed: letters, digits, '.', '_', '-'): '$specId'"
+        }
+        val dir = specDir()
+        val target = dir.resolve("$specId$SUFFIX").normalize()
+        require(target.parent == dir) { "spec id escapes the spec directory: '$specId'" }
+        return target
+    }
 
     fun list(): List<Spec> = synchronized(lock) {
         runCatching {
