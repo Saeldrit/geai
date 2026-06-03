@@ -263,26 +263,28 @@ class AgentLoop(
                     return
                 }
 
-                // Adaptive kill-switch tracking
-                // Drop the escalate_author routing hint if unused after 3 iterations.
-                var escalationHintSeen = false
+                // Adaptive kill-switch: drop the escalate_author routing hint if unused after 3 iterations.
                 for (call in toolUses) {
-                    if (call.name == GeaiToolset.ESCALATE) { escalationUsedThisTurn = true; escalationHintSeen = true }
+                    if (call.name == GeaiToolset.ESCALATE) escalationUsedThisTurn = true
                 }
                 if (!escalationUsedThisTurn && settings.tieredRoutingEnabled) {
                     iterationsWithoutEscalation++
-                    if (iterationsWithoutEscalation >= 3 && bundleSuffix == rawBundleSuffix) {
+                    // Only fire when there is actually a <mode> directive to drop — otherwise the no-op
+                    // replace leaves bundleSuffix == rawBundleSuffix and this would re-fire every iteration.
+                    if (iterationsWithoutEscalation >= 3 && bundleSuffix == rawBundleSuffix && rawBundleSuffix.contains("<mode>")) {
                         bundleSuffix = rawBundleSuffix.replace(Regex("<mode>.*?</mode>"), "").trim()
-                        listener.onEvent(AgentEvent.Info("🛣 Dropped tiered-routing hint — model not using escalate_author, saving context."))
+                        listener.onEvent(AgentEvent.Info("🛣 Dropped the mode directive (model isn't escalating) to save context."))
                     }
                 } else if (escalationUsedThisTurn) {
                     iterationsWithoutEscalation = 0
                 }
-                // Track kb_lookup: after 3 empty returns, suppress it.
-                for (callIdx in toolUses.indices) {
-                    val call = toolUses[callIdx]
+                // Track kb_lookup: after 3 empty returns, suppress it. Look up the result by tool_use id —
+                // NOT by positional index: toolResults is [meta]+[regular] while toolUses is interleaved,
+                // so indexing by position reads the wrong block once any meta tool shares the turn.
+                val resultById = toolResults.associateBy { it.toolUseId }
+                for (call in toolUses) {
                     if (call.name == "kb_lookup") {
-                        val result = toolResults.getOrNull(callIdx)
+                        val result = resultById[call.id]
                         if (result != null && result.content.contains("No matching knowledge yet", ignoreCase = true)) {
                             emptyKbLookups++
                         }
