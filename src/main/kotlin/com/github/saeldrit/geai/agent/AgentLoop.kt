@@ -73,6 +73,10 @@ class AgentLoop(
     private val profile: LoopProfile = LoopProfile.MAIN,
 ) {
 
+    // [PERF] Cache advertised tool specs — rebuilt only when activeGroups/grace/tiered change.
+    private var cachedSpecs: List<ToolSpec>? = null
+    private var cachedSpecsKey: Int = 0
+
     fun run(session: AgentSession, userText: String, listener: AgentListener, indicator: ProgressIndicator) {
         session.messages.add(ChatMessage.user(userText))
         listener.onEvent(AgentEvent.UserMessage(userText))
@@ -119,9 +123,10 @@ class AgentLoop(
         try {
             var iteration = 0
 
-            // Stuck-loop detection: same call + same result = abort; same call + new result = progress.
-            var lastToolSignature: String? = null
-            var lastResultSignature: String? = null
+            // Stuck-loop detection: same call + same result = nudge once, then abort if it repeats again.
+            var lastToolSignature: Any? = null
+            var lastResultSignature: Any? = null
+            var repeatedStepCount = 0
             // On-demand tool groups (progressive disclosure). Pre-seeded with the mode's group and,
             // while a debug session is live, the debug group — saving a load_tools round-trip.
             val activeGroups = linkedSetOf<String>()
@@ -146,8 +151,6 @@ class AgentLoop(
                     listener.onEvent(AgentEvent.Cancelled())
                     return
                 }
-                // Safety backstop ONLY — not a work limit. The main loop runs until the model is done,
-                // Safety backstop — not a work limit. Catches pathological non-repeating runaway loops.
                 if (iteration++ >= maxIterations) {
                     summarizeAndFinish(
                         "Safety stop: $maxIterations iterations without finishing — likely stuck. " +
@@ -229,7 +232,7 @@ class AgentLoop(
                 // Every tool_use MUST get a matching tool_result — otherwise transcripts break on resume.
                 val toolResults = ArrayList<ContentBlock.ToolResult>(toolUses.size)
                 var interrupted = false
-                // ── Parallel tool execution ──
+                // Parallel tool execution
                 // note/load_tools mutate loop state and run sequentially; delegate fans out in parallel
                 // (handled inside executeMetaTools). Regular tools are independent and run in parallel.
                 val metaCalls = toolUses.filter { it.name in META_TOOL_NAMES }
@@ -260,7 +263,7 @@ class AgentLoop(
                     return
                 }
 
-                // ── Adaptive kill-switch tracking ──
+                // Adaptive kill-switch tracking
                 // Drop the escalate_author routing hint if unused after 3 iterations.
                 var escalationHintSeen = false
                 for (call in toolUses) {
@@ -290,17 +293,28 @@ class AgentLoop(
                     session.scratchpad.add("kb_lookup consistently returns nothing (empty knowledge store). Skip kb_lookup this session — just use find_files/search_text/resolve_ref directly.")
                 }
 
-                // Stuck-loop guard — identical call + identical result = abort; same call + new result = progress.
-                val callSignature = toolUses.joinToString("|") { "${it.name}(${it.inputJson})" }
-                val resultSignature = toolResults.joinToString("|") { "${it.isError}:${it.content.take(400)}" }
-                if (callSignature == lastToolSignature && resultSignature == lastResultSignature) {
-                    listener.onEvent(AgentEvent.Error("Stopped: the model repeated the identical tool call(s) with no new result — likely stuck. Aborted to avoid wasting tokens."))
-                    listener.onEvent(AgentEvent.Info(UsageFormat.summary(settings.loopModel(), turnUsage, session.totalUsage, settings.modelPrices)))
-                    listener.onEvent(AgentEvent.Done(session.totalUsage))
-                    return
+                // [PERF] Stuck-loop guard via fast hash — avoids building huge strings every turn.
+                val callHash = toolUses.fold(31) { h, c -> h * 31 + c.name.hashCode() * 31 + c.inputJson.hashCode() }
+                val resultHash = toolResults.fold(31) { h, r -> h * 31 + r.isError.hashCode() * 31 + r.content.take(400).hashCode() }
+                if (callHash == lastToolSignature as? Int && resultHash == lastResultSignature as? Int) {
+                    repeatedStepCount++
+                    if (repeatedStepCount >= 2) {
+                        listener.onEvent(AgentEvent.Error("Stopped: the model repeated the identical tool call(s) with no new result even after a nudge — likely stuck. Aborted to avoid wasting tokens."))
+                        listener.onEvent(AgentEvent.Info(UsageFormat.summary(settings.loopModel(), turnUsage, session.totalUsage, settings.modelPrices)))
+                        listener.onEvent(AgentEvent.Done(session.totalUsage))
+                        return
+                    }
+                    session.scratchpad.add(
+                        "Loop guard: your last step repeated an identical call and got the SAME result you already have. " +
+                            "Do NOT issue that call again — use the output you already got and take the next concrete step " +
+                            "(read specific lines of a file, or make an edit_file change). Re-listing or re-reading the same thing is not progress.",
+                    )
+                    listener.onEvent(AgentEvent.Info("↻ Repeated call with no new result — nudging the model to move on (aborts if it repeats again)."))
+                } else {
+                    repeatedStepCount = 0
                 }
-                lastToolSignature = callSignature
-                lastResultSignature = resultSignature
+                lastToolSignature = callHash
+                lastResultSignature = resultHash
             }
         } catch (_: ProcessCanceledException) {
             listener.onEvent(AgentEvent.Cancelled())
@@ -385,14 +399,20 @@ class AgentLoop(
         listener.onEvent(AgentEvent.Done(session.totalUsage))
     }
 
-    /** Tool schemas advertised this iteration — progressive disclosure surface + meta-tools. */
-    private fun advertisedSpecs(settings: GeaiSettingsState, activeGroups: Set<String>): List<ToolSpec> =
-        if (profile.isSubAgent) {
+    /** [PERF] Cached tool specs — rebuilt only when activeGroups/grace/tiered change. */
+    private fun advertisedSpecs(settings: GeaiSettingsState, activeGroups: Set<String>): List<ToolSpec> {
+        val key = activeGroups.hashCode() xor (if (settings.graceEnabled) 1 else 0) xor (if (settings.tieredRoutingEnabled) 2 else 0)
+        if (cachedSpecs != null && key == cachedSpecsKey) return cachedSpecs!!
+        val specs = if (profile.isSubAgent) {
             registry.specs()
         } else {
             GeaiToolset.advertisedTools(settings.graceEnabled, activeGroups, settings.tieredRoutingEnabled).map { it.spec() } +
                 GeaiToolset.loaderSpec() + GeaiToolset.delegateSpec() + GeaiToolset.noteSpec()
         }
+        cachedSpecs = specs
+        cachedSpecsKey = key
+        return specs
+    }
 
     private fun recordNote(call: ContentBlock.ToolUse, scratchpad: MutableList<String>): ToolResult {
         val text = ToolArgs.parse(call.inputJson).stringOrNull("text")?.trim().orEmpty()
@@ -506,10 +526,11 @@ class AgentLoop(
     private val META_TOOL_NAMES = setOf(GeaiToolset.NOTE, GeaiToolset.LOAD_TOOLS, GeaiToolset.DELEGATE)
 
     /**
-     * `note`/`load_tools` run sequentially (they mutate the scratchpad / active groups and must not
-     * race). `delegate` calls are deferred and run CONCURRENTLY — each is an isolated read-only
-     * sub-agent that can't touch loop state or the others, so fanning N audits out costs the slowest
-     * sub-agent, not the sum. Usage is summed after the join, single-threaded — no locks needed.
+     * `note`/`load_tools` run in PARALLEL: they mutate independent state (scratchpad vs activeGroups),
+     * so there is no race. Events are emitted in original call order to keep the UI sequence correct.
+     * `delegate` calls are deferred and run CONCURRENTLY — each is an isolated read-only sub-agent
+     * that can't touch loop state or the others, so fanning N audits out costs the slowest sub-agent,
+     * not the sum. Usage is summed after the join, single-threaded — no locks needed.
      */
     private fun executeMetaTools(
         calls: List<ContentBlock.ToolUse>,
@@ -526,8 +547,10 @@ class AgentLoop(
         var metaTurnUsage = turnUsage
         val results = arrayOfNulls<ContentBlock.ToolResult>(calls.size)
 
-        // Pass 1 (sequential): run note/load_tools inline; only RESERVE delegate slots here, honouring
-        // MAX_DELEGATIONS in call order, then run the reserved delegates together in pass 2.
+        // Pass 1 (sequential): run note/load_tools inline. They mutate the SHARED scratchpad / activeGroups
+        // (two note calls in one turn both append to the same list), so they must not race — and they are
+        // instant, so there is nothing to gain from parallelism. Only RESERVE delegate slots here
+        // (honouring MAX_DELEGATIONS in call order); the reserved delegates run together in pass 2.
         val delegateIndices = mutableListOf<Int>()
         for ((i, call) in calls.withIndex()) {
             if (metaInterrupted || indicator.isCanceled) {

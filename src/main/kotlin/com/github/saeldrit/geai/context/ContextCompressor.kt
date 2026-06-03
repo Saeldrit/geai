@@ -48,12 +48,14 @@ object ContextCompressor {
         systemPromptChars: Int = 0,
         summarizer: Summarizer? = null,
     ): List<ChatMessage> {
+        val budget = charBudget(contextWindowTokens, outputReserveTokens, systemPromptChars)
+        // [PERF] Fast path: transcript well under 70% of budget — skip all processing entirely.
+        if (estimateChars(messages) <= budget * 0.7) return messages
         // Eager pass: shrink stale tool_result blocks unconditionally so even short transcripts stay
         // lean. Runs even when under-budget — the goal is small payloads, not just not-exceeding.
         // Skip when the transcript is tiny (< 10 tool results): no savings possible, only wasted copy.
         val toolCount = messages.count { it.role == Role.TOOL }
         val eagerlyTrimmed = if (toolCount <= EAGER_KEEP_RECENT_TOOLS + 2) messages else eagerlyTruncateOldToolResults(messages)
-        val budget = charBudget(contextWindowTokens, outputReserveTokens, systemPromptChars)
         if (estimateChars(eagerlyTrimmed) <= budget) return eagerlyTrimmed
 
         // Preferred: fold the old middle into a recap (keeps findings, not just the first 400 chars).
@@ -138,7 +140,7 @@ object ContextCompressor {
         }
     }
 
-    // --- Truncation fallback (deterministic, no LLM) ------------------------------------------
+    // Truncation fallback (deterministic, no LLM)
 
     private fun truncateToBudget(messages: List<ChatMessage>, budget: Int): List<ChatMessage> {
         if (estimateChars(messages) <= budget) return messages
