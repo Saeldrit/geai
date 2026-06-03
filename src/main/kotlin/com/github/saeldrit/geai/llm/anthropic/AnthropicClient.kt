@@ -81,7 +81,10 @@ class AnthropicClient(
                                 val name = block.stringOrNull("name").orEmpty()
                                 currentToolId = id
                                 toolNames[id] = name
-                                toolUseBuilders[id] = StringBuilder(block.get("input")?.toString() ?: "")
+                                // Start empty: content_block_start carries an empty input ({}); the real
+                                // arguments arrive as input_json_delta fragments. Seeding with that {} would
+                                // corrupt the accumulated input into "{}{...}" (malformed JSON).
+                                toolUseBuilders[id] = StringBuilder()
                                 onEvent(com.github.saeldrit.geai.llm.StreamEvent.ToolUseStarted(id, name))
                             }
                         }
@@ -115,7 +118,7 @@ class AnthropicClient(
                     }
                 }
             } catch (_: Exception) {
-                // Malformed SSE data — skip this event
+                // Skip a malformed SSE chunk.
             }
         }
 
@@ -133,7 +136,8 @@ class AnthropicClient(
         val blocks = mutableListOf<ContentBlock>()
         if (textBuilder.isNotEmpty()) blocks.add(ContentBlock.Text(textBuilder.toString()))
         toolUseBuilders.forEach { (id, jsonBuilder) ->
-            blocks.add(ContentBlock.ToolUse(id, toolNames[id] ?: "tool", jsonBuilder.toString()))
+            // A tool with no arguments streams no input_json_delta, so the builder may be empty → {}.
+            blocks.add(ContentBlock.ToolUse(id, toolNames[id] ?: "tool", jsonBuilder.toString().ifBlank { "{}" }))
         }
         if (blocks.isEmpty()) blocks.add(ContentBlock.Text(""))
 

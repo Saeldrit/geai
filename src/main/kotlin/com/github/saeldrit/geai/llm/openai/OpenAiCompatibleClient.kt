@@ -72,7 +72,6 @@ class OpenAiCompatibleClient(
                 val choice = data.arrayOrEmpty("choices").firstOrNull()?.asJsonObject ?: return@postJsonSse
                 val delta = choice.objectOrNull("delta") ?: return@postJsonSse
 
-                // Text content
                 delta.stringOrNull("content")?.let { chunk ->
                     if (chunk.isNotEmpty()) {
                         textBuilder.append(chunk)
@@ -80,7 +79,6 @@ class OpenAiCompatibleClient(
                     }
                 }
 
-                // Tool calls
                 delta.get("tool_calls")?.takeIf { it.isJsonArray }?.asJsonArray?.forEach { element ->
                     val tc = element.asJsonObject
                     val index = tc.intOr("index", 0)
@@ -96,7 +94,6 @@ class OpenAiCompatibleClient(
                     }
                 }
 
-                // Finish reason & usage
                 choice.stringOrNull("finish_reason")?.let { if (it.isNotEmpty()) finishReason = it }
                 data.objectOrNull("usage")?.let { usageObj ->
                     usageResult = TokenUsage(
@@ -109,7 +106,7 @@ class OpenAiCompatibleClient(
                     )
                 }
             } catch (_: Exception) {
-                // Malformed SSE data — skip
+                // Skip a malformed SSE chunk.
             }
         }
 
@@ -118,7 +115,6 @@ class OpenAiCompatibleClient(
             throw LlmException("Provider API error: ${result.errorBody.take(2000)}")
         }
 
-        // Assemble final blocks
         val blocks = mutableListOf<ContentBlock>()
         if (textBuilder.isNotEmpty()) blocks.add(ContentBlock.Text(textBuilder.toString()))
         toolCallBuilders.entries.sortedBy { it.key }.forEach { (_, acc) ->
