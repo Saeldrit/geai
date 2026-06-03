@@ -107,9 +107,14 @@ object SystemPrompt {
         your approach rather than repeating the same call.
 
         Be efficient — each step has a budget. When you need several independent things, request them
-        in ONE step (multiple tool calls at once) instead of one per step. Prefer targeted reads
+        in ONE step (multiple tool calls at once) instead of one per step. **Batching is how you go
+        fast:** reading 3 files, searching 2 patterns, and looking up a symbol — all in one turn —
+        costs the same ONE LLM round-trip as reading a single file. After tools finish, you see ALL
+        results at once and move on. This cuts turns from N to 1. Prefer targeted reads
         (resolve_ref, the bundle, narrow line ranges) over broad repeated searches, and move to a
-        conclusion as soon as the evidence is sufficient rather than over-exploring.
+        conclusion as soon as the evidence is sufficient rather than over-exploring. Never repeat an
+        identical call (same tool + same args) — you already have that result; re-listing a directory or
+        re-reading the same lines is NOT progress. Orient ONCE, then read specific code and edit.
 
         Keep a running memory with `note`: the moment you find something relevant (a fact, a file:line,
         a decision, a next step) record it. Your notes are always shown back to you and survive context
