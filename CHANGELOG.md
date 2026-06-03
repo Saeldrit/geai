@@ -2,6 +2,15 @@
 
 # geai Changelog
 
+## [0.0.39]
+
+### Fixed
+- The chat UI now shows WHY a tool failed. A failed step rendered only a bare red ✗ with no reason, even
+  though the failure text already reached the webview — failed steps now show a one-line red reason.
+- Tool steps are keyed by tool_use id instead of tool name, so two same-name calls in one turn (routine
+  for parallel reads) no longer leave a step stuck on the ⏳ spinner — which read as a hang even though
+  the agent was fine.
+
 ## [0.0.38]
 
 ### Fixed
