@@ -2,6 +2,26 @@
 
 # geai Changelog
 
+## [0.0.31]
+
+### Security
+- `spec_record` could write outside the spec directory — the model-supplied spec id flowed into a file
+  path unchecked (path traversal). The id is now validated and the resolved path is asserted to stay
+  under `spec/`.
+
+### Fixed
+- `kb_lookup` empty-result suppression matched results to calls by position, but tool results are
+  ordered [meta]+[regular] while calls are interleaved — so it mis-counted whenever a note/load_tools/
+  delegate shared the turn. It now matches by tool_use id.
+- The "Dropped tiered-routing hint" notice no longer repeats every iteration; it fires once, and only
+  when there is actually a mode directive to drop.
+- The session scratchpad (the agent's durable working notes) is now persisted, so a restart resumes
+  with its findings instead of losing them.
+
+### Changed
+- OpenAI-compatible streaming now requests `stream_options.include_usage`, so streamed turns report
+  token counts (previously they could read as zero, blinding the cost guard).
+
 ## [0.0.30]
 
 ### Fixed
