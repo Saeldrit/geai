@@ -42,12 +42,16 @@ object PsiAnchorResolver : AnchorResolver {
                 throw AnchorException("psi: Java plugin (com.intellij.modules.java) is not available in this IDE; use file: or openapi: anchors.")
             } ?: throw AnchorException("psi: class '$fqName' not found — check the fully-qualified name and that the project is indexed.")
             val element: PsiElement = if (member == null) psiClass else findMember(psiClass, member, fqName)
+            val fullText = element.text ?: signatureOf(element).orEmpty()
             ResolvedAnchor.of(
                 ref = "psi:$locator",
                 kind = "symbol",
                 location = locationOf(element),
                 signature = signatureOf(element),
-                content = element.text?.take(MAX_CONTENT) ?: signatureOf(element).orEmpty(),
+                // Display a truncated slice, but fingerprint the FULL declaration — otherwise a change
+                // PAST the cap is invisible to drift detection (spec_validate would wrongly report OK).
+                content = fullText.take(MAX_CONTENT),
+                hashSource = fullText,
             )
         }
     }

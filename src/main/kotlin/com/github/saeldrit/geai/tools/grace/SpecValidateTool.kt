@@ -1,7 +1,7 @@
 package com.github.saeldrit.geai.tools.grace
 
-import com.github.saeldrit.geai.anchor.AnchorException
 import com.github.saeldrit.geai.anchor.AnchorResolvers
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.github.saeldrit.geai.spec.SpecStore
 import com.github.saeldrit.geai.tools.AgentTool
 import com.github.saeldrit.geai.tools.ToolArgs
@@ -44,7 +44,11 @@ object SpecValidateTool : AgentTool {
                         item.refHash == live.contentHash -> "OK"
                         else -> "DRIFT"
                     }
-                } catch (e: AnchorException) {
+                } catch (e: ProcessCanceledException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Any resolver failure (not just AnchorException) degrades THIS ref to BROKEN — it must
+                    // never abort drift-checking of the other refs.
                     "BROKEN: ${e.message}"
                 }
                 if (status == "OK") ok++ else problems++

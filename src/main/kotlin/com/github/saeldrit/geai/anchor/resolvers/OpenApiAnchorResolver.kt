@@ -53,12 +53,17 @@ object OpenApiAnchorResolver : AnchorResolver {
 
             val node = walk(root, pointer)
             val rel = FsPaths.relativize(project, file)
+            val full = PRETTY.toJson(node)
             ResolvedAnchor.of(
                 ref = "openapi:$locator",
                 kind = "contract",
                 location = "$rel#$pointer",
-                signature = node.takeIf { it.isJsonObject }?.asJsonObject?.get("summary")?.asString,
-                content = PRETTY.toJson(node).take(MAX_CONTENT),
+                // takeIf isJsonPrimitive: `summary: null` is legal OpenAPI and `asString` on JsonNull (or an
+                // object/array summary) throws UnsupportedOperationException, aborting the whole resolve.
+                signature = node.takeIf { it.isJsonObject }?.asJsonObject?.get("summary")?.takeIf { it.isJsonPrimitive }?.asString,
+                // Display a truncated slice, but fingerprint the FULL contract so drift past the cap is caught.
+                content = full.take(MAX_CONTENT),
+                hashSource = full,
             )
         }
     }

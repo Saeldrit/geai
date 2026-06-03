@@ -1,7 +1,7 @@
 package com.github.saeldrit.geai.bundle
 
-import com.github.saeldrit.geai.anchor.AnchorException
 import com.github.saeldrit.geai.anchor.AnchorResolvers
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.github.saeldrit.geai.graph.EdgeKind
 import com.github.saeldrit.geai.graph.GeaiGraphStore
 import com.github.saeldrit.geai.graph.GraphEdge
@@ -71,7 +71,10 @@ object ContextBundler {
                     attrs = mapOf("id" to candidate.node.id, "anchor" to anchor) + (live.location?.let { mapOf("loc" to it) } ?: emptyMap()),
                     body = live.signature?.let { "$it\n${live.content}" } ?: live.content,
                 )
-            } catch (e: AnchorException) {
+            } catch (e: ProcessCanceledException) {
+                throw e
+            } catch (e: Exception) {
+                // One bad anchor must not fail the whole bundle — degrade just this atom.
                 Atom(candidate.node.id, "sym", mapOf("id" to candidate.node.id, "anchor" to anchor), "[unresolved: ${e.message}]")
             }
         }
