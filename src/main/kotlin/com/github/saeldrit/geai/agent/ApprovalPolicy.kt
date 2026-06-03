@@ -66,7 +66,7 @@ object ApprovalPolicy {
 
     enum class Decision { ALLOW_ONCE, ALLOW_SESSION, ALLOW_ALWAYS, DENY }
 
-    // ── Dialog ────────────────────────────────────────────────────────────────
+    // Dialog
 
     private class ApprovalDialog(
         project: Project,

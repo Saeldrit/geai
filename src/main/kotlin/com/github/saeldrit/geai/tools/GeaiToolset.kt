@@ -52,19 +52,15 @@ object GeaiToolset {
 
     /** Always advertised: knowledge axes, interaction, navigation, reading, editing. */
     private val CORE: List<AgentTool> = listOf(
-        // Knowledge axes (consult first — saves context)
         KbLookupTool,
         KbRecordTool,
         KbForgetTool,
-        // User interaction (clarifying questions, confirmations)
         AskUserTool,
-        // Navigation & reading
         ProjectOverviewTool,
         FindFilesTool,
         ListFilesTool,
         ReadFileTool,
         SearchTextTool,
-        // Editing
         WriteFileTool,
         EditFileTool,
     )

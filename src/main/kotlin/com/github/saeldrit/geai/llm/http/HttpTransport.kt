@@ -78,21 +78,18 @@ internal object HttpTransport {
                             dataBuffer.append(data)
                         }
                         line.isEmpty() && dataBuffer.isNotEmpty() -> {
-                            // Empty line = end of this event
                             onEvent(SseEvent(eventType.ifBlank { "message" }, dataBuffer.toString()))
                             eventType = ""
                             dataBuffer = StringBuilder()
                         }
-                        // Ignore comments (:...), heartbeat, other lines
                     }
                 }
             }
         } catch (_: java.io.InterruptedIOException) {
-            // Cancellation during read
+            // Reader interrupted by cancellation — stop quietly.
         } catch (e: Exception) {
             if (!indicator.isCanceled) throw LlmException("SSE stream error: ${e.message}", cause = e)
         }
-        // Flush any remaining event
         if (dataBuffer.isNotEmpty()) {
             onEvent(SseEvent(eventType.ifBlank { "message" }, dataBuffer.toString()))
         }
@@ -164,7 +161,7 @@ internal object HttpTransport {
             try {
                 return future.get(150, TimeUnit.MILLISECONDS)
             } catch (_: TimeoutException) {
-                // request still in flight — loop and re-check cancellation
+                // Still in flight — loop and re-check cancellation.
             } catch (_: InterruptedException) {
                 future.cancel(true)
                 Thread.currentThread().interrupt()

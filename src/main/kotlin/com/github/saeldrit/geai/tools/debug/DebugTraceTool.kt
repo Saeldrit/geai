@@ -47,14 +47,12 @@ object DebugTraceTool : AgentTool {
         val project = context.project
         val builder = StringBuilder()
 
-        // Step 0: evaluate before moving
         val startLoc = DebuggerSupport.pausedSessionDescription(project) ?: "unknown"
         val startValue = FrameInspection.evaluateSingle(project, expression, perStepTimeoutMs)
         builder.appendLine("── Trace: $expression (${kind.name.lowercase()}) ──")
         builder.appendLine("[0] $startLoc")
         builder.appendLine("    $expression = $startValue")
 
-        // Subsequent steps
         for (i in 1..maxSteps) {
             if (context.indicator.isCanceled) {
                 builder.appendLine("    ⚠ Tracing cancelled at step $i.")

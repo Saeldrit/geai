@@ -56,7 +56,6 @@ object BenchmarkRunner {
             for (task in tasks) {
                 for (cfg in configs) {
                     settings.graceEnabled = cfg.graceEnabled
-                    // Auto-reindex before grace runs so context_bundle has a populated graph
                     if (cfg.graceEnabled) {
                         runCatching {
                             val graph = GraphIndexer.reindex(project)

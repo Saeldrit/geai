@@ -7,3 +7,5 @@ build
 # geai runtime: persisted agent sessions and local build logs
 .geai/
 .geai-*.log
+# diagnostic dumps (generated, not source)
+GEAI_DUMP.md

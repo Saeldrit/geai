@@ -73,7 +73,7 @@ class GeaiKnowledgeStore(private val project: Project) {
         entries.forEach { entry ->
             val element = Element("entry").apply {
                 setAttribute("id", entry.id)
-                setAttribute("axis", entry.axis.name)   // always uppercase enum name
+                setAttribute("axis", entry.axis.name)
                 setAttribute("version", entry.version.toString())
                 setAttribute("tags", entry.tags.joinToString(","))
                 setAttribute("title", entry.title)
@@ -84,9 +84,9 @@ class GeaiKnowledgeStore(private val project: Project) {
         }
         runCatching {
             JDOMUtil.write(root, file())
-            cache = entries.toList()   // update cache atomically with the write
+            cache = entries.toList()
         }.onFailure {
-            cache = null               // invalidate on write failure so next load re-reads disk
+            cache = null
             thisLogger().warn("Geai: failed to write knowledge.xml", it)
         }
     }

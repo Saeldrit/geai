@@ -22,7 +22,7 @@ import javax.swing.JPanel
  */
 class GeaiSettingsConfigurable : Configurable {
 
-    // --- Engine & model (the essentials) ------------------------------------------------------
+    // Engine & model (the essentials)
     private val engineCheck =
         JBCheckBox("Use Claude Code CLI as the engine (your Claude subscription login — no API key needed)")
     private val claudePathField = JBTextField()
@@ -35,7 +35,7 @@ class GeaiSettingsConfigurable : Configurable {
     private val baseUrlField = JBTextField()
     private val apiKeyField = JBPasswordField()
 
-    // --- Advanced / expert --------------------------------------------------------------------
+    // Advanced / expert
     private val graceEnabledCheck =
         JBCheckBox("Enable GRACE (anchors / specs / graph / context bundle / tiered routing) — off = lean baseline")
     private val tieredRoutingCheck =

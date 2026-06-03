@@ -72,7 +72,7 @@ object AskUserTool : AgentTool {
         return ToolResult.ok(answer.get())
     }
 
-    // ── Text input dialog ─────────────────────────────────────────────────────
+    // Text input dialog
 
     private class TextInputDialog(
         project: com.intellij.openapi.project.Project,
