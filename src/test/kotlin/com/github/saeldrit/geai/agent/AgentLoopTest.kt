@@ -51,6 +51,19 @@ class AgentLoopTest : BasePlatformTestCase() {
         )
     }
 
+    fun testStuckGuardCatchesAlternatingCycle() {
+        // A/B/A/B thrashing: two distinct calls that each return a result already seen, never making
+        // progress. The old single-slot guard saw no CONSECUTIVE repeat and missed it; the ring catches it.
+        val registry = ToolRegistry(listOf(FAKE_READONLY))
+        val a = FakeLlmClient.toolUse("t1", "ro_fake", """{"k":"a"}""")
+        val b = FakeLlmClient.toolUse("t2", "ro_fake", """{"k":"b"}""")
+        val (_, events) = runLoop(FakeLlmClient(listOf(a, b, a, b, a, b, FakeLlmClient.endTurn("x"))), registry)
+        assertTrue(
+            "aborts on a 2-cycle even without consecutive repeats",
+            events.any { it is AgentEvent.Error && it.text.contains("stuck", ignoreCase = true) },
+        )
+    }
+
     fun testReadOnlyAndMutatingToolsBothProduceResults() {
         // P0 dispatch seam: read-only tools run in parallel, mutating tools sequentially — every
         // tool_use must still get exactly one tool_result regardless of which path it took.

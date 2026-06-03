@@ -125,10 +125,11 @@ class AgentLoop(
         try {
             var iteration = 0
 
-            // Stuck-loop detection: same call + same result = nudge once, then abort if it repeats again.
-            var lastToolSignature: Any? = null
-            var lastResultSignature: Any? = null
-            var repeatedStepCount = 0
+            // Stuck-loop detection: fingerprint each step (calls + their FULL results) and keep a small
+            // ring of recent fingerprints. A recurring fingerprint = no progress (a consecutive repeat OR
+            // an A/B/A/B cycle) → nudge once, then abort if it persists.
+            val recentStepSignatures = ArrayDeque<Long>()
+            var noProgressHits = 0
             // On-demand tool groups (progressive disclosure). Pre-seeded with the mode's group and,
             // while a debug session is live, the debug group — saving a load_tools round-trip.
             val activeGroups = linkedSetOf<String>()
@@ -302,28 +303,29 @@ class AgentLoop(
                     session.scratchpad.add("kb_lookup consistently returns nothing (empty knowledge store). Skip kb_lookup this session — just use find_files/search_text/resolve_ref directly.")
                 }
 
-                // [PERF] Stuck-loop guard via fast hash — avoids building huge strings every turn.
-                val callHash = toolUses.fold(31) { h, c -> h * 31 + c.name.hashCode() * 31 + c.inputJson.hashCode() }
-                val resultHash = toolResults.fold(31) { h, r -> h * 31 + r.isError.hashCode() * 31 + r.content.take(400).hashCode() }
-                if (callHash == lastToolSignature as? Int && resultHash == lastResultSignature as? Int) {
-                    repeatedStepCount++
-                    if (repeatedStepCount >= 2) {
-                        listener.onEvent(AgentEvent.Error("Stopped: the model repeated the identical tool call(s) with no new result even after a nudge — likely stuck. Aborted to avoid wasting tokens."))
+                // Stuck-loop guard: a step whose fingerprint already appears in the recent ring produced
+                // nothing the model didn't already have (a consecutive repeat OR an A/B/A/B cycle). Hash the
+                // FULL result — a 400-char head misses thrashing that differs only deep in a big result.
+                val stepSignature = stepSignature(toolUses, toolResults)
+                if (recentStepSignatures.contains(stepSignature)) {
+                    noProgressHits++
+                    if (noProgressHits >= 2) {
+                        listener.onEvent(AgentEvent.Error("Stopped: the model kept repeating tool call(s) with no new result even after a nudge — likely stuck. Aborted to avoid wasting tokens."))
                         listener.onEvent(AgentEvent.Info(UsageFormat.summary(settings.loopModel(), turnUsage, session.totalUsage, settings.modelPrices)))
                         listener.onEvent(AgentEvent.Done(session.totalUsage))
                         return
                     }
                     session.scratchpad.add(
-                        "Loop guard: your last step repeated an identical call and got the SAME result you already have. " +
-                            "Do NOT issue that call again — use the output you already got and take the next concrete step " +
-                            "(read specific lines of a file, or make an edit_file change). Re-listing or re-reading the same thing is not progress.",
+                        "Loop guard: you repeated a step whose result you ALREADY have. Do NOT issue that call " +
+                            "again — use the output you have and take a DIFFERENT next step (read specific NEW lines, " +
+                            "or make an edit_file change). Re-listing or re-reading the same thing is not progress.",
                     )
-                    listener.onEvent(AgentEvent.Info("↻ Repeated call with no new result — nudging the model to move on (aborts if it repeats again)."))
+                    listener.onEvent(AgentEvent.Info("↻ Repeated step with no new result — nudging the model to move on (aborts if it persists)."))
                 } else {
-                    repeatedStepCount = 0
+                    noProgressHits = 0
                 }
-                lastToolSignature = callHash
-                lastResultSignature = resultHash
+                recentStepSignatures.addLast(stepSignature)
+                while (recentStepSignatures.size > STUCK_RING_SIZE) recentStepSignatures.removeFirst()
             }
         } catch (_: ProcessCanceledException) {
             listener.onEvent(AgentEvent.Cancelled())
@@ -428,6 +430,24 @@ class AgentLoop(
         if (text.isEmpty()) return ToolResult.error("note needs a non-empty 'text'.")
         scratchpad.add(text)
         return ToolResult.ok("Noted (${scratchpad.size} total). Build your final answer from your notes.")
+    }
+
+    /**
+     * A fast fingerprint of one step: the tool calls (name + args) plus their FULL results. The stuck-loop
+     * guard treats a recurring fingerprint as "no progress" — the step gave back something already seen.
+     * Long (not Int) to keep collisions negligible across a turn.
+     */
+    private fun stepSignature(calls: List<ContentBlock.ToolUse>, results: List<ContentBlock.ToolResult>): Long {
+        var h = 1125899906842597L
+        for (c in calls) {
+            h = h * 31 + c.name.hashCode()
+            h = h * 31 + c.inputJson.hashCode()
+        }
+        for (r in results) {
+            h = h * 31 + r.isError.hashCode()
+            h = h * 31 + r.content.hashCode()
+        }
+        return h
     }
 
     /**
@@ -694,6 +714,9 @@ class AgentLoop(
 
     private companion object {
         const val MAX_DELEGATIONS = 16
+
+        /** Stuck-loop guard: how many recent step fingerprints to remember (enough to catch short cycles). */
+        const val STUCK_RING_SIZE = 5
 
         /** Soft cap on notes shown to the model — older notes fold with a marker. */
         const val MAX_NOTES_RETAINED = 50
