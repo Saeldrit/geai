@@ -16,8 +16,8 @@ import com.intellij.openapi.ui.Messages
 object BenchmarkLauncher {
 
     private const val DEFAULT_TASK =
-        "Найди, где в проекте конфигурируется HTTP/сетевой клиент, и предложи фикс, если настройки " +
-            "небезопасны (таймауты, проверка сертификата). Только диагноз + минимальная правка."
+        "Find where the project configures its HTTP/network client and propose a fix if the settings " +
+            "are unsafe (timeouts, certificate validation). Diagnosis + minimal change only."
 
     fun launch(project: Project) {
         if (!LlmClientFactory.isConfigured()) {

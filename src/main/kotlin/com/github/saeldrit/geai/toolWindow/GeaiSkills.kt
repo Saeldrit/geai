@@ -14,37 +14,37 @@ object GeaiSkills {
 
     fun all(): List<GeaiSkill> = listOf(
         GeaiSkill(
-            "debug", "🐞", "Автономная отладка с агентом", "NEW",
-            "/debug Продебажь функционал: <опиши проблему>. Поставь брейкпоинты по пути данных, запусти дебаг, " +
-                "отследи где данные теряются или портятся, и предложи фикс с указанием file:line.",
+            "debug", "🐞", "Autonomous debugging with the agent", "NEW",
+            "/debug Debug this: <describe the problem>. Set breakpoints along the data path, start the " +
+                "debugger, trace where the data is lost or corrupted, and propose a fix with file:line.",
         ),
         GeaiSkill(
-            "explain", "🔍", "Объяснить код и найти использования", null,
-            "/explain Объясни, как работает <класс/функция>, и покажи где он используется (file:line).",
+            "explain", "🔍", "Explain code and find usages", null,
+            "/explain Explain how <class/function> works, and show where it is used (file:line).",
         ),
         GeaiSkill(
-            "feature", "✏️", "Реализация фичей и фиксов", null,
-            "/implement Реализуй: <что нужно>. Сначала изучи затронутый код, затем внеси минимальные правки в стиле проекта.",
+            "feature", "✏️", "Implement features and fixes", null,
+            "/implement Implement: <what you need>. Study the affected code first, then make the smallest style-matching change.",
         ),
         GeaiSkill(
-            "refactor", "♻️", "Систематический рефакторинг", null,
-            "/refactor Проведи рефакторинг <область>: убери дублирование, улучши имена, сохрани поведение. Покажи план перед правками.",
+            "refactor", "♻️", "Systematic refactoring", null,
+            "/refactor Refactor <area>: remove duplication, improve names, preserve behavior. Show a plan before editing.",
         ),
         GeaiSkill(
-            "tests", "🧪", "Сгенерировать юнит-тесты", null,
-            "/test Сгенерируй юнит-тесты для <класс/функция>, покрывая основные и граничные случаи, в стиле существующих тестов.",
+            "tests", "🧪", "Generate unit tests", null,
+            "/test Generate unit tests for <class/function>, covering the main and edge cases, in the style of the existing tests.",
         ),
         GeaiSkill(
-            "review", "🔀", "Ревью кода", null,
-            "/review Сделай ревью текущих изменений: корректность, баги, безопасность, упрощения. Дай findings с file:line.",
+            "review", "🔀", "Code review", null,
+            "/review Review the current changes: correctness, bugs, security, simplifications. Return findings with file:line.",
         ),
         GeaiSkill(
-            "agents", "⚙️", "Создать AGENTS.md для проекта", null,
-            "Изучи проект и создай AGENTS.md: структура, команды сборки/тестов, конвенции, ключевые модули.",
+            "agents", "⚙️", "Create AGENTS.md for the project", null,
+            "Study the project and create AGENTS.md: structure, build/test commands, conventions, key modules.",
         ),
         GeaiSkill(
-            "security", "🛡️", "Security-анализ", "BETA",
-            "/security Проверь проект на уязвимости (инъекции, секреты, авторизация, небезопасная десериализация) и предложи исправления.",
+            "security", "🛡️", "Security analysis", "BETA",
+            "/security Audit the project for vulnerabilities (injection, secrets, authorization, unsafe deserialization) and propose fixes.",
         ),
     )
 }

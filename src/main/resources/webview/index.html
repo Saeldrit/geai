@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -30,9 +30,17 @@
   .mark svg{display:block}
   #topbar .spacer{flex:1}
   #status{color:var(--muted);font-size:12px;margin-right:4px}
-  .iconbtn{background:none;border:none;color:var(--fg);cursor:pointer;border-radius:6px;
-    padding:5px 7px;font-size:14px;opacity:.8}
+  .iconbtn{position:relative;background:none;border:none;color:var(--fg);cursor:pointer;border-radius:7px;
+    padding:6px;opacity:.72;display:inline-flex;align-items:center;justify-content:center;transition:background .12s,opacity .12s}
   .iconbtn:hover{background:var(--card-hover);opacity:1}
+  .iconbtn .ico{width:18px;height:18px;display:block;stroke:currentColor;stroke-width:2;
+    stroke-linecap:round;stroke-linejoin:round;fill:none}
+  /* custom hover tooltip (JCEF does not reliably show native title= tooltips) */
+  .iconbtn::after{content:attr(data-tip);position:absolute;top:calc(100% + 7px);right:0;
+    background:#0e0f11;color:var(--fg);border:1px solid var(--border);padding:4px 8px;border-radius:6px;
+    font-size:11px;line-height:1.3;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .12s ease;
+    box-shadow:0 6px 18px rgba(0,0,0,.45);z-index:60}
+  .iconbtn:hover::after{opacity:1}
 
   /* scroll area */
   #scroll{flex:1;overflow-y:auto;padding:14px 14px 4px}
@@ -80,7 +88,13 @@
   p code{background:#181a1c;border:1px solid var(--border);border-radius:4px;padding:1px 4px}
 
   /* composer */
-  #composer{flex:0 0 auto;border-top:1px solid var(--border);padding:8px 10px}
+  #composer{position:relative;flex:0 0 auto;border-top:1px solid var(--border);padding:8px 10px}
+  #cmdmenu{position:absolute;left:10px;right:10px;bottom:100%;margin-bottom:6px;background:var(--card);
+    border:1px solid var(--border);border-radius:10px;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,.4);z-index:20}
+  .cmdrow{display:flex;gap:10px;align-items:baseline;padding:7px 11px;cursor:pointer}
+  .cmdrow.active{background:var(--card-hover)}
+  .cmdrow .cn{color:var(--accent);font-weight:600;font-family:ui-monospace,Consolas,monospace;flex-shrink:0}
+  .cmdrow .cd{color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #inputwrap{border:1px solid var(--border);border-radius:10px;background:var(--field);padding:8px 10px}
   #inputwrap:focus-within{border-color:var(--accent)}
   #input{width:100%;border:none;outline:none;resize:none;background:transparent;color:var(--fg);
@@ -145,32 +159,33 @@
     <span class="brand"><span class="mark"><svg viewBox="0 0 24 24" width="1.05em" height="1.05em" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/><path d="M12 2.5a9.5 9.5 0 0 1 8.2 5" opacity="0.6"/></svg></span>geai</span>
     <span class="spacer"></span>
     <span id="status">Ready</span>
-    <button class="iconbtn" id="btnSteps" title="Только шаги — скрыть рассуждения">≡</button>
-    <button class="iconbtn" id="btnNew" title="Новая сессия">＋</button>
-    <button class="iconbtn" id="btnHistory" title="История сессий">🕘</button>
-    <button class="iconbtn" id="btnBench" title="A/B бенчмарк: baseline vs GRACE">⚖</button>
-    <button class="iconbtn" id="btnCompact" title="Сжать контекст — сложить старое в конспект (роняет расход, не теряя нить)">🗜</button>
-    <button class="iconbtn" id="btnSettings" title="Настройки">⚙</button>
+    <button class="iconbtn" id="btnSteps" aria-label="Steps only" data-tip="Steps only — hide reasoning"><svg class="ico" viewBox="0 0 24 24"><line x1="8" y1="6" x2="20" y2="6"/><line x1="8" y1="12" x2="20" y2="12"/><line x1="8" y1="18" x2="20" y2="18"/><line x1="4" y1="6" x2="4.01" y2="6"/><line x1="4" y1="12" x2="4.01" y2="12"/><line x1="4" y1="18" x2="4.01" y2="18"/></svg></button>
+    <button class="iconbtn" id="btnNew" aria-label="New session" data-tip="New session"><svg class="ico" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+    <button class="iconbtn" id="btnHistory" aria-label="History" data-tip="Session history"><svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 16 14"/></svg></button>
+    <button class="iconbtn" id="btnBench" aria-label="Benchmark" data-tip="A/B benchmark: baseline vs GRACE"><svg class="ico" viewBox="0 0 24 24"><line x1="6" y1="20" x2="6" y2="14"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="18" y1="20" x2="18" y2="10"/></svg></button>
+    <button class="iconbtn" id="btnCompact" aria-label="Compress context" data-tip="Compress context — shrink token use, keep the thread"><svg class="ico" viewBox="0 0 24 24"><polyline points="8 5 12 9 16 5"/><polyline points="8 19 12 15 16 19"/><line x1="4" y1="12" x2="20" y2="12"/></svg></button>
+    <button class="iconbtn" id="btnSettings" aria-label="Settings" data-tip="Settings"><svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
   </div>
 
   <div id="scroll">
     <div id="welcome">
       <div class="logo"><span class="mark"><svg viewBox="0 0 24 24" width="1.05em" height="1.05em" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/><path d="M12 2.5a9.5 9.5 0 0 1 8.2 5" opacity="0.6"/></svg></span> geai</div>
-      <p class="tagline">Ваш помощник для отладки, навигации и правок. Понимает структуру проекта,
-        ставит брейкпоинты, ведёт дебаг и подражает стилю кода.</p>
+      <p class="tagline">Your assistant for debugging, navigation, and edits. It understands the
+        project structure, sets breakpoints, drives the debugger, and matches your code style.</p>
       <div id="skills"></div>
     </div>
     <div id="chat" class="hidden"></div>
   </div>
 
   <div id="composer">
+    <div id="cmdmenu" class="hidden"></div>
     <div id="inputwrap">
-      <textarea id="input" placeholder="Опишите баг, напр. «на UI уходят невалидные данные, не пойму где теряем». Enter — отправить, Shift+Enter — новая строка."></textarea>
+      <textarea id="input" placeholder="Describe the bug, e.g. “invalid data reaches the UI, I can’t find where we lose it”. Enter to send, Shift+Enter for a new line. Type / for commands."></textarea>
     </div>
     <div id="footer">
       <span id="engine"></span>
       <span id="tokens"></span>
-      <button id="send">Отправить</button>
+      <button id="send">Send</button>
     </div>
   </div>
 </div>
@@ -180,7 +195,9 @@
   var running=false, started=false;
   var el=function(id){return document.getElementById(id)};
   var scroll=el('scroll'), chat=el('chat'), welcome=el('welcome'), input=el('input'),
-      send=el('send'), statusEl=el('status'), tokensEl=el('tokens'), engineEl=el('engine');
+      send=el('send'), statusEl=el('status'), tokensEl=el('tokens'), engineEl=el('engine'), cmdMenu=el('cmdmenu');
+  // slash-command discoverability ("/" menu): catalog from Kotlin, current matches, highlighted row
+  var cmds=[], cmdMatches=[], cmdActive=-1;
   // tool-group state (reset each agent turn)
   var tGroup=null, tEntries=null, tCount=0, tPending={};
   // streaming: the live assistant bubble body + accumulated raw text, and the live reasoning block body
@@ -265,7 +282,7 @@
     d.innerHTML='<div class="who">'+esc(who)+'</div><div class="body">'+md(text)+'</div>'; append(d); }
   function line(cls,text){ var d=document.createElement('div'); d.className=cls; d.innerHTML=linkify(esc(text)); append(d); }
   function reasoning(text){ var d=document.createElement('details'); d.className='reason';
-    d.innerHTML='<summary>Размышления</summary><div class="rbody"></div>';
+    d.innerHTML='<summary>Reasoning</summary><div class="rbody"></div>';
     d.querySelector('.rbody').textContent=text; append(d); }
 
   // ---- streaming: append deltas to ONE bubble, then re-render as markdown on completion ----
@@ -282,7 +299,7 @@
   function reasonDelta(text){
     if(!reasonBody){
       var d=document.createElement('details'); d.className='reason';
-      d.innerHTML='<summary>Размышления</summary><div class="rbody"></div>';
+      d.innerHTML='<summary>Reasoning</summary><div class="rbody"></div>';
       reasonBody=d.querySelector('.rbody'); append(d);
     }
     reasonBody.textContent=(reasonBody.textContent||'')+text;
@@ -299,23 +316,23 @@
     return true;
   }
 
-  function setRunning(r){ running=r; send.textContent=r?'Стоп':'Отправить'; send.classList.toggle('stop',r);
-    input.disabled=r; statusEl.textContent=r?'Работаю…':'Ready'; }
+  function setRunning(r){ running=r; send.textContent=r?'Stop':'Send'; send.classList.toggle('stop',r);
+    input.disabled=r; statusEl.textContent=r?'Working…':'Ready'; }
   function closeToolGroup(label){
     if(!tGroup) return;
     var s=tGroup.querySelector('summary'); if(s) s.textContent=label;
     tGroup.removeAttribute('open');
     tGroup=null; tEntries=null;
   }
-  function stepsLabel(n,suffix){ return n+' шаг'+(n===1?'':n<5?'а':'ов')+' '+suffix; }
+  function stepsLabel(n,suffix){ return n+' step'+(n===1?'':'s')+' '+suffix; }
 
   function renderEvent(ev){
     switch(ev.type){
       case 'userMessage':
         showChat(); finalizeStream();
         closeToolGroup(stepsLabel(tCount,'✓')); tCount=0; tPending={};
-        bubble('user','Вы',ev.text); break;
-      case 'thinking': statusEl.textContent='Думаю…'; break;
+        bubble('user','You',ev.text); break;
+      case 'thinking': statusEl.textContent='Thinking…'; break;
       case 'reasoning': showChat(); reasoning(ev.text); break;
       case 'reasoningDelta': showChat(); reasonDelta(ev.text); break;
       case 'assistantTextDelta': showChat(); streamDelta(ev.text); break;
@@ -331,7 +348,7 @@
         if(!tGroup){
           tGroup=document.createElement('details');
           tGroup.className='tools-group'; tGroup.setAttribute('open','');
-          var sum=document.createElement('summary'); sum.textContent='1 шаг…';
+          var sum=document.createElement('summary'); sum.textContent='1 step…';
           tGroup.appendChild(sum);
           tEntries=document.createElement('div'); tEntries.className='tool-entries';
           tGroup.appendChild(tEntries);
@@ -367,11 +384,11 @@
       case 'cancelled':
         showChat(); finalizeStream();
         closeToolGroup(stepsLabel(tCount,'✗')); tCount=0; tPending={};
-        line('info',ev.text||'Остановлено.'); setRunning(false); break;
+        line('info',ev.text||'Stopped.'); setRunning(false); break;
       case 'done':
         finalizeStream();
         closeToolGroup(stepsLabel(tCount,'✓')); tCount=0; tPending={};
-        statusEl.textContent='Готово';
+        statusEl.textContent='Done';
         if(ev.tokensIn!=null) setTokens(ev.tokensIn,ev.tokensOut);
         setRunning(false); break;
     }
@@ -384,11 +401,11 @@
     if(!u){ return; }
     var ctx=u.contextTokens||0, win=u.contextWindow||0;
     var pct=win>0?Math.round(100*ctx/win):0;
-    var s='контекст '+fmt(ctx)+(win?' / '+fmt(win):'')+' · '+pct+'%';
+    var s='context '+fmt(ctx)+(win?' / '+fmt(win):'')+' · '+pct+'%';
     if(u.costUsd!=null) s+=' · ~$'+(u.costUsd).toFixed(4);
     else if((u.tokensIn||0)+(u.tokensOut||0)>0) s+=' · ↑'+fmt(u.tokensIn)+' ↓'+fmt(u.tokensOut);
     tokensEl.textContent=s;
-    tokensEl.title='Контекст ~'+ctx+' токенов из окна '+win+' ('+pct+'%). За сессию ↑'+(u.tokensIn||0)+' ↓'+(u.tokensOut||0)+(u.costUsd!=null?' · ~$'+u.costUsd.toFixed(4):'')+'. 🗜 — сжать.';
+    tokensEl.title='Context ~'+ctx+' tokens of a '+win+' window ('+pct+'%). This session ↑'+(u.tokensIn||0)+' ↓'+(u.tokensOut||0)+(u.costUsd!=null?' · ~$'+u.costUsd.toFixed(4):'')+'. 🗜 to compress.';
     tokensEl.style.color = pct>=80 ? '#e06c75' : (pct>=60 ? '#d19a66' : '');
   }
 
@@ -406,11 +423,39 @@
 
   function autoGrow(){ input.style.height='auto'; input.style.height=Math.min(input.scrollHeight, Math.floor(window.innerHeight*0.5))+'px'; }
   function submit(){ if(running) { send2k({action:'stop'}); return; }
-    var t=input.value.trim(); if(!t) return; input.value=''; autoGrow(); setRunning(true); send2k({action:'submit',text:t}); }
+    var t=input.value.trim(); if(!t) return; input.value=''; hideCmdMenu(); autoGrow(); setRunning(true); send2k({action:'submit',text:t}); }
+
+  // ---- slash-command menu ----
+  function hideCmdMenu(){ cmdMenu.classList.add('hidden'); cmdMenu.innerHTML=''; cmdActive=-1; cmdMatches=[]; }
+  function setCmdActive(i){ cmdActive=i; var rows=cmdMenu.children;
+    for(var k=0;k<rows.length;k++) rows[k].classList.toggle('active',k===i); }
+  function moveCmd(d){ if(cmdMatches.length) setCmdActive(((cmdActive<0?0:cmdActive)+d+cmdMatches.length)%cmdMatches.length); }
+  function acceptCmd(name){ input.value='/'+name+' '; hideCmdMenu(); autoGrow(); input.focus();
+    input.setSelectionRange(input.value.length,input.value.length); }
+  function refreshCmdMenu(){
+    var m=input.value.match(/^\/([a-zA-Z]*)$/);
+    if(!m||!cmds.length){ hideCmdMenu(); return; }
+    var q=m[1].toLowerCase();
+    cmdMatches=cmds.filter(function(c){ return c.name.toLowerCase().indexOf(q)===0; });
+    if(!cmdMatches.length){ hideCmdMenu(); return; }
+    cmdMenu.innerHTML=cmdMatches.map(function(c){
+      return '<div class="cmdrow" data-cmd="'+esc(c.name)+'"><span class="cn">/'+esc(c.name)+'</span><span class="cd">'+esc(c.desc)+'</span></div>'; }).join('');
+    setCmdActive(0); cmdMenu.classList.remove('hidden');
+  }
+  cmdMenu.addEventListener('click',function(e){ var r=e.target.closest?e.target.closest('.cmdrow'):null; if(r) acceptCmd(r.getAttribute('data-cmd')); });
 
   send.onclick=submit;
-  input.addEventListener('input', autoGrow);
-  input.addEventListener('keydown',function(e){ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); submit(); } });
+  input.addEventListener('input', function(){ autoGrow(); refreshCmdMenu(); });
+  input.addEventListener('keydown',function(e){
+    if(!cmdMenu.classList.contains('hidden')){
+      if(e.key==='ArrowDown'){ e.preventDefault(); moveCmd(1); return; }
+      if(e.key==='ArrowUp'){ e.preventDefault(); moveCmd(-1); return; }
+      if(e.key==='Escape'){ e.preventDefault(); hideCmdMenu(); return; }
+      if(e.key==='Tab'||(e.key==='Enter'&&!e.shiftKey)){ e.preventDefault();
+        var sel=cmdMatches[cmdActive<0?0:cmdActive]; if(sel){ acceptCmd(sel.name); return; } }
+    }
+    if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); submit(); }
+  });
   el('btnNew').onclick=function(){ send2k({action:'newSession'}); };
   el('btnSettings').onclick=function(){ send2k({action:'openSettings'}); };
   el('btnHistory').onclick=function(){ send2k({action:'history'}); };
@@ -437,28 +482,29 @@
       for(var k in state.theme){ r.setProperty('--'+k, state.theme[k]); } }
     if(state.engine) engineEl.textContent=state.engine;
     renderSkills(state.skills);
+    cmds = state.commands || [];
     chat.innerHTML=''; streamBody=null; streamRaw=''; reasonBody=null; started=false; welcome.classList.remove('hidden'); chat.classList.add('hidden');
     if(state.transcript && state.transcript.length){ state.transcript.forEach(renderEvent); }
     if(state.usage) setUsage(state.usage); else setTokens(state.tokensIn||0, state.tokensOut||0);
     setRunning(!!state.running);
-    if(state.configured===false){ showChat(); line('info','Geai не настроен. Откройте Settings | Tools | Geai и добавьте API-ключ, либо включите движок Claude Code.'); }
+    if(state.configured===false){ showChat(); line('info','Geai isn’t configured yet. Open Settings | Tools | Geai and add an API key, or enable the Claude Code engine.'); }
   };
   window.geaiEvent=function(ev){ renderEvent(ev); };
   window.geaiUsage=function(u){ setUsage(u); };
   window.geaiReset=function(){ chat.innerHTML=''; streamBody=null; streamRaw=''; reasonBody=null; started=false; welcome.classList.remove('hidden');
-    chat.classList.add('hidden'); statusEl.textContent='Новая сессия'; setRunning(false); };
+    chat.classList.add('hidden'); statusEl.textContent='New session'; setRunning(false); };
   function fmtDate(ts){ try{ var d=new Date(ts);
     return d.toLocaleDateString()+' '+('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2); }catch(e){ return ''; } }
   window.geaiHistory=function(list){
     var prev=el('overlay'); if(prev) prev.remove(); // replace, never stack (delete re-sends the list)
     var ov=document.createElement('div'); ov.id='overlay';
-    var box=document.createElement('div'); box.id='histbox'; box.innerHTML='<h3>История сессий</h3>';
-    if(!list||!list.length){ box.innerHTML+='<div class="info" style="padding:8px">Пока нет сохранённых сессий.</div>'; }
+    var box=document.createElement('div'); box.id='histbox'; box.innerHTML='<h3>Session history</h3>';
+    if(!list||!list.length){ box.innerHTML+='<div class="info" style="padding:8px">No saved sessions yet.</div>'; }
     (list||[]).forEach(function(s){
       var it=document.createElement('div'); it.className='histitem';
       var when=s.updatedAt?' · '+fmtDate(s.updatedAt):'';
-      it.innerHTML='<div class="t">'+esc(s.title)+'</div><div class="m">'+s.messageCount+' сообщений'+when+'</div>';
-      var del=document.createElement('button'); del.className='histdel'; del.textContent='🗑'; del.title='Удалить сессию';
+      it.innerHTML='<div class="t">'+esc(s.title)+'</div><div class="m">'+s.messageCount+' messages'+when+'</div>';
+      var del=document.createElement('button'); del.className='histdel'; del.textContent='🗑'; del.title='Delete session';
       del.onclick=function(e){ e.stopPropagation(); send2k({action:'deleteSession',id:s.id}); };
       it.appendChild(del);
       it.onclick=function(){ ov.remove(); send2k({action:'loadSession',id:s.id}); };

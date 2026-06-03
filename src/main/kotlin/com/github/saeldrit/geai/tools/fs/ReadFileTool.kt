@@ -54,7 +54,7 @@ object ReadFileTool : AgentTool {
             val body = (from..to).joinToString("\n") { i -> "$i\t${lines[i - 1]}" }
             val header = "// ${FsPaths.relativize(context.project, file)} (lines $from-$to of ${lines.size})"
             val note = if (capped) {
-                "\n…[файл обрезан на $MAX_LINES_WITHOUT_RANGE из ${lines.size} строк; запроси конкретный диапазон через start_line/end_line]"
+                "\n…[file truncated at $MAX_LINES_WITHOUT_RANGE of ${lines.size} lines; request a specific range via start_line/end_line]"
             } else {
                 ""
             }

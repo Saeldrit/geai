@@ -6,7 +6,6 @@ import com.intellij.openapi.ui.ComboBox
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBPasswordField
 import com.intellij.ui.components.JBTabbedPane
-import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.FormBuilder
 import javax.swing.DefaultComboBoxModel
@@ -42,14 +41,9 @@ class GeaiSettingsConfigurable : Configurable {
     private val tieredRoutingCheck =
         JBCheckBox("Tiered routing: navigate on a cheap model, escalate code authoring to the main model (same provider/key)")
     private val navigatorModelField = JBTextField()
-    private val vectorRankerCheck =
-        JBCheckBox("Prefer the semantic (vector) ranker for context bundles when available")
-    private val telemetryCheck =
-        JBCheckBox("GRACE telemetry (dev): log per-bundle atom pulled/dropped/sizes to .geai/telemetry")
     private val autoReadCheck = JBCheckBox("Auto-approve read-only tools (read / list / search / navigate)")
     private val autoEditCheck = JBCheckBox("Auto-approve mutating tools (write / edit / run / self-modify) — ON by default; uncheck to require per-call confirmation")
     private val sourcePathField = JBTextField()
-    private val modelPricesArea = JBTextArea(4, 40)
 
     // Sub-panels whose visibility is toggled dynamically.
     private lateinit var cliPanel: JPanel
@@ -93,14 +87,11 @@ class GeaiSettingsConfigurable : Configurable {
             .addComponent(graceEnabledCheck)
             .addComponent(tieredRoutingCheck)
             .addComponent(navigatorPanel)
-            .addComponent(vectorRankerCheck)
-            .addComponent(telemetryCheck)
             .addSeparator()
             .addComponent(autoReadCheck)
             .addComponent(autoEditCheck)
             .addSeparator()
             .addLabeledComponent("Geai source path:", sourcePathField)
-            .addLabeledComponent("Model prices ($/1M):", modelPricesArea)
             .addComponentFillVertically(JPanel(), 0)
             .panel
 
@@ -133,8 +124,6 @@ class GeaiSettingsConfigurable : Configurable {
         graceEnabledCheck.isEnabled = !claudeEngine
         val grace = !claudeEngine && graceEnabledCheck.isSelected
         tieredRoutingCheck.isEnabled = grace
-        vectorRankerCheck.isEnabled = grace
-        telemetryCheck.isEnabled = grace
         navigatorPanel.isVisible = grace && tieredRoutingCheck.isSelected
         navigatorModelField.isEnabled = grace && tieredRoutingCheck.isSelected
     }
@@ -154,9 +143,6 @@ class GeaiSettingsConfigurable : Configurable {
             graceEnabledCheck.isSelected != state.graceEnabled ||
             tieredRoutingCheck.isSelected != state.tieredRoutingEnabled ||
             navigatorModelField.text != state.navigatorModel.orEmpty() ||
-            vectorRankerCheck.isSelected != state.graceVectorRanker ||
-            telemetryCheck.isSelected != state.graceTelemetry ||
-            modelPricesArea.text != state.modelPrices.orEmpty() ||
             String(apiKeyField.password) != storedKey
     }
 
@@ -174,9 +160,6 @@ class GeaiSettingsConfigurable : Configurable {
         state.graceEnabled = graceEnabledCheck.isSelected
         state.tieredRoutingEnabled = tieredRoutingCheck.isSelected
         state.navigatorModel = navigatorModelField.text.trim().ifBlank { null }
-        state.graceVectorRanker = vectorRankerCheck.isSelected
-        state.graceTelemetry = telemetryCheck.isSelected
-        state.modelPrices = modelPricesArea.text.trim().ifBlank { null }
         GeaiSecrets.setApiKey(provider, String(apiKeyField.password).trim().ifBlank { null })
     }
 
@@ -198,10 +181,6 @@ class GeaiSettingsConfigurable : Configurable {
         tieredRoutingCheck.isSelected = state.tieredRoutingEnabled
         navigatorModelField.text = state.navigatorModel.orEmpty()
         navigatorModelField.emptyText.text = "cheap model of the same provider, e.g. claude-haiku-4-5 / deepseek-chat (blank = main model)"
-        vectorRankerCheck.isSelected = state.graceVectorRanker
-        telemetryCheck.isSelected = state.graceTelemetry
-        modelPricesArea.text = state.modelPrices.orEmpty()
-        modelPricesArea.emptyText.text = "one per line: model=input,output,cacheRead,cacheWrite ($/1M) — e.g. claude-opus-4-8=15,75,1.5,18.75"
         apiKeyField.text = GeaiSecrets.apiKey(state.provider).orEmpty()
         updateEnabled()
     }

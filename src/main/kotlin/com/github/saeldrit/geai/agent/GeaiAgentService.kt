@@ -133,13 +133,13 @@ class GeaiAgentService(private val project: Project) {
      */
     fun compact(listener: AgentListener) {
         if (running) {
-            listener.onEvent(AgentEvent.Info("Geai сейчас работает — сожму контекст после завершения хода."))
+            listener.onEvent(AgentEvent.Info("Geai is busy right now — I'll compress the context after the current turn finishes."))
             return
         }
         running = true
         val session = currentSession()
         val store = GeaiSessionStore.getInstance(project)
-        ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Geai: сжатие контекста", true) {
+        ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Geai: compressing context", true) {
             override fun run(indicator: ProgressIndicator) {
                 currentIndicator = indicator
                 try {
@@ -147,7 +147,7 @@ class GeaiAgentService(private val project: Project) {
                     val client = try {
                         LlmClientFactory.create()
                     } catch (e: LlmException) {
-                        listener.onEvent(AgentEvent.Info("Не могу сжать: ${e.message ?: "LLM не настроен"}."))
+                        listener.onEvent(AgentEvent.Info("Can't compress: ${e.message ?: "LLM not configured"}."))
                         return
                     }
                     val settings = GeaiSettings.getInstance().state
@@ -158,7 +158,7 @@ class GeaiAgentService(private val project: Project) {
                         ContextCompressor.compress(session.messages, COMPACT_TARGET_TOKENS, 0, 0, summarizer)
                     }.getOrNull()
                     if (compacted.isNullOrEmpty()) {
-                        listener.onEvent(AgentEvent.Info("Сжатие не удалось — контекст не изменён."))
+                        listener.onEvent(AgentEvent.Info("Compression failed — context unchanged."))
                         return
                     }
                     session.totalUsage += spent
@@ -171,9 +171,9 @@ class GeaiAgentService(private val project: Project) {
                     listener.onEvent(
                         AgentEvent.Info(
                             if (after < before) {
-                                "🗜 Контекст сжат: ~$before → ~$after токенов (на сжатие ушло ↑${spent.inputTokens} ↓${spent.outputTokens})."
+                                "🗜 Context compressed: ~$before → ~$after tokens (compression spent ↑${spent.inputTokens} ↓${spent.outputTokens})."
                             } else {
-                                "Контекст уже компактный (~$after токенов) — сжимать нечего."
+                                "Context is already compact (~$after tokens) — nothing to compress."
                             },
                         ),
                     )

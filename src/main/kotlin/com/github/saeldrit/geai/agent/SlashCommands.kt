@@ -71,6 +71,18 @@ object SlashCommands {
     /** The command words known to this layer — for UI hints / discoverability. */
     fun names(): Set<String> = MODES.keys
 
+    /** Primary commands with one-line descriptions for the UI "/" menu (aliases omitted). */
+    fun catalog(): List<Pair<String, String>> = listOf(
+        "debug" to "Set breakpoints and drive the debugger to the root cause",
+        "run" to "Build, run, test, or git to reproduce and verify",
+        "explain" to "Explain how code works and show where it is used",
+        "implement" to "Make the smallest style-matching change to add a feature or fix",
+        "refactor" to "Refactor while preserving behavior",
+        "test" to "Write tests in the project's existing style",
+        "review" to "Review for correctness, bugs, security, and simplifications",
+        "security" to "Hunt for injection, secrets, broken authz, unsafe deserialization",
+    )
+
     /** Parse a leading `/<cmd>` token. Returns empty groups + null directive when there is no command. */
     fun parse(text: String): Parsed {
         val trimmed = text.trimStart()

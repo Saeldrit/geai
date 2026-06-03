@@ -4,6 +4,7 @@ import com.github.saeldrit.geai.agent.AgentEvent
 import com.github.saeldrit.geai.agent.AgentListener
 import com.github.saeldrit.geai.agent.AgentSession
 import com.github.saeldrit.geai.agent.GeaiAgentService
+import com.github.saeldrit.geai.agent.SlashCommands
 import com.github.saeldrit.geai.context.ContextCompressor
 import com.github.saeldrit.geai.cost.Pricing
 import com.github.saeldrit.geai.llm.ContentBlock
@@ -185,7 +186,7 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
     private fun initState(): JsonObject {
         val settings = GeaiSettings.getInstance().state
         val engine = if (settings.useClaudeCodeEngine) {
-            "Claude Code · подписка"
+            "Claude Code · subscription"
         } else {
             "${settings.provider.displayName} · ${settings.effectiveModel()}"
         }
@@ -200,6 +201,7 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
             addProperty("tokensOut", session.totalUsage.outputTokens)
             add("usage", usageJson())
             add("skills", skillsJson())
+            add("commands", commandsJson())
             add("transcript", transcriptJson(session))
         }
     }
@@ -212,6 +214,15 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
                 addProperty("title", skill.title)
                 skill.badge?.let { addProperty("badge", it) }
                 addProperty("prompt", skill.prompt)
+            })
+        }
+    }
+
+    private fun commandsJson(): JsonArray = JsonArray().apply {
+        SlashCommands.catalog().forEach { (name, desc) ->
+            add(JsonObject().apply {
+                addProperty("name", name)
+                addProperty("desc", desc)
             })
         }
     }
