@@ -2,6 +2,18 @@
 
 # geai Changelog
 
+## [0.0.32]
+
+### Changed
+- Tool dispatch is now safety-aware. Read-only tools still run in parallel, but mutating tools
+  (edit / write / run) run sequentially — one approval at a time, a deterministic write order, and no
+  same-file clobber or shared-resource race when several land in the same turn.
+
+### Internal
+- The agent loop gained a test seam (an injectable client) with a scripted `FakeLlmClient` and a
+  `BasePlatformTestCase` harness that exercises the real loop (turn termination, the stuck-loop guard,
+  and the read-only/mutating dispatch split).
+
 ## [0.0.31]
 
 ### Security
