@@ -2,6 +2,28 @@
 
 # geai Changelog
 
+## [0.0.30]
+
+### Fixed
+- Anthropic tool calls with arguments are no longer corrupted. Streaming seeded the tool-input buffer
+  with the empty `{}` from `content_block_start` and then appended the real arguments, producing
+  `{}{…}` — which crashed (strict Gson) or silently dropped the arguments (so e.g. `list_files` ignored
+  its path and the model looped). The buffer now starts empty and accumulates only the streamed deltas.
+  This had broken Claude tool use since 0.0.28.
+- JSON parsing no longer throws `MalformedJsonException` on newer IDEs. The plugin compiles against
+  Gson 2.10.1 but runs against the IDE's bundled Gson (2.11+ in 2026.1), which is strict by default;
+  parsing is now explicitly lenient, robust across IDE Gson versions.
+
+### Changed
+- The stuck-loop guard nudges the model once ("you already have this result — move on") before aborting,
+  so a single repeated call no longer kills the turn; it stops only on a second identical repeat.
+- Doctrine: emphasizes batching independent tool calls into one turn (N reads/searches cost one
+  round-trip) and forbids repeating an identical call — orient once, then read specific code and edit.
+
+### Performance
+- Advertised tool specs are cached and rebuilt only when the tool surface changes; context compaction is
+  skipped while the transcript stays well under budget.
+
 ## [0.0.29]
 
 ### Fixed
