@@ -28,7 +28,7 @@ class AgentSession(
      * multi-file task keeps what it found while the raw file contents that produced it can be dropped.
      * Persists across turns within a live session so a "continue" accumulates rather than re-discovers.
      */
-    val scratchpad: MutableList<String> = mutableListOf()
+    val scratchpad: MutableList<String> = java.util.concurrent.CopyOnWriteArrayList()
 
     /** Claude Code's own session id, used with `--resume` to continue context across turns. */
     var claudeSessionId: String? = null

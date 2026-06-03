@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.nio.file.StandardCopyOption
 import kotlin.streams.toList
 
 /**
@@ -36,11 +37,21 @@ class GeaiSessionStore(private val project: Project) {
         return dir
     }
 
+    private val saveLock = Any()
+
     fun save(session: AgentSession) {
-        runCatching {
-            val json = JsonSupport.gson.toJson(SessionCodec.toDto(session))
-            Files.writeString(sessionsDir().resolve("${session.id}.json"), json, StandardCharsets.UTF_8)
-        }.onFailure { thisLogger().warn("Geai: failed to save session ${session.id}", it) }
+        // Saves can fire concurrently from the parallel tool pool (ToolFinished), so serialize them and
+        // write atomically (temp file + move) — a reader never sees a half-written file and two writers
+        // can't interleave into corruption.
+        synchronized(saveLock) {
+            runCatching {
+                val json = JsonSupport.gson.toJson(SessionCodec.toDto(session))
+                val dir = sessionsDir()
+                val tmp = Files.createTempFile(dir, session.id, ".json.tmp")
+                Files.writeString(tmp, json, StandardCharsets.UTF_8)
+                Files.move(tmp, dir.resolve("${session.id}.json"), StandardCopyOption.REPLACE_EXISTING)
+            }.onFailure { thisLogger().warn("Geai: failed to save session ${session.id}", it) }
+        }
     }
 
     fun load(id: String): AgentSession? = runCatching {

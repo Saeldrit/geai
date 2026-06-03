@@ -45,16 +45,14 @@ class GeaiAgentService(private val project: Project) {
     @Volatile
     private var currentIndicator: ProgressIndicator? = null
 
-    /** Debounce session saves: skip if the last save was < 300ms ago. Saves are serial (single-threaded
-     *  Loop turns are synchronous inside the Backgroundable), so compare-and-set on a plain volatile is safe. */
-    @Volatile
-    private var lastSaveMs: Long = 0L
+    /** Debounce session saves to ~once per 300ms. ToolFinished can fire from several parallel tool-pool
+     *  threads at once, so the window check is an atomic compare-and-set — only one thread wins it. */
+    private val lastSaveMs = java.util.concurrent.atomic.AtomicLong(0L)
 
     private fun shouldSave(): Boolean {
         val now = System.currentTimeMillis()
-        if (now - lastSaveMs < 300L) return false
-        lastSaveMs = now
-        return true
+        val prev = lastSaveMs.get()
+        return now - prev >= 300L && lastSaveMs.compareAndSet(prev, now)
     }
 
     @Synchronized
