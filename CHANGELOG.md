@@ -2,6 +2,13 @@
 
 # geai Changelog
 
+## [0.0.41]
+
+### Fixed
+- Provider API errors now show the actual reason instead of up to 2000 characters of raw JSON. A
+  model-not-found, a bad key, or a rate-limit now reads as its `error.message`; non-JSON bodies (e.g. an
+  HTML 502 page) are whitespace-collapsed and bounded.
+
 ## [0.0.40]
 
 ### Added
