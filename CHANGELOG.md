@@ -2,6 +2,14 @@
 
 # geai Changelog
 
+## [0.0.40]
+
+### Added
+- The GRACE governance tools are now reachable: `load_tools specs` exposes `spec_list` / `spec_lookup`
+  (read the Category-A rules that govern code), `spec_validate` (drift-check specs against live code), and
+  `spec_record` (author a rule as an anchor). They were implemented and tested but orphaned from the
+  registry; grouping them on-demand completes the governance moat at zero per-turn cost.
+
 ## [0.0.39]
 
 ### Fixed
