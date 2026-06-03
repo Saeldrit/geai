@@ -59,7 +59,6 @@ internal object SessionCodec {
         val session = AgentSession(
             id = dto.id.ifBlank { UUID.randomUUID().toString() },
             title = dto.title.ifBlank { "Session" },
-            messages = mutableListOf(),
             createdAtEpochMs = if (dto.createdAtEpochMs == 0L) System.currentTimeMillis() else dto.createdAtEpochMs,
         )
         dto.messages.forEach { messageDto ->

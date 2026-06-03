@@ -11,9 +11,15 @@ import java.util.UUID
 class AgentSession(
     val id: String = UUID.randomUUID().toString(),
     var title: String = "New session",
-    val messages: MutableList<ChatMessage> = mutableListOf(),
     var createdAtEpochMs: Long = System.currentTimeMillis(),
 ) {
+    /**
+     * The conversation transcript. A background save (and the UI) can iterate this while the loop
+     * appends to it, so it is copy-on-write: iteration sees a stable snapshot and never throws
+     * ConcurrentModificationException.
+     */
+    val messages: MutableList<ChatMessage> = java.util.concurrent.CopyOnWriteArrayList()
+
     var totalUsage: TokenUsage = TokenUsage.ZERO
 
     /**

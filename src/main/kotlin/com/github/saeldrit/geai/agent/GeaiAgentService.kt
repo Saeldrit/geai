@@ -40,8 +40,7 @@ class GeaiAgentService(private val project: Project) {
     @Volatile
     private var current: AgentSession? = null
 
-    @Volatile
-    private var running = false
+    private val running = java.util.concurrent.atomic.AtomicBoolean(false)
 
     @Volatile
     private var currentIndicator: ProgressIndicator? = null
@@ -78,7 +77,7 @@ class GeaiAgentService(private val project: Project) {
         current = session
     }
 
-    fun isRunning(): Boolean = running
+    fun isRunning(): Boolean = running.get()
 
     fun stop() {
         currentIndicator?.cancel()
@@ -87,7 +86,7 @@ class GeaiAgentService(private val project: Project) {
     fun submit(userText: String, listener: AgentListener) {
         val text = userText.trim()
         if (text.isEmpty()) return
-        if (running) {
+        if (!running.compareAndSet(false, true)) {
             listener.onEvent(AgentEvent.Error("Geai is already working — press Stop first."))
             return
         }
@@ -95,7 +94,6 @@ class GeaiAgentService(private val project: Project) {
         if (session.isEmpty && session.title == "New session") {
             session.title = text.take(60)
         }
-        running = true
 
         val store = GeaiSessionStore.getInstance(project)
         val savingListener = AgentListener { event ->
@@ -118,7 +116,7 @@ class GeaiAgentService(private val project: Project) {
                     }
                 } finally {
                     store.save(session)
-                    running = false
+                    running.set(false)
                     currentIndicator = null
                 }
             }
@@ -132,11 +130,10 @@ class GeaiAgentService(private val project: Project) {
      * runs — guarded by [running] so it can't race a turn mutating the same transcript.
      */
     fun compact(listener: AgentListener) {
-        if (running) {
+        if (!running.compareAndSet(false, true)) {
             listener.onEvent(AgentEvent.Info("Geai is busy right now — I'll compress the context after the current turn finishes."))
             return
         }
-        running = true
         val session = currentSession()
         val store = GeaiSessionStore.getInstance(project)
         ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Geai: compressing context", true) {
@@ -179,7 +176,7 @@ class GeaiAgentService(private val project: Project) {
                     )
                     listener.onEvent(AgentEvent.Done(session.totalUsage))
                 } finally {
-                    running = false
+                    running.set(false)
                     currentIndicator = null
                 }
             }
