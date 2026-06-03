@@ -48,7 +48,10 @@ class AnthropicClient(
         val body = buildRequestBody(request, streaming = true)
         // SSE is read on one thread (HttpTransport.postJsonSse) and dispatched inline — plain vars suffice.
         var rawStopReason = ""
-        var streamedUsage: TokenUsage? = null
+        var inputTokens = 0
+        var outputTokens = 0
+        var cacheReadTokens = 0
+        var cacheWriteTokens = 0
         var currentToolId: String? = null
         val textBuilder = StringBuilder()
         val toolUseBuilders = mutableMapOf<String, StringBuilder>()
@@ -105,15 +108,24 @@ class AnthropicClient(
                             }
                         }
                     }
+                    "message_start" -> {
+                        // Anthropic reports input + cache tokens HERE; message_delta carries only the
+                        // cumulative output_tokens. Seed them or they read as 0 on every streamed turn.
+                        data.objectOrNull("message")?.objectOrNull("usage")?.let { u ->
+                            inputTokens = u.intOr("input_tokens", 0)
+                            cacheReadTokens = u.intOr("cache_read_input_tokens", 0)
+                            cacheWriteTokens = u.intOr("cache_creation_input_tokens", 0)
+                            outputTokens = u.intOr("output_tokens", 0)
+                        }
+                    }
                     "message_delta" -> {
                         data.stringOrNull("stop_reason")?.let { rawStopReason = it }
-                        data.objectOrNull("usage")?.let { usageObj ->
-                            streamedUsage = TokenUsage(
-                                inputTokens = usageObj.intOr("input_tokens", 0),
-                                outputTokens = usageObj.intOr("output_tokens", 0),
-                                cacheReadTokens = usageObj.intOr("cache_read_input_tokens", 0),
-                                cacheWriteTokens = usageObj.intOr("cache_creation_input_tokens", 0),
-                            )
+                        data.objectOrNull("usage")?.let { u ->
+                            outputTokens = u.intOr("output_tokens", outputTokens)
+                            // input/cache are occasionally restated here — keep the larger so the seed isn't lost.
+                            inputTokens = maxOf(inputTokens, u.intOr("input_tokens", 0))
+                            cacheReadTokens = maxOf(cacheReadTokens, u.intOr("cache_read_input_tokens", 0))
+                            cacheWriteTokens = maxOf(cacheWriteTokens, u.intOr("cache_creation_input_tokens", 0))
                         }
                     }
                 }
@@ -147,7 +159,7 @@ class AnthropicClient(
             "max_tokens" -> StopReason.MAX_TOKENS
             else -> StopReason.OTHER
         }
-        val usage = streamedUsage ?: TokenUsage.ZERO
+        val usage = TokenUsage(inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens)
 
         onEvent(com.github.saeldrit.geai.llm.StreamEvent.Done)
         return ChatResult(ChatMessage.assistant(blocks), stopReason, usage)

@@ -69,6 +69,18 @@ class OpenAiCompatibleClient(
                 // OpenAI sends [DONE] as the last event
                 if (sse.data == "[DONE]") return@postJsonSse
                 val data = JsonSupport.parseObject(sse.data)
+                // Usage is top-level and arrives on a final chunk whose `choices` is EMPTY, so capture it
+                // BEFORE the choices guard — otherwise the include_usage chunk is dropped (usage reads 0).
+                data.objectOrNull("usage")?.let { usageObj ->
+                    usageResult = TokenUsage(
+                        inputTokens = usageObj.intOr("prompt_tokens", 0),
+                        outputTokens = usageObj.intOr("completion_tokens", 0),
+                        cacheReadTokens = maxOf(
+                            usageObj.intOr("prompt_cache_hit_tokens", 0),
+                            usageObj.objectOrNull("prompt_tokens_details")?.intOr("cached_tokens", 0) ?: 0,
+                        ),
+                    )
+                }
                 val choice = data.arrayOrEmpty("choices").firstOrNull()?.asJsonObject ?: return@postJsonSse
                 val delta = choice.objectOrNull("delta") ?: return@postJsonSse
 
@@ -95,16 +107,6 @@ class OpenAiCompatibleClient(
                 }
 
                 choice.stringOrNull("finish_reason")?.let { if (it.isNotEmpty()) finishReason = it }
-                data.objectOrNull("usage")?.let { usageObj ->
-                    usageResult = TokenUsage(
-                        inputTokens = usageObj.intOr("prompt_tokens", 0),
-                        outputTokens = usageObj.intOr("completion_tokens", 0),
-                        cacheReadTokens = maxOf(
-                            usageObj.intOr("prompt_cache_hit_tokens", 0),
-                            usageObj.objectOrNull("prompt_tokens_details")?.intOr("cached_tokens", 0) ?: 0,
-                        ),
-                    )
-                }
             } catch (_: Exception) {
                 // Skip a malformed SSE chunk.
             }
