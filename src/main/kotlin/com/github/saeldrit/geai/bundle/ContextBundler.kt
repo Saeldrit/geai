@@ -37,7 +37,7 @@ object ContextBundler {
         if (graph.nodes.isEmpty()) {
             return Bundle("Graph is empty. Run graph_reindex first.", emptyList(), 0, 0, 0)
         }
-        val nodesById = graph.nodes.associateBy { it.id }
+        val nodesById = graph.nodesById
 
         val seeds = if (seedIds.isNotEmpty()) seedIds.mapNotNull { nodesById[it] } else store.query(null, query, null, SEED_FALLBACK)
         if (seeds.isEmpty()) {
@@ -45,7 +45,7 @@ object ContextBundler {
         }
 
         val seedSet = seeds.map { it.id }.toSet()
-        val hopOf = expand(graph.edges, seedSet, hops)
+        val hopOf = expand(graph.edgesByEndpoint, seedSet, hops)
         val candidates = hopOf.mapNotNull { (id, hop) -> nodesById[id]?.let { RankCandidate(it, hop) } }
         val ranked = Rankers.active().rank(query, seedSet, candidates).take(maxNodes)
         val rankedIds = ranked.map { it.node.id }.toSet()
@@ -123,13 +123,12 @@ object ContextBundler {
         }
     }
 
-    /** BFS from seeds up to [hops], recording the minimum hop distance per reached node. */
-    private fun expand(edges: List<GraphEdge>, seedSet: Set<String>, hops: Int): Map<String, Int> {
-        val adjacency = HashMap<String, MutableList<GraphEdge>>()
-        edges.forEach { edge ->
-            adjacency.getOrPut(edge.from) { mutableListOf() }.add(edge)
-            adjacency.getOrPut(edge.to) { mutableListOf() }.add(edge)
-        }
+    /**
+     * BFS from seeds up to [hops], recording the minimum hop distance per reached node. Walks the
+     * snapshot's prebuilt endpoint adjacency (each edge filed under both endpoints) instead of
+     * rebuilding the full adjacency map on every turn.
+     */
+    private fun expand(adjacency: Map<String, List<GraphEdge>>, seedSet: Set<String>, hops: Int): Map<String, Int> {
         val hopOf = LinkedHashMap<String, Int>()
         seedSet.forEach { hopOf[it] = 0 }
         var frontier = seedSet.toList()

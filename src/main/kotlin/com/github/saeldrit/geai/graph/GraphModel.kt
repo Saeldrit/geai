@@ -41,11 +41,29 @@ data class GraphEdge(
     val kind: EdgeKind,
 )
 
-/** A whole graph snapshot. */
+/** A whole graph snapshot. Immutable, so the lookup indexes below are built once on first use and
+ *  reused for the snapshot's life — a reindex replaces the whole object, not its contents. */
 data class CodeGraph(
     val nodes: List<GraphNode>,
     val edges: List<GraphEdge>,
 ) {
+    /** id -> node. Turns findNode and per-edge label lookups from O(N) scans into O(1). First id wins
+     *  if ids ever collide, matching the previous firstOrNull behavior. */
+    val nodesById: Map<String, GraphNode> by lazy {
+        LinkedHashMap<String, GraphNode>(nodes.size).apply { nodes.forEach { putIfAbsent(it.id, it) } }
+    }
+
+    /** node id -> every edge touching it (filed under both endpoints). Turns neighbors() and the
+     *  bundle's BFS adjacency from O(E) scans/rebuilds into O(degree), built once per snapshot. */
+    val edgesByEndpoint: Map<String, List<GraphEdge>> by lazy {
+        val map = HashMap<String, MutableList<GraphEdge>>(nodes.size.coerceAtLeast(16))
+        edges.forEach { edge ->
+            map.getOrPut(edge.from) { mutableListOf() }.add(edge)
+            if (edge.to != edge.from) map.getOrPut(edge.to) { mutableListOf() }.add(edge)
+        }
+        map
+    }
+
     companion object {
         val EMPTY = CodeGraph(emptyList(), emptyList())
     }

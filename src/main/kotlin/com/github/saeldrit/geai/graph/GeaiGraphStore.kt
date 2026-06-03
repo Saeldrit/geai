@@ -79,7 +79,7 @@ class GeaiGraphStore(private val project: Project) {
         cache = graph
     }
 
-    fun findNode(id: String): GraphNode? = graph().nodes.firstOrNull { it.id == id }
+    fun findNode(id: String): GraphNode? = graph().nodesById[id]
 
     fun query(kind: NodeKind?, query: String?, tag: String?, limit: Int): List<GraphNode> {
         val needle = query?.lowercase()?.takeIf { it.isNotBlank() }
@@ -95,7 +95,7 @@ class GeaiGraphStore(private val project: Project) {
 
     /** Edges touching [nodeId] in the requested [direction], optionally filtered by [edgeKind]. */
     fun neighbors(nodeId: String, edgeKind: EdgeKind?, direction: Direction): List<GraphEdge> =
-        graph().edges.filter { edge ->
+        graph().edgesByEndpoint[nodeId].orEmpty().filter { edge ->
             (edgeKind == null || edge.kind == edgeKind) && when (direction) {
                 Direction.OUT -> edge.from == nodeId
                 Direction.IN -> edge.to == nodeId
