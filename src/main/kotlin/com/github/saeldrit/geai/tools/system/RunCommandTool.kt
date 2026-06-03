@@ -1,11 +1,14 @@
 package com.github.saeldrit.geai.tools.system
 
+import com.github.saeldrit.geai.graph.GraphRefresher
 import com.github.saeldrit.geai.tools.AgentTool
 import com.github.saeldrit.geai.tools.ToolArgs
 import com.github.saeldrit.geai.tools.ToolContext
 import com.github.saeldrit.geai.tools.ToolResult
 import com.intellij.execution.configurations.GeneralCommandLine
 import com.intellij.execution.process.CapturingProcessHandler
+import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.util.execution.ParametersListUtil
 import java.io.File
 import java.nio.charset.StandardCharsets
@@ -46,6 +49,15 @@ object RunCommandTool : AgentTool {
                 .withCharset(StandardCharsets.UTF_8)
             val handler = CapturingProcessHandler(commandLine)
             val output = handler.runProcessWithProgressIndicator(context.indicator, timeoutSeconds * 1000)
+
+            // The command may have written files (codegen, npm/gradle, git checkout/pull). Make the IDE's
+            // VFS and the GRACE graph notice them, or read_file/edit_file keep seeing stale content.
+            runCatching {
+                LocalFileSystem.getInstance().refreshAndFindFileByIoFile(dir)?.let { vfsDir ->
+                    VfsUtil.markDirtyAndRefresh(true, true, true, vfsDir)
+                }
+            }
+            GraphRefresher.getInstance(context.project).markDirty()
 
             val sb = StringBuilder()
             sb.appendLine("$ $command   (in ${dir.path})")

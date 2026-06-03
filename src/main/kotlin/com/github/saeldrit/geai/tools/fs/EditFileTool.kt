@@ -51,6 +51,12 @@ object EditFileTool : AgentTool {
     ): ToolResult {
         if (oldString.isEmpty()) return ToolResult.error("'old_string' must be non-empty")
         val file = FsPaths.resolve(context.project, path) ?: return ToolResult.error("File not found: $path")
+        // Mirror write_file: never edit a file outside the project tree, even under auto-approve.
+        // FsPaths.resolve tries the raw absolute path first, so without this an absolute path could
+        // reach any file on disk.
+        if (!FsPaths.isInsideProject(context.project, file)) {
+            return ToolResult.error("Refusing to edit a file outside the project: $path")
+        }
         if (file.isDirectory) return ToolResult.error("Path is a directory: $path")
         val document = FileDocumentManager.getInstance().getDocument(file)
             ?: return ToolResult.error("Cannot load file content: $path")
