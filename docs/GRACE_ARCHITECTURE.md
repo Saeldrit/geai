@@ -168,7 +168,7 @@ Navigator готовит минимальный точный bundle → Author �
 - `spec_validate` — детект дрейфа
 
 **Author / сопровождение (mutating, под апрувом):**
-- `spec_record` / `spec_update` — писать/расширять спеки (CAS по `version`, как текущий kb)
+- `spec_record` — писать/расширять спеки, create-or-update с CAS по `version` (как текущий kb)
 - `graph_reindex` — пересобрать граф из код+спеки (инкрементально)
 - существующие `edit_file`/`write_file`/`run_command`/debug-* — без изменений
 
@@ -234,8 +234,10 @@ Navigator готовит минимальный точный bundle → Author �
 
 Каждая фаза самостоятельна и проверяема сборкой.
 
-> **UI:** настройки `tieredRoutingEnabled` / `navigatorModel` / `graceVectorRanker` выведены в
-> `GeaiSettingsConfigurable` (раздел после Geai source path). Готово к прогону в песочнице.
+> **UI:** `tieredRoutingEnabled` / `navigatorModel` настраиваются на вкладке **Advanced** в
+> `GeaiSettingsConfigurable`. `graceVectorRanker` остаётся флагом уровня кода (state + `Rankers`),
+> но из UI убран — вместе с telemetry-dev и model-prices, чтобы экран настроек «просто работал»
+> на здравых дефолтах (вектор-слой включится, когда появятся эмбеддинги — см. §13.5).
 
 ---
 
