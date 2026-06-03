@@ -108,4 +108,17 @@ class GeaiToolsetTest {
             assertTrue("loader description lists '$group'", spec.description.contains(group))
         }
     }
+
+    @Test
+    fun `grace advertises the graph navigation tools the doctrine names`() {
+        // Drift guard: the system prompt and tool error texts reference these, so they MUST be
+        // advertised+executable when GRACE is on — or a literal model hits an "Unknown tool" dead-end.
+        val grace = names(GeaiToolset.advertisedTools(graceEnabled = true, activeGroups = emptySet()))
+        listOf("context_bundle", "graph_query", "graph_neighbors", "graph_reindex").forEach {
+            assertTrue("GRACE must advertise '$it' (named by the doctrine)", grace.contains(it))
+        }
+        val sub = names(GeaiToolset.delegateTools())
+        assertTrue("sub-agent can re-bundle context", sub.contains("context_bundle"))
+        assertTrue("sub-agent can walk the graph", sub.contains("graph_neighbors"))
+    }
 }

@@ -23,10 +23,10 @@ import com.github.saeldrit.geai.tools.ToolResult
 object EscalateAuthorTool : AgentTool {
     override val name = "escalate_author"
     override val description =
-        "Delegate writing a concrete code change to the strong author-tier model. Pass the task and " +
-            "the context_bundle output. Returns target file path(s) and the new content / precise edit " +
-            "— which YOU then apply with edit_file/write_file. Use after gathering context, for the " +
-            "actual code authoring; navigation and tool use stay on the cheap tier."
+        "Delegate writing a concrete code change to the strong author-tier model. Pass the task and the " +
+            "gathered context (the <context_bundle> block plus any resolve_ref output). Returns target " +
+            "file path(s) and the new content / precise edit — which YOU then apply with edit_file/" +
+            "write_file. Use after gathering context, for the actual code authoring; navigation stays cheap."
     override val parametersJsonSchema = """
         {"type":"object","properties":{
           "task":{"type":"string","description":"Precise authoring task (what to implement/fix and where)"},

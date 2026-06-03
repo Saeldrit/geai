@@ -18,8 +18,11 @@ import com.github.saeldrit.geai.tools.fs.ListFilesTool
 import com.github.saeldrit.geai.tools.fs.ReadFileTool
 import com.github.saeldrit.geai.tools.fs.SearchTextTool
 import com.github.saeldrit.geai.tools.fs.WriteFileTool
+import com.github.saeldrit.geai.tools.grace.ContextBundleTool
 import com.github.saeldrit.geai.tools.grace.EscalateAuthorTool
+import com.github.saeldrit.geai.tools.grace.GraphNeighborsTool
 import com.github.saeldrit.geai.tools.grace.GraphQueryTool
+import com.github.saeldrit.geai.tools.grace.GraphReindexTool
 import com.github.saeldrit.geai.tools.grace.ResolveRefTool
 import com.github.saeldrit.geai.tools.psi.DiagnosticsTool
 import com.github.saeldrit.geai.tools.psi.FindImplementationsTool
@@ -66,13 +69,17 @@ object GeaiToolset {
     )
 
     /**
-     * Lean GRACE / semantic surface (small, central): live Category-B truth (resolve_ref), graph dig
-     * (graph_query), and PSI semantic search (find_symbol, find_usages) — the IDE-native alternative
-     * to grepping a name. Advertised alongside CORE whenever GRACE is enabled.
+     * GRACE / semantic surface: an on-demand context bundle (context_bundle), live Category-B truth
+     * (resolve_ref), graph navigation (graph_query/graph_neighbors/graph_reindex), and PSI semantic
+     * search (find_symbol/find_usages/find_implementations/diagnostics) — the IDE-native alternative to
+     * grepping. Advertised alongside CORE whenever GRACE is enabled.
      */
     private val GRACE: List<AgentTool> = listOf(
+        ContextBundleTool,
         ResolveRefTool,
         GraphQueryTool,
+        GraphNeighborsTool,
+        GraphReindexTool,
         FindSymbolTool,
         FindUsagesTool,
         FindImplementationsTool,
@@ -122,7 +129,9 @@ object GeaiToolset {
         ReadFileTool,
         SearchTextTool,
         ResolveRefTool,
+        ContextBundleTool,
         GraphQueryTool,
+        GraphNeighborsTool,
         FindSymbolTool,
         FindUsagesTool,
         FindImplementationsTool,

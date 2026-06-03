@@ -35,7 +35,11 @@ object GraphQueryTool : AgentTool {
 
         val store = GeaiGraphStore.getInstance(context.project)
         if (store.graph().nodes.isEmpty()) {
-            return ToolResult.ok("Graph is empty. Run graph_reindex to build it from code + specs.")
+            store.ensureBuiltInBackground()
+            return ToolResult.ok(
+                "Graph is empty — I started building it in the background. Retry graph_query shortly, or " +
+                    "call graph_reindex to build it now. Meanwhile use find_symbol/find_files to navigate.",
+            )
         }
         val results = store.query(kind, query, tag, max)
         if (results.isEmpty()) return ToolResult.ok("No nodes matched. Try graph_reindex or a broader filter.")
