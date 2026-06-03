@@ -1,7 +1,17 @@
 package com.github.saeldrit.geai.agent
 
+import com.github.saeldrit.geai.llm.ChatMessage
+import com.github.saeldrit.geai.llm.ChatResult
+import com.github.saeldrit.geai.llm.ContentBlock
+import com.github.saeldrit.geai.llm.StopReason
+import com.github.saeldrit.geai.llm.TokenUsage
 import com.github.saeldrit.geai.settings.GeaiSettings
+import com.github.saeldrit.geai.tools.AgentTool
 import com.github.saeldrit.geai.tools.GeaiToolset
+import com.github.saeldrit.geai.tools.ToolArgs
+import com.github.saeldrit.geai.tools.ToolContext
+import com.github.saeldrit.geai.tools.ToolRegistry
+import com.github.saeldrit.geai.tools.ToolResult
 import com.intellij.openapi.progress.EmptyProgressIndicator
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 
@@ -10,21 +20,23 @@ class AgentLoopTest : BasePlatformTestCase() {
 
     override fun setUp() {
         super.setUp()
-        // Keep the loop minimal and deterministic — no graph/bundle machinery.
+        // Minimal, deterministic loop: no graph/bundle machinery, and mutating tools auto-approved
+        // (so the partition test never blocks on an approval dialog).
         GeaiSettings.getInstance().state.graceEnabled = false
+        GeaiSettings.getInstance().state.autoApproveEditTools = true
     }
 
-    private fun runLoop(fake: FakeLlmClient): List<AgentEvent> {
+    private fun runLoop(fake: FakeLlmClient, registry: ToolRegistry = GeaiToolset.registry()): Pair<AgentSession, List<AgentEvent>> {
+        val session = AgentSession()
         val events = mutableListOf<AgentEvent>()
         // Tools emit ToolFinished from a worker pool, so guard the list.
         val listener = AgentListener { event -> synchronized(events) { events.add(event) } }
-        AgentLoop(project, GeaiToolset.registry(), clientOverride = fake)
-            .run(AgentSession(), "go", listener, EmptyProgressIndicator())
-        return synchronized(events) { events.toList() }
+        AgentLoop(project, registry, clientOverride = fake).run(session, "go", listener, EmptyProgressIndicator())
+        return session to synchronized(events) { events.toList() }
     }
 
     fun testTurnTerminatesAndEmitsDone() {
-        val events = runLoop(FakeLlmClient(listOf(FakeLlmClient.endTurn("all done"))))
+        val (_, events) = runLoop(FakeLlmClient(listOf(FakeLlmClient.endTurn("all done"))))
         assertEquals("exactly one Done per finished turn", 1, events.count { it is AgentEvent.Done })
     }
 
@@ -32,10 +44,49 @@ class AgentLoopTest : BasePlatformTestCase() {
         // The model repeats the identical call; an unknown tool returns the same error result each time,
         // so the loop must nudge once and then abort as stuck rather than spin forever.
         val repeat = FakeLlmClient.toolUse("t1", "__no_such_tool__", "{}")
-        val events = runLoop(FakeLlmClient(listOf(repeat, repeat, repeat, FakeLlmClient.endTurn("x"))))
+        val (_, events) = runLoop(FakeLlmClient(listOf(repeat, repeat, repeat, FakeLlmClient.endTurn("x"))))
         assertTrue(
             "aborts as stuck after a nudge",
             events.any { it is AgentEvent.Error && it.text.contains("stuck", ignoreCase = true) },
         )
+    }
+
+    fun testReadOnlyAndMutatingToolsBothProduceResults() {
+        // P0 dispatch seam: read-only tools run in parallel, mutating tools sequentially — every
+        // tool_use must still get exactly one tool_result regardless of which path it took.
+        val registry = ToolRegistry(listOf(FAKE_READONLY, FAKE_MUTATING))
+        val both = ChatResult(
+            ChatMessage.assistant(
+                listOf(
+                    ContentBlock.ToolUse("t1", "ro_fake", "{}"),
+                    ContentBlock.ToolUse("t2", "mut_fake", "{}"),
+                ),
+            ),
+            StopReason.TOOL_USE,
+            TokenUsage.ZERO,
+        )
+        val (session, _) = runLoop(FakeLlmClient(listOf(both, FakeLlmClient.endTurn("done"))), registry)
+        val resultIds = session.messages
+            .flatMap { it.content }
+            .filterIsInstance<ContentBlock.ToolResult>()
+            .map { it.toolUseId }
+            .toSet()
+        assertTrue("both the read-only and the mutating tool produced a result", resultIds.containsAll(setOf("t1", "t2")))
+    }
+
+    private companion object {
+        private val FAKE_READONLY = object : AgentTool {
+            override val name = "ro_fake"
+            override val description = "fake read-only"
+            override val parametersJsonSchema = """{"type":"object"}"""
+            override fun execute(args: ToolArgs, context: ToolContext) = ToolResult.ok("read")
+        }
+        private val FAKE_MUTATING = object : AgentTool {
+            override val name = "mut_fake"
+            override val description = "fake mutating"
+            override val parametersJsonSchema = """{"type":"object"}"""
+            override val mutating = true
+            override fun execute(args: ToolArgs, context: ToolContext) = ToolResult.ok("wrote")
+        }
     }
 }

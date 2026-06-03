@@ -253,10 +253,13 @@ class AgentLoop(
                 turnUsage = metaResults.turnUsage
                 toolResults.addAll(metaResults.results)
 
-                // 2. Regular tools: parallel — each tool runs on a pooled thread
+                // 2. Regular tools. Read-only tools are independent → run in parallel. Mutating tools run
+                // SEQUENTIALLY: one approval at a time, deterministic write order, no same-file clobber or
+                // shared-resource race (the dominant concurrency hazard when several edits land in one turn).
                 if (regularCalls.isNotEmpty() && !interrupted) {
-                    val results = executeToolsParallel(regularCalls, settings, indicator, listener)
-                    toolResults.addAll(results)
+                    val (mutatingCalls, readOnlyCalls) = regularCalls.partition { registry.find(it.name)?.mutating == true }
+                    toolResults.addAll(executeToolsParallel(readOnlyCalls, settings, indicator, listener))
+                    toolResults.addAll(executeToolsSequential(mutatingCalls, settings, indicator, listener))
                 }
 
                 session.messages.add(ChatMessage.toolResults(toolResults))
@@ -619,6 +622,29 @@ class AgentLoop(
         listener.onEvent(AgentEvent.ToolFinished(call.name, outcome.result))
         if (elapsedMs > 500) listener.onEvent(AgentEvent.Info("⚡ ${call.name} completed in ${elapsedMs}ms"))
         return outcome
+    }
+
+    /** Execute mutating tools one at a time — serializes approvals and writes; no race, no stacked dialogs. */
+    private fun executeToolsSequential(
+        calls: List<ContentBlock.ToolUse>,
+        settings: GeaiSettingsState,
+        indicator: ProgressIndicator,
+        listener: AgentListener,
+    ): List<ContentBlock.ToolResult> = calls.map { call ->
+        if (indicator.isCanceled) {
+            ContentBlock.ToolResult(call.id, "Skipped: turn was interrupted.", isError = true)
+        } else {
+            val t0 = System.nanoTime()
+            val toolResult = try {
+                executeTool(call, settings, indicator)
+            } catch (_: ProcessCanceledException) {
+                ToolResult.error("Interrupted during '${call.name}'.")
+            }
+            val elapsedMs = (System.nanoTime() - t0) / 1_000_000
+            listener.onEvent(AgentEvent.ToolFinished(call.name, toolResult))
+            if (elapsedMs > 500) listener.onEvent(AgentEvent.Info("⚡ ${call.name} completed in ${elapsedMs}ms"))
+            ContentBlock.ToolResult(call.id, toolResult.content, toolResult.isError)
+        }
     }
 
     /** Execute regular tools in parallel using a fork-join pool. */
