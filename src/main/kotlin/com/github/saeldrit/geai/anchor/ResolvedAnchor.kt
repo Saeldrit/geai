@@ -22,8 +22,18 @@ data class ResolvedAnchor(
     val contentHash: String,
 ) {
     companion object {
-        fun of(ref: String, kind: String, location: String?, signature: String?, content: String): ResolvedAnchor =
-            ResolvedAnchor(ref, kind, location, signature, content, sha256(content))
+        fun of(
+            ref: String,
+            kind: String,
+            location: String?,
+            signature: String?,
+            content: String,
+            /** Text to fingerprint for drift; defaults to [content]. Pass display-stripped text when the
+             *  shown content carries positional decoration (e.g. line-number prefixes) that must not
+             *  affect the drift hash. */
+            hashSource: String = content,
+        ): ResolvedAnchor =
+            ResolvedAnchor(ref, kind, location, signature, content, sha256(hashSource))
 
         fun sha256(text: String): String =
             MessageDigest.getInstance("SHA-256")
