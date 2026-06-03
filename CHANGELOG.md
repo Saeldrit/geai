@@ -2,6 +2,26 @@
 
 # geai Changelog
 
+## [0.0.29]
+
+### Fixed
+- Claude API streaming no longer crashes with `NoClassDefFoundError` — the Anthropic streaming client
+  used `kotlinx.atomicfu`, which is not on the plugin's runtime classpath. Replaced with plain locals
+  (the SSE loop is single-threaded), keeping the HTTP layer dependency-free.
+- Edit/cleanup tasks now edit files directly instead of fanning out read-only review sub-agents that
+  cannot change anything — the doctrine separates editing from auditing.
+
+### Changed
+- Delegated sub-agents run in parallel (bounded pool) instead of sequentially, so multi-file audits
+  finish in about the slowest sub-agent's time rather than the sum of all of them.
+- The tool-window UI is fully in English. The settings screen hides dev-only knobs (GRACE telemetry,
+  vector ranker, model prices) behind sound defaults.
+
+### Added
+- Type `/` in the composer to discover commands (`/debug`, `/run`, `/explain`, `/implement`,
+  `/refactor`, `/test`, `/review`, `/security`) with one-line descriptions and keyboard navigation.
+- Crisp SVG toolbar icons with reliable hover tooltips (native `title=` tooltips are unreliable in JCEF).
+
 ## [0.0.28]
 
 ### Added
