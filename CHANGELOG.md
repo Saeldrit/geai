@@ -2,6 +2,20 @@
 
 # geai Changelog
 
+## [0.0.34]
+
+### Fixed
+- Streaming turns now report real token usage. Anthropic input/cache tokens were always 0 (they arrive
+  in `message_start`, not `message_delta`), and OpenAI-compatible usage was dropped because the final
+  usage-only chunk has an empty `choices` array and was skipped before the usage was read. Both now
+  capture full usage — restoring the cost guard and the sub-agent token budget.
+- Session saves are serialized and written atomically (temp file + move). Tool results finish on
+  parallel worker threads, so two saves could write the same file at once and corrupt it (then silently
+  reset the session on next load). The save-debounce is now an atomic compare-and-set, and the
+  scratchpad is copy-on-write like the transcript.
+- `file:` GRACE anchors are fingerprinted without the line-number prefix, so editing lines above a
+  range no longer reports a false drift.
+
 ## [0.0.33]
 
 ### Fixed
