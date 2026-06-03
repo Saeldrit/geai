@@ -187,17 +187,21 @@ class ClaudeCodeEngine(private val project: Project) {
 
             "tool_use" -> {
                 val name = block.get("name")?.asString ?: "tool"
-                block.get("id")?.asString?.let { toolNames[it] = name }
-                listener.onEvent(AgentEvent.ToolStarted(displayName(name), block.get("input")?.toString() ?: "{}"))
+                val id = block.get("id")?.asString
+                id?.let { toolNames[it] = name }
+                // Pass the tool_use id so the web UI matches start↔finish per call — without it, parallel
+                // same-named CLI calls collide on the display name and a spinner sticks on ⏳ forever.
+                listener.onEvent(AgentEvent.ToolStarted(displayName(name), block.get("input")?.toString() ?: "{}", id))
             }
         }
     }
 
     private fun handleToolResult(block: JsonObject, listener: AgentListener, toolNames: MutableMap<String, String>) {
         if (block.get("type")?.asString != "tool_result") return
-        val name = toolNames[block.get("tool_use_id")?.asString] ?: "tool"
+        val toolUseId = block.get("tool_use_id")?.asString
+        val name = toolNames[toolUseId] ?: "tool"
         val isError = block.get("is_error")?.asBoolean ?: false
-        listener.onEvent(AgentEvent.ToolFinished(displayName(name), ToolResult(toolResultText(block), isError)))
+        listener.onEvent(AgentEvent.ToolFinished(displayName(name), ToolResult(toolResultText(block), isError), toolUseId))
     }
 
     private fun handleResult(
