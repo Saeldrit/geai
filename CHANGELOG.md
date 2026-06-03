@@ -2,6 +2,17 @@
 
 # geai Changelog
 
+## [0.0.35]
+
+### Fixed
+- `run_command` now refreshes the IDE virtual file system and the GRACE graph after a command runs, so
+  files written by external tools (codegen, npm/gradle, git checkout/pull) are immediately visible to
+  read_file/edit_file instead of stale.
+- `edit_file` is confined to the project tree (mirrors write_file), so an absolute path can no longer
+  reach a file outside the project under auto-approve.
+- A read-only spec lookup with a malformed id now returns "not found" instead of surfacing an
+  "Invalid spec id" error — the strict validation added in 0.0.31 gates writes only.
+
 ## [0.0.34]
 
 ### Fixed
