@@ -180,6 +180,6 @@ internal object HttpTransport {
             in 500..599 -> " (provider server error — retry later)"
             else -> ""
         }
-        return "HTTP $status$hint: ${payload.take(2000)}"
+        return "HTTP $status$hint: ${JsonSupport.humanError(payload)}"
     }
 }

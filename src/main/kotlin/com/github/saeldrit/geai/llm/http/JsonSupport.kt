@@ -21,6 +21,16 @@ internal object JsonSupport {
         JsonParser.parseReader(JsonReader(StringReader(raw)).apply { isLenient = true })
 
     fun parseObject(raw: String): JsonObject = parseElement(raw).asJsonObject
+
+    /**
+     * A human-readable message from a provider error body. Both Anthropic and OpenAI-compatible APIs
+     * wrap the reason in {"error":{"message": "..."}}, so surface that instead of a 2000-char raw-JSON
+     * dump. Falls back to a whitespace-collapsed, bounded slice of the raw body (e.g. an HTML 502 page).
+     */
+    fun humanError(raw: String): String {
+        val message = runCatching { parseObject(raw).objectOrNull("error")?.stringOrNull("message") }.getOrNull()
+        return message?.takeIf { it.isNotBlank() } ?: raw.replace(Regex("\\s+"), " ").trim().take(500)
+    }
 }
 
 internal fun JsonObject.stringOrNull(key: String): String? =

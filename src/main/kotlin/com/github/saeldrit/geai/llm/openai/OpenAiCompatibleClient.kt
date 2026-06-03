@@ -114,7 +114,7 @@ class OpenAiCompatibleClient(
 
         if (result.isCancelled) throw com.intellij.openapi.progress.ProcessCanceledException()
         if (result.isError) {
-            throw LlmException("Provider API error: ${result.errorBody.take(2000)}")
+            throw LlmException("Provider API error: ${JsonSupport.humanError(result.errorBody)}")
         }
 
         val blocks = mutableListOf<ContentBlock>()

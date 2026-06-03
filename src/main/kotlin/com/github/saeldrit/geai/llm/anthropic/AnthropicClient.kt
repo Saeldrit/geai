@@ -137,7 +137,7 @@ class AnthropicClient(
         if (result.isCancelled) throw com.intellij.openapi.progress.ProcessCanceledException()
         if (result.isError) {
             throw com.github.saeldrit.geai.llm.LlmException(
-                "Claude API error: ${result.errorBody.take(2000)}",
+                "Claude API error: ${JsonSupport.humanError(result.errorBody)}",
                 statusCode = result.statusCode,
             )
         }
