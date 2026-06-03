@@ -14,7 +14,9 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded PR runs (cheap iteration), but NEVER cancel a push to main: doing so killed an
+  # in-flight release job once and that version never published. Main runs queue instead of cancelling.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
