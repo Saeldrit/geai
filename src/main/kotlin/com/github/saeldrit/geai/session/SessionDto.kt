@@ -20,6 +20,7 @@ internal data class SessionDto(
     var outputTokens: Int = 0,
     var claudeSessionId: String? = null,
     var messages: List<MessageDto> = emptyList(),
+    var scratchpad: List<String> = emptyList(),
 )
 
 internal data class MessageDto(
@@ -51,6 +52,7 @@ internal object SessionCodec {
         messages = session.messages.map { message ->
             MessageDto(message.role.name, message.content.map(::blockToDto))
         },
+        scratchpad = session.scratchpad.toList(),
     )
 
     fun fromDto(dto: SessionDto): AgentSession {
@@ -66,6 +68,7 @@ internal object SessionCodec {
         }
         session.totalUsage = TokenUsage(dto.inputTokens, dto.outputTokens)
         session.claudeSessionId = dto.claudeSessionId
+        session.scratchpad.addAll(dto.scratchpad)
         return session
     }
 
