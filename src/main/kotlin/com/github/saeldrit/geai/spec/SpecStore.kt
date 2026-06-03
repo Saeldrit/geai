@@ -57,7 +57,11 @@ class SpecStore(private val project: Project) {
         }.getOrDefault(emptyList())
     }
 
-    fun find(specId: String): Spec? = synchronized(lock) { parse(fileFor(specId)) }
+    fun find(specId: String): Spec? = synchronized(lock) {
+        // Read path: a malformed id is simply "no such spec", not an error to surface to the model.
+        if (!SAFE_ID.matches(specId)) return@synchronized null
+        parse(fileFor(specId))
+    }
 
     /** Upsert one item into a spec (creating the file if needed). Reference items get a fresh hash baseline. */
     fun upsertItem(
