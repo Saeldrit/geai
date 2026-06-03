@@ -2,6 +2,15 @@
 
 # geai Changelog
 
+## [0.0.33]
+
+### Fixed
+- Background session saves (and UI reads) no longer race the running turn. The transcript is now a
+  copy-on-write list, so iterating it — to save or to render — while the loop appends can no longer
+  throw `ConcurrentModificationException` (which was swallowed, silently dropping the save).
+- The "already working" guard is an atomic compare-and-set, closing a check-then-set window where two
+  near-simultaneous submits could both start a turn.
+
 ## [0.0.32]
 
 ### Changed
