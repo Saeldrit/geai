@@ -2,6 +2,16 @@
 
 # geai Changelog
 
+## [0.0.38]
+
+### Fixed
+- Context compaction now folds the old transcript into its recap from the FULL tool output, not the
+  800-char eager-truncation head — so a finding deep in a large result survives the fold instead of being
+  lost before the summarizer sees it. The recap is a long run's working memory; this was gutting it.
+- The stuck-loop guard fingerprints each step over its FULL result and remembers the last few steps, so
+  it catches thrashing the old single-slot / 400-char-head guard missed: large results that differ only
+  deep in the body, and A/B/A/B cycles (two calls alternating with no progress).
+
 ## [0.0.37]
 
 ### Fixed
