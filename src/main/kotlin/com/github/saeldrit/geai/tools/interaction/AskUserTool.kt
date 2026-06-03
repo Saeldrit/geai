@@ -32,6 +32,9 @@ object AskUserTool : AgentTool {
 
     override val name = "ask_user"
     override val mutating = false
+    // Blocks on a modal dialog → run on the sequential lane so two questions in one turn can't stack
+    // two dialogs from parallel-pool threads.
+    override val interactive = true
     override val description =
         "Pause and ask the user a clarifying question or request confirmation before proceeding. " +
             "Use for ambiguous intent or before destructive/risky actions " +

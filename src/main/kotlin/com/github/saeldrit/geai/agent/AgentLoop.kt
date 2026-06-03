@@ -253,13 +253,15 @@ class AgentLoop(
                 turnUsage = metaResults.turnUsage
                 toolResults.addAll(metaResults.results)
 
-                // 2. Regular tools. Read-only tools are independent → run in parallel. Mutating tools run
-                // SEQUENTIALLY: one approval at a time, deterministic write order, no same-file clobber or
-                // shared-resource race (the dominant concurrency hazard when several edits land in one turn).
+                // 2. Regular tools. Independent read-only tools run in PARALLEL. Mutating tools (one
+                // approval at a time, deterministic write order, no same-file clobber) AND interactive
+                // tools (ask_user — two at once would stack modal dialogs) run SEQUENTIALLY.
                 if (regularCalls.isNotEmpty() && !interrupted) {
-                    val (mutatingCalls, readOnlyCalls) = regularCalls.partition { registry.find(it.name)?.mutating == true }
-                    toolResults.addAll(executeToolsParallel(readOnlyCalls, settings, indicator, listener))
-                    toolResults.addAll(executeToolsSequential(mutatingCalls, settings, indicator, listener))
+                    val (serialCalls, parallelCalls) = regularCalls.partition {
+                        val t = registry.find(it.name); t?.mutating == true || t?.interactive == true
+                    }
+                    toolResults.addAll(executeToolsParallel(parallelCalls, settings, indicator, listener))
+                    toolResults.addAll(executeToolsSequential(serialCalls, settings, indicator, listener))
                 }
 
                 session.messages.add(ChatMessage.toolResults(toolResults))

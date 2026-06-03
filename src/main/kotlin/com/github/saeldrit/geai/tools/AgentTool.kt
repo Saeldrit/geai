@@ -18,6 +18,11 @@ interface AgentTool {
     val mutating: Boolean
         get() = false
 
+    /** Interactive tools block on a user dialog and MUST run one at a time (never on the parallel
+     *  pool — two at once would stack modal dialogs). Separate from [mutating]: no approval gate. */
+    val interactive: Boolean
+        get() = false
+
     fun execute(args: ToolArgs, context: ToolContext): ToolResult
 
     /** Cached ToolSpec — built once, re-used across all turns. */
