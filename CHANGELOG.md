@@ -2,6 +2,28 @@
 
 # geai Changelog
 
+## [0.0.37]
+
+### Fixed
+- The agent no longer instructs itself to call tools that don't exist. With GRACE on (the default), the
+  system prompt and several tool descriptions referenced `context_bundle` / `graph_neighbors` /
+  `graph_reindex`, which the loop rejected as "Unknown tool" — a guaranteed dead-end for the cheap models
+  GEAI targets. Those three tools are now registered (they were implemented and tested but orphaned), so
+  graph navigation (query → neighbors) and on-demand re-bundling actually work.
+- Resolved a first-move contradiction: Operating Principle #1 said "use find_files/search_text" while the
+  GRACE doctrine said "do NOT" — now conditioned on whether a `<context_bundle>` is present.
+- `graph_query` self-heals on an empty graph (kicks the background build) instead of dead-ending.
+- `ask_user` runs on the serial lane, so two clarifying questions in one turn can no longer stack two
+  modal dialogs from parallel worker threads.
+
+### Added
+- System-prompt sections for recovering from a tool error (notably `edit_file` "old_string not found" —
+  the top cheap-model loop trigger) and an explicit "you are done when…" stop condition.
+
+### CI
+- Pushes to main no longer cancel an in-flight run (`cancel-in-progress` applies to PRs only) — a rapid
+  second version bump had cancelled the prior release job, so that version never published.
+
 ## [0.0.36]
 
 ### Performance
