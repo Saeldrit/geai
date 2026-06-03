@@ -306,26 +306,31 @@ class AgentLoop(
                 // Stuck-loop guard: a step whose fingerprint already appears in the recent ring produced
                 // nothing the model didn't already have (a consecutive repeat OR an A/B/A/B cycle). Hash the
                 // FULL result — a 400-char head misses thrashing that differs only deep in a big result.
-                val stepSignature = stepSignature(toolUses, toolResults)
-                if (recentStepSignatures.contains(stepSignature)) {
-                    noProgressHits++
-                    if (noProgressHits >= 2) {
-                        listener.onEvent(AgentEvent.Error("Stopped: the model kept repeating tool call(s) with no new result even after a nudge — likely stuck. Aborted to avoid wasting tokens."))
-                        listener.onEvent(AgentEvent.Info(UsageFormat.summary(settings.loopModel(), turnUsage, session.totalUsage, settings.modelPrices)))
-                        listener.onEvent(AgentEvent.Done(session.totalUsage))
-                        return
+                // EXEMPT all-poll steps: debugger wait/step/state legitimately return the SAME result while
+                // runtime state advances, so the doctrine-ordered debug loop must not self-abort as "stuck".
+                val pollOnly = toolUses.isNotEmpty() && toolUses.all { registry.find(it.name)?.idempotentPoll == true }
+                if (!pollOnly) {
+                    val stepSignature = stepSignature(toolUses, toolResults)
+                    if (recentStepSignatures.contains(stepSignature)) {
+                        noProgressHits++
+                        if (noProgressHits >= 2) {
+                            listener.onEvent(AgentEvent.Error("Stopped: the model kept repeating tool call(s) with no new result even after a nudge — likely stuck. Aborted to avoid wasting tokens."))
+                            listener.onEvent(AgentEvent.Info(UsageFormat.summary(settings.loopModel(), turnUsage, session.totalUsage, settings.modelPrices)))
+                            listener.onEvent(AgentEvent.Done(session.totalUsage))
+                            return
+                        }
+                        session.scratchpad.add(
+                            "Loop guard: you repeated a step whose result you ALREADY have. Do NOT issue that call " +
+                                "again — use the output you have and take a DIFFERENT next step (read specific NEW lines, " +
+                                "or make an edit_file change). Re-listing or re-reading the same thing is not progress.",
+                        )
+                        listener.onEvent(AgentEvent.Info("↻ Repeated step with no new result — nudging the model to move on (aborts if it persists)."))
+                    } else {
+                        noProgressHits = 0
                     }
-                    session.scratchpad.add(
-                        "Loop guard: you repeated a step whose result you ALREADY have. Do NOT issue that call " +
-                            "again — use the output you have and take a DIFFERENT next step (read specific NEW lines, " +
-                            "or make an edit_file change). Re-listing or re-reading the same thing is not progress.",
-                    )
-                    listener.onEvent(AgentEvent.Info("↻ Repeated step with no new result — nudging the model to move on (aborts if it persists)."))
-                } else {
-                    noProgressHits = 0
+                    recentStepSignatures.addLast(stepSignature)
+                    while (recentStepSignatures.size > STUCK_RING_SIZE) recentStepSignatures.removeFirst()
                 }
-                recentStepSignatures.addLast(stepSignature)
-                while (recentStepSignatures.size > STUCK_RING_SIZE) recentStepSignatures.removeFirst()
             }
         } catch (_: ProcessCanceledException) {
             listener.onEvent(AgentEvent.Cancelled())

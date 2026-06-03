@@ -8,6 +8,7 @@ import com.github.saeldrit.geai.tools.ToolResult
 /** Reports active debug sessions and, when paused, the current source position. */
 object DebugStateTool : AgentTool {
     override val name = "debug_state"
+    override val idempotentPoll = true
     override val description =
         "Report active debug sessions: running/paused/stopped, and the paused source location " +
             "(file:line) when applicable."

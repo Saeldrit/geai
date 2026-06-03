@@ -9,6 +9,7 @@ import com.intellij.openapi.progress.ProcessCanceledException
 /** Blocks (cooperatively) until a debug session pauses at a breakpoint or the timeout elapses. */
 object AwaitPauseTool : AgentTool {
     override val name = "await_pause"
+    override val idempotentPoll = true
     override val description =
         "Wait until a debug session pauses at a breakpoint (or timeout). Returns the paused location " +
             "so you can read that code and reason about the runtime state that reached it. Returns " +

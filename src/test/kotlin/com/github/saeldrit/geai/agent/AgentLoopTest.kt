@@ -64,6 +64,22 @@ class AgentLoopTest : BasePlatformTestCase() {
         )
     }
 
+    fun testStuckGuardIgnoresPollToolCycle() {
+        // Debugger poll/step tools (idempotentPoll) return the SAME result while runtime state advances —
+        // the doctrine-ordered await_pause/debug_step loop is an A/B/A/B cycle that must NOT abort, or
+        // autonomous debugging dies mid-wait. Regression guard for v0.0.42.
+        val registry = ToolRegistry(listOf(FAKE_POLL))
+        val a = FakeLlmClient.toolUse("t1", "poll_fake", """{"k":"a"}""")
+        val b = FakeLlmClient.toolUse("t2", "poll_fake", """{"k":"b"}""")
+        val script = listOf(a, b, a, b, a, b, a, b, FakeLlmClient.endTurn("done"))
+        val (_, events) = runLoop(FakeLlmClient(script), registry)
+        assertTrue("a poll loop finishes normally", events.any { it is AgentEvent.Done })
+        assertFalse(
+            "a poll loop is NEVER flagged as stuck",
+            events.any { it is AgentEvent.Error && it.text.contains("stuck", ignoreCase = true) },
+        )
+    }
+
     fun testReadOnlyAndMutatingToolsBothProduceResults() {
         // P0 dispatch seam: read-only tools run in parallel, mutating tools sequentially — every
         // tool_use must still get exactly one tool_result regardless of which path it took.
@@ -100,6 +116,13 @@ class AgentLoopTest : BasePlatformTestCase() {
             override val parametersJsonSchema = """{"type":"object"}"""
             override val mutating = true
             override fun execute(args: ToolArgs, context: ToolContext) = ToolResult.ok("wrote")
+        }
+        private val FAKE_POLL = object : AgentTool {
+            override val name = "poll_fake"
+            override val description = "fake poll"
+            override val parametersJsonSchema = """{"type":"object"}"""
+            override val idempotentPoll = true
+            override fun execute(args: ToolArgs, context: ToolContext) = ToolResult.ok("waiting")
         }
     }
 }

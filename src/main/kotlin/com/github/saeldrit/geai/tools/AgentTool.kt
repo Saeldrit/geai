@@ -23,6 +23,12 @@ interface AgentTool {
     val interactive: Boolean
         get() = false
 
+    /** A poll/navigation tool that legitimately returns the SAME result while underlying state advances
+     *  (debugger wait/step/state). Steps made up ONLY of these are exempt from the stuck-loop guard, so
+     *  the doctrine-ordered debug wait/step loop is never mistaken for thrashing. */
+    val idempotentPoll: Boolean
+        get() = false
+
     fun execute(args: ToolArgs, context: ToolContext): ToolResult
 
     /** Cached ToolSpec — built once, re-used across all turns. */

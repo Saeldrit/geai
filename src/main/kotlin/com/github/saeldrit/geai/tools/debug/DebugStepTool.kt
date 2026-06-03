@@ -14,6 +14,7 @@ import com.github.saeldrit.geai.tools.ToolResult
  */
 object DebugStepTool : AgentTool {
     override val name = "debug_step"
+    override val idempotentPoll = true
     override val description =
         "Advance the PAUSED debugger and wait for the next pause, returning the new file:line. " +
             "kind: 'over' = run the current line and stop on the next; 'into' = step into the call on " +
