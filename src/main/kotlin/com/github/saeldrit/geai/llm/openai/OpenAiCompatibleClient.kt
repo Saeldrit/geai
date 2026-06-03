@@ -157,7 +157,12 @@ class OpenAiCompatibleClient(
             addProperty("model", request.model)
             addProperty("max_tokens", request.maxTokens)
             addProperty("temperature", request.temperature)
-            if (streaming) addProperty("stream", true)
+            if (streaming) {
+                addProperty("stream", true)
+                // Ask for usage on the terminal SSE chunk; without this many OpenAI-compatible servers
+                // omit token counts on streamed turns, blinding the cost guard and the sub-agent budget.
+                add("stream_options", JsonObject().apply { addProperty("include_usage", true) })
+            }
         }
         val messages = JsonArray()
         appendSystem(messages, request)
