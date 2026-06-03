@@ -86,12 +86,10 @@ class AgentLoop(
 
         val settings = GeaiSettings.getInstance().state
         val systemPrompt = SystemPrompt.build(project)
-        // A leading /<cmd> selects a MODE: pre-load its tool group (no load_tools round-trip) and steer
-        // this turn via a focused directive, folded into the volatile suffix below.
+        // A leading /<cmd> selects a MODE: pre-load its tool group and steer via a focused directive.
         val command = SlashCommands.parse(userText)
-        // Per-turn volatile suffix: the GRACE context bundle plus any mode directive. Kept SEPARATE from
-        // the (cacheable) doctrine above so the stable prompt keeps hitting the prompt cache across turns
-        // — only this suffix is re-sent (the clients place it AFTER the cache breakpoint).
+        // Per-turn volatile suffix (bundle + mode directive) — kept after the cache breakpoint so the
+        // doctrine stays cacheable across turns.
         val rawBundleSuffix: String = run {
             val bundle: String = if (settings.graceEnabled) {
                 val store = GeaiGraphStore.getInstance(project)
@@ -115,40 +113,30 @@ class AgentLoop(
             ).joinToString("\n\n")
         }
         val maxIterations = profile.maxIterations.coerceAtLeast(1)
-        // Only a sub-agent carries a cumulative-cost terminal (it is a bounded, fanned-out unit). The
-        // main loop runs continuously — it compacts the context and keeps working — so it has none.
+        // Sub-agents have a cumulative-cost terminal; the main loop compacts context and runs until done.
         val subTokenBudget = if (profile.isSubAgent) profile.maxTurnTokens else 0
 
         try {
             var iteration = 0
 
-            // Stuck-loop detection compares BOTH the call signature and the result signature of
-            // consecutive steps: identical call + identical result = no progress (abort); identical call
-            // with a NEW result = legitimate progress (e.g. debug_step walking the program) = keep going.
+            // Stuck-loop detection: same call + same result = abort; same call + new result = progress.
             var lastToolSignature: String? = null
             var lastResultSignature: String? = null
-            // On-demand tool groups the model has pulled in this turn (progressive disclosure). Starts
-            // empty: only CORE (+GRACE) + the load_tools meta-tool are advertised until the model asks —
-            // EXCEPT we pre-seed the mode's group (e.g. /debug → debug) and, on a follow-up turn while a
-            // debug session is live, the debug group automatically. Both save a load_tools round-trip.
+            // On-demand tool groups (progressive disclosure). Pre-seeded with the mode's group and,
+            // while a debug session is live, the debug group — saving a load_tools round-trip.
             val activeGroups = linkedSetOf<String>()
             activeGroups.addAll(command.preloadGroups)
             if (!profile.isSubAgent && DebuggerSupport.hasActiveSession(project)) activeGroups.add("debug")
             var delegationCount = 0
             var turnUsage = TokenUsage.ZERO
-            // Adaptive kill-switch for tiered routing: if the model does NOT use escalate_author
-            // within the first few iterations, drop the routing directive — it's wasting context space
-            // and encouraging a useless round-trip. Reset when it IS used (the directive helps then).
+            // Adaptive kill-switch: drop the escalate_author routing hint if unused after 3 iterations.
             var escalationUsedThisTurn = false
             var iterationsWithoutEscalation = 0
-            // Adaptive kill-switch for kb_lookup: if the model calls it and gets empty results 3+
-            // times in a row, the knowledge store is empty — add a note telling the model to skip it
-            // so it stops burning a round-trip on "no matching knowledge yet."
+            // Adaptive kill-switch: suppress kb_lookup after 3 empty results.
             var emptyKbLookups = 0
             var kbSuppressed = false
             var bundleSuffix = rawBundleSuffix
-            // Compaction summariser: folds the old transcript into a dense recap (keeps findings, not
-            // a 400-char head). Its cost is billed to the turn. Created once; mutates the turn counters.
+            // LLM summariser for context compaction — bills tokens to the turn.
             val summarizer = summarizerFor(client, settings, indicator) { used ->
                 turnUsage += used
                 session.totalUsage += used
@@ -159,8 +147,7 @@ class AgentLoop(
                     return
                 }
                 // Safety backstop ONLY — not a work limit. The main loop runs until the model is done,
-                // gets stuck (identical repeated calls, caught below), or the user cancels. This high
-                // ceiling just stops a pathological non-repeating runaway; a real task never reaches it.
+                // Safety backstop — not a work limit. Catches pathological non-repeating runaway loops.
                 if (iteration++ >= maxIterations) {
                     summarizeAndFinish(
                         "Safety stop: $maxIterations iterations without finishing — likely stuck. " +
@@ -169,9 +156,7 @@ class AgentLoop(
                     )
                     return
                 }
-                // A sub-agent is a bounded, fanned-out unit: it MUST stop at its token budget so the
-                // orchestrator's cost stays predictable. The MAIN loop has NO such cumulative-cost
-                // terminal — it compacts the context (below) and keeps working until the task is done.
+                // A sub-agent is a bounded, fanned-out unit: it MUST stop at its token budget.
                 if (subTokenBudget > 0 && turnUsage.inputTokens + turnUsage.outputTokens >= subTokenBudget) {
                     summarizeAndFinish(
                         "Sub-agent reached its token budget ($subTokenBudget) — returning findings.",
@@ -180,9 +165,7 @@ class AgentLoop(
                     return
                 }
 
-                // Skip LLM-based context compression during debugging: the transcript stays short,
-                // and compression wastes tokens folding intermediate debug state the model is still
-                // working with. The eager tool-result truncation inside compress is always active.
+                // Skip LLM-based context compression during debugging: the transcript stays short.
                 val skipCompression = activeGroups.contains("debug")
                 val compacted = if (skipCompression) {
                     session.messages
@@ -207,9 +190,7 @@ class AgentLoop(
                 val request = ChatRequest(
                     model = settings.loopModel(),
                     system = systemPrompt,
-                    // Bundle is per-turn stable: lives in the system block AFTER the doctrine cache
-                    // breakpoint, so the doctrine keeps caching across turns and the bundle caches
-                    // across iterations within a turn (Anthropic) or via auto-prefix (OpenAI).
+                    // Bundle is per-turn stable — lives after the doctrine cache breakpoint.
                     systemVolatileSuffix = bundleSuffix,
                     messages = outgoing,
                     tools = advertisedSpecs(settings, activeGroups),
@@ -219,9 +200,7 @@ class AgentLoop(
                 listener.onEvent(AgentEvent.Thinking)
                 val result = client.chatStream(request, indicator) { event ->
                     when (event) {
-                        // Stream text/thinking as DELTAS — the UI appends each chunk to the SAME bubble
-                        // (not a new bubble per token). The complete message is emitted once below as
-                        // AssistantText, which re-renders the streamed bubble as markdown.
+                        // Stream text/thinking as deltas to the UI; full message emitted once as AssistantText.
                         is com.github.saeldrit.geai.llm.StreamEvent.TextDelta ->
                             listener.onEvent(AgentEvent.AssistantTextDelta(event.text))
                         is com.github.saeldrit.geai.llm.StreamEvent.ThinkingDelta ->
@@ -234,8 +213,7 @@ class AgentLoop(
                 session.totalUsage += result.usage
                 turnUsage += result.usage
                 session.messages.add(result.message)
-                // Finalise the streamed message: emit the COMPLETE text once so the UI replaces the live
-                // plain-text bubble with the markdown render (and replay / the Swing panel get one block).
+                // Finalise the streamed message: emit complete text so the UI re-renders as markdown.
                 result.message.text.takeIf { it.isNotBlank() }?.let { listener.onEvent(AgentEvent.AssistantText(it)) }
 
                 val toolUses = result.message.toolUses
@@ -248,13 +226,12 @@ class AgentLoop(
                     return
                 }
 
-                // Every tool_use MUST get a matching tool_result, even on cancellation — otherwise the
-                // persisted transcript is invalid and a resumed session is rejected by the provider.
+                // Every tool_use MUST get a matching tool_result — otherwise transcripts break on resume.
                 val toolResults = ArrayList<ContentBlock.ToolResult>(toolUses.size)
                 var interrupted = false
                 // ── Parallel tool execution ──
-                // Meta-tools (note, load_tools, delegate) mutate loop state and MUST run sequentially.
-                // Regular tools are independent within a batch and run in parallel.
+                // note/load_tools mutate loop state and run sequentially; delegate fans out in parallel
+                // (handled inside executeMetaTools). Regular tools are independent and run in parallel.
                 val metaCalls = toolUses.filter { it.name in META_TOOL_NAMES }
                 val regularCalls = toolUses.filter { it.name !in META_TOOL_NAMES }
 
@@ -284,7 +261,7 @@ class AgentLoop(
                 }
 
                 // ── Adaptive kill-switch tracking ──
-                // Track if escalate_author was used; if not after 3 iters, drop the routing directive.
+                // Drop the escalate_author routing hint if unused after 3 iterations.
                 var escalationHintSeen = false
                 for (call in toolUses) {
                     if (call.name == GeaiToolset.ESCALATE) { escalationUsedThisTurn = true; escalationHintSeen = true }
@@ -299,7 +276,6 @@ class AgentLoop(
                     iterationsWithoutEscalation = 0
                 }
                 // Track kb_lookup: after 3 empty returns, suppress it.
-                // KbLookupTool returns isError=false with a helpful "no entries" message, so we match content.
                 for (callIdx in toolUses.indices) {
                     val call = toolUses[callIdx]
                     if (call.name == "kb_lookup") {
@@ -314,10 +290,7 @@ class AgentLoop(
                     session.scratchpad.add("kb_lookup consistently returns nothing (empty knowledge store). Skip kb_lookup this session — just use find_files/search_text/resolve_ref directly.")
                 }
 
-                // Stuck-loop guard (checked AFTER execution so we can compare results). Abort only when
-                // the model made the EXACT same call(s) AND got the EXACT same result(s) as the previous
-                // step — genuine no-progress (broken round-trip / confused model). Identical calls with a
-                // DIFFERENT result are real progress (debug_step advancing, await_pause polling) and pass.
+                // Stuck-loop guard — identical call + identical result = abort; same call + new result = progress.
                 val callSignature = toolUses.joinToString("|") { "${it.name}(${it.inputJson})" }
                 val resultSignature = toolResults.joinToString("|") { "${it.isError}:${it.content.take(400)}" }
                 if (callSignature == lastToolSignature && resultSignature == lastResultSignature) {
@@ -365,11 +338,8 @@ class AgentLoop(
     }
 
     /**
-     * Turn a forced stop (iteration or token budget) into a usable result instead of nothing: one
-     * final tool-LESS call asks the model to summarize findings and next steps. Cheap (no tools, a
-     * single call) so the tokens already spent exploring are not wasted. The nudge is not persisted —
-     * only the produced summary is — so a resumed session stays clean. Best-effort: any failure here
-     * still ends the turn gracefully with the usage summary.
+     * Turn a forced stop (iteration or token budget) into a usable result: one final tool-LESS call
+     * asks the model to summarize findings and next steps. Best-effort.
      */
     private fun summarizeAndFinish(
         reason: String,
@@ -415,11 +385,7 @@ class AgentLoop(
         listener.onEvent(AgentEvent.Done(session.totalUsage))
     }
 
-    /**
-     * Tool schemas advertised this iteration. The main loop offers the lean progressive surface plus
-     * the load_tools and delegate meta-tools; a sub-agent offers only its fixed read-only registry
-     * (no progressive groups, no delegation — see [LoopProfile]).
-     */
+    /** Tool schemas advertised this iteration — progressive disclosure surface + meta-tools. */
     private fun advertisedSpecs(settings: GeaiSettingsState, activeGroups: Set<String>): List<ToolSpec> =
         if (profile.isSubAgent) {
             registry.specs()
@@ -428,7 +394,6 @@ class AgentLoop(
                 GeaiToolset.loaderSpec() + GeaiToolset.delegateSpec() + GeaiToolset.noteSpec()
         }
 
-    /** Append a finding to the session notes (the model's external working memory). */
     private fun recordNote(call: ContentBlock.ToolUse, scratchpad: MutableList<String>): ToolResult {
         val text = ToolArgs.parse(call.inputJson).stringOrNull("text")?.trim().orEmpty()
         if (text.isEmpty()) return ToolResult.error("note needs a non-empty 'text'.")
@@ -437,13 +402,8 @@ class AgentLoop(
     }
 
     /**
-     * Render the running notes as a TRAILING user message appended to the outgoing list (not to the
-     * persisted session.messages). Kept outside the cached system prefix so notes growing each
-     * iteration do NOT invalidate the prompt cache — only this small tail is fresh input every turn.
-     *
-     * Soft cap: if the scratchpad exceeds [MAX_NOTES_RETAINED], only the most recent notes are shown
-     * to the model with a one-line marker that older notes were folded away. Prevents unbounded growth
-     * from inflating the trailing tail on very long multi-turn sessions.
+     * Render running notes as a trailing user message, kept outside the cached system prefix so
+     * note growth doesn't invalidate the prompt cache. Soft-caps at [MAX_NOTES_RETAINED].
      */
     private fun appendNotesAsTrailingUser(outgoing: List<ChatMessage>, scratchpad: List<String>): List<ChatMessage> {
         if (scratchpad.isEmpty()) return outgoing
@@ -456,15 +416,13 @@ class AgentLoop(
 
     private data class SubOutcome(val result: ToolResult, val usage: TokenUsage)
 
-    /** Collapse whitespace and cap — a compact one-line label for streamed sub-agent narration. */
+    /** Compact one-line label for streamed sub-agent narration. */
     private fun oneLine(s: String): String = s.replace(Regex("\\s+"), " ").trim().take(140)
 
     /**
-     * Run a delegated sub-task in a fresh, ISOLATED [AgentLoop] with a read-only toolset and a tight
-     * budget. The sub-agent explores in its own throwaway session; only its final text comes back as
-     * the tool result, so the orchestrator's transcript stays compact. Its token spend is returned so
-     * the caller can bill it to the turn. Cancellation/errors inside the sub end it gracefully (its
-     * own run() handles them) and we return whatever it produced.
+     * Run a delegated sub-task in a fresh, isolated [AgentLoop] with a read-only toolset and a
+     * tight budget. Only the final text comes back as the tool result, keeping the orchestrator's
+     * transcript compact. Token spend is returned so the caller can bill it to the turn.
      */
     private fun runDelegate(call: ContentBlock.ToolUse, indicator: ProgressIndicator, parentListener: AgentListener): SubOutcome {
         val args = ToolArgs.parse(call.inputJson)
@@ -500,11 +458,7 @@ class AgentLoop(
         return SubOutcome(ToolResult.ok(text), subSession.totalUsage)
     }
 
-    /**
-     * Handle the `load_tools` meta-tool: pull an on-demand group into [activeGroups] so its schemas
-     * are advertised from the next iteration onward. Handled here (not via the registry) because it
-     * mutates loop state. Idempotent — re-loading a group is a no-op with a confirming message.
-     */
+    /** Handle `load_tools`: activate an on-demand tool group. Idempotent. */
     private fun loadTools(call: ContentBlock.ToolUse, activeGroups: MutableSet<String>): ToolResult {
         val group = ToolArgs.parse(call.inputJson).stringOrNull("group")
             ?: return ToolResult.error("load_tools needs a 'group' argument. Valid groups: ${GeaiToolset.groupNames().joinToString(", ")}.")
@@ -544,12 +498,18 @@ class AgentLoop(
         }
     }
 
-    /** Names of meta-tools that MUST run sequentially because they mutate loop state. */
+    /**
+     * Meta-tools mutate loop state, so `note`/`load_tools` run sequentially. `delegate` is the
+     * exception: each spawns an isolated, read-only sub-agent and is the slowest meta-tool by far, so
+     * delegates run in PARALLEL (see [executeMetaTools]).
+     */
     private val META_TOOL_NAMES = setOf(GeaiToolset.NOTE, GeaiToolset.LOAD_TOOLS, GeaiToolset.DELEGATE)
 
     /**
-     * Execute meta-tools (note/load_tools/delegate) SEQUENTIALLY. These mutate loop state (session
-     * scratchpad, activeGroups, delegationCount) and must never race. Returns updated state counters.
+     * `note`/`load_tools` run sequentially (they mutate the scratchpad / active groups and must not
+     * race). `delegate` calls are deferred and run CONCURRENTLY — each is an isolated read-only
+     * sub-agent that can't touch loop state or the others, so fanning N audits out costs the slowest
+     * sub-agent, not the sum. Usage is summed after the join, single-threaded — no locks needed.
      */
     private fun executeMetaTools(
         calls: List<ContentBlock.ToolUse>,
@@ -564,44 +524,77 @@ class AgentLoop(
         var metaInterrupted = interrupted
         var metaDelegationCount = delegationCount
         var metaTurnUsage = turnUsage
-        val results = mutableListOf<ContentBlock.ToolResult>()
-        for (call in calls) {
+        val results = arrayOfNulls<ContentBlock.ToolResult>(calls.size)
+
+        // Pass 1 (sequential): run note/load_tools inline; only RESERVE delegate slots here, honouring
+        // MAX_DELEGATIONS in call order, then run the reserved delegates together in pass 2.
+        val delegateIndices = mutableListOf<Int>()
+        for ((i, call) in calls.withIndex()) {
             if (metaInterrupted || indicator.isCanceled) {
                 metaInterrupted = true
-                results.add(ContentBlock.ToolResult(call.id, "Skipped: turn was interrupted.", isError = true))
+                results[i] = ContentBlock.ToolResult(call.id, "Skipped: turn was interrupted.", isError = true)
                 continue
             }
-            val t0 = System.nanoTime()
-                val toolResult = when (call.name) {
-                GeaiToolset.NOTE -> recordNote(call, session.scratchpad)
-                GeaiToolset.LOAD_TOOLS -> loadTools(call, activeGroups)
-                GeaiToolset.DELEGATE -> {
+            when (call.name) {
+                GeaiToolset.NOTE -> results[i] = emitMeta(call, recordNote(call, session.scratchpad), listener)
+                GeaiToolset.LOAD_TOOLS -> results[i] = emitMeta(call, loadTools(call, activeGroups), listener)
+                GeaiToolset.DELEGATE ->
                     if (metaDelegationCount >= MAX_DELEGATIONS) {
-                        ToolResult.error("Delegation limit ($MAX_DELEGATIONS) reached this turn — synthesize from the findings you have.")
+                        results[i] = emitMeta(
+                            call,
+                            ToolResult.error("Delegation limit ($MAX_DELEGATIONS) reached this turn — synthesize from the findings you have."),
+                            listener,
+                        )
                     } else {
                         metaDelegationCount++
-                        val outcome = runDelegate(call, indicator, listener)
-                        metaTurnUsage += outcome.usage
-                        session.totalUsage += outcome.usage
-                        outcome.result
+                        delegateIndices.add(i)
                     }
-                }
                 else -> error("unreachable: $call is not a meta-tool")
             }
-            val elapsedMs = (System.nanoTime() - t0) / 1_000_000
-            listener.onEvent(AgentEvent.ToolFinished(call.name, toolResult))
-            if (elapsedMs > 500) {
-                listener.onEvent(AgentEvent.Info("⚡ ${call.name} completed in ${elapsedMs}ms"))
-            }
-            results.add(ContentBlock.ToolResult(call.id, toolResult.content, toolResult.isError))
         }
-        return MetaResult(metaInterrupted, metaDelegationCount, metaTurnUsage, results)
+
+        // Pass 2 (parallel): run the reserved delegates concurrently. Cap threads so a big fan-out does
+        // not slam the LLM endpoint with too many simultaneous requests.
+        if (delegateIndices.isNotEmpty()) {
+            val executor: ExecutorService = Executors.newFixedThreadPool(delegateIndices.size.coerceAtMost(8))
+            try {
+                val futures = delegateIndices.map { idx ->
+                    idx to executor.submit(Callable { runDelegateTimed(calls[idx], indicator, listener) })
+                }
+                for ((idx, future) in futures) {
+                    val outcome = future.get()
+                    metaTurnUsage += outcome.usage
+                    session.totalUsage += outcome.usage
+                    results[idx] = ContentBlock.ToolResult(calls[idx].id, outcome.result.content, outcome.result.isError)
+                }
+            } finally {
+                executor.shutdown()
+            }
+        }
+        return MetaResult(metaInterrupted, metaDelegationCount, metaTurnUsage, results.filterNotNull())
     }
 
-    /**
-     * Execute regular (non-meta) tools in PARALLEL using a fork-join pool. All tools in one batch are
-     * independent — the LLM sent them simultaneously. Mutating tools handle their own EDT dispatch.
-     */
+    /** Emit ToolFinished for an instant meta-tool (note/load_tools) and wrap its result for the transcript. */
+    private fun emitMeta(call: ContentBlock.ToolUse, result: ToolResult, listener: AgentListener): ContentBlock.ToolResult {
+        listener.onEvent(AgentEvent.ToolFinished(call.name, result))
+        return ContentBlock.ToolResult(call.id, result.content, result.isError)
+    }
+
+    /** Run one delegate on a worker thread, timing it and emitting ToolFinished (+ slow-call note). */
+    private fun runDelegateTimed(call: ContentBlock.ToolUse, indicator: ProgressIndicator, listener: AgentListener): SubOutcome {
+        val t0 = System.nanoTime()
+        val outcome = if (indicator.isCanceled) {
+            SubOutcome(ToolResult.error("Skipped: turn was interrupted."), TokenUsage.ZERO)
+        } else {
+            runDelegate(call, indicator, listener)
+        }
+        val elapsedMs = (System.nanoTime() - t0) / 1_000_000
+        listener.onEvent(AgentEvent.ToolFinished(call.name, outcome.result))
+        if (elapsedMs > 500) listener.onEvent(AgentEvent.Info("⚡ ${call.name} completed in ${elapsedMs}ms"))
+        return outcome
+    }
+
+    /** Execute regular tools in parallel using a fork-join pool. */
     private fun executeToolsParallel(
         calls: List<ContentBlock.ToolUse>,
         settings: GeaiSettingsState,
@@ -645,16 +638,12 @@ class AgentLoop(
     )
 
     private companion object {
-        /** Hard ceiling on delegations per turn — a backstop against a model that fans out endlessly. */
         const val MAX_DELEGATIONS = 16
 
-        /** Soft cap on notes shown to the model. Older notes are folded with a one-line marker so the
-         *  trailing tail stays compact on very long multi-turn sessions (the agent already has its
-         *  final answer built from earlier notes; the cap protects the per-iteration payload). */
+        /** Soft cap on notes shown to the model — older notes fold with a marker. */
         const val MAX_NOTES_RETAINED = 50
 
-        /** A delegated sub-agent is focused: a tight iteration cap and token budget keep each unit cheap.
-         *  Kept small so several delegations in one step can't overshoot the parent's turn budget. */
+        /** Sub-agent budget: tight iteration cap and token limit keep each unit cheap. */
         const val SUB_MAX_ITERATIONS = 8
         const val SUB_MAX_TURN_TOKENS = 25_000
 
