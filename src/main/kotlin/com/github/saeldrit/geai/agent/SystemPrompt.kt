@@ -140,7 +140,7 @@ object SystemPrompt {
         - `edit_file` "old_string not found": re-read the exact lines with `read_file` and copy the
           current bytes VERBATIM (whitespace and all). Do not resend text from memory — the file differs.
         - `edit_file` "matches N times": add surrounding context to make the match unique, or replace_all.
-        - "Unknown tool": its group isn't loaded — `load_tools` (`debug`/`run`/`selfmod`) first, then call it.
+        - "Unknown tool": its group isn't loaded — `load_tools` (`debug`/`run`/`specs`/`selfmod`) first, then call it.
         - A read/search came back empty: broaden it or switch tool (find_symbol vs search_text); do not
           re-issue the identical query.
 

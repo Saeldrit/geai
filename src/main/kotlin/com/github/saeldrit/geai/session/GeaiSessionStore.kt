@@ -48,8 +48,13 @@ class GeaiSessionStore(private val project: Project) {
                 val json = JsonSupport.gson.toJson(SessionCodec.toDto(session))
                 val dir = sessionsDir()
                 val tmp = Files.createTempFile(dir, session.id, ".json.tmp")
-                Files.writeString(tmp, json, StandardCharsets.UTF_8)
-                Files.move(tmp, dir.resolve("${session.id}.json"), StandardCopyOption.REPLACE_EXISTING)
+                try {
+                    Files.writeString(tmp, json, StandardCharsets.UTF_8)
+                    Files.move(tmp, dir.resolve("${session.id}.json"), StandardCopyOption.REPLACE_EXISTING)
+                } catch (e: Throwable) {
+                    Files.deleteIfExists(tmp) // don't leak the temp file on a write/move failure
+                    throw e
+                }
             }.onFailure { thisLogger().warn("Geai: failed to save session ${session.id}", it) }
         }
     }
