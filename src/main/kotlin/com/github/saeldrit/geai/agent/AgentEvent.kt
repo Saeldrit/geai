@@ -21,8 +21,10 @@ sealed interface AgentEvent {
     /** A streamed CHUNK of the assistant's reply — appended live to the SAME bubble (not a new one per
      *  token). The trailing [AssistantText] then re-renders that bubble as markdown. */
     data class AssistantTextDelta(val text: String) : AgentEvent
-    data class ToolStarted(val tool: String, val argsJson: String) : AgentEvent
-    data class ToolFinished(val tool: String, val result: ToolResult) : AgentEvent
+    /** [id] is the tool_use id — a stable key so the UI can match start↔finish even when several calls
+     *  share a tool NAME in one turn (parallel reads). Null from the CLI engine, which keys by name. */
+    data class ToolStarted(val tool: String, val argsJson: String, val id: String? = null) : AgentEvent
+    data class ToolFinished(val tool: String, val result: ToolResult, val id: String? = null) : AgentEvent
     data class Info(val text: String) : AgentEvent
     data class Error(val text: String) : AgentEvent
     data class Cancelled(val text: String = "Stopped.") : AgentEvent

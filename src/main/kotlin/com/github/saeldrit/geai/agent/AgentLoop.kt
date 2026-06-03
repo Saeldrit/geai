@@ -242,7 +242,7 @@ class AgentLoop(
                 val regularCalls = toolUses.filter { it.name !in META_TOOL_NAMES }
 
                 // Emit ToolStarted for all calls upfront so the UI shows everything
-                toolUses.forEach { listener.onEvent(AgentEvent.ToolStarted(it.name, it.inputJson)) }
+                toolUses.forEach { listener.onEvent(AgentEvent.ToolStarted(it.name, it.inputJson, it.id)) }
 
                 // 1. Meta tools: sequential, must finish before regular tools
                 val metaResults = executeMetaTools(
@@ -628,7 +628,7 @@ class AgentLoop(
 
     /** Emit ToolFinished for an instant meta-tool (note/load_tools) and wrap its result for the transcript. */
     private fun emitMeta(call: ContentBlock.ToolUse, result: ToolResult, listener: AgentListener): ContentBlock.ToolResult {
-        listener.onEvent(AgentEvent.ToolFinished(call.name, result))
+        listener.onEvent(AgentEvent.ToolFinished(call.name, result, call.id))
         return ContentBlock.ToolResult(call.id, result.content, result.isError)
     }
 
@@ -641,7 +641,7 @@ class AgentLoop(
             runDelegate(call, indicator, listener)
         }
         val elapsedMs = (System.nanoTime() - t0) / 1_000_000
-        listener.onEvent(AgentEvent.ToolFinished(call.name, outcome.result))
+        listener.onEvent(AgentEvent.ToolFinished(call.name, outcome.result, call.id))
         if (elapsedMs > 500) listener.onEvent(AgentEvent.Info("⚡ ${call.name} completed in ${elapsedMs}ms"))
         return outcome
     }
@@ -663,7 +663,7 @@ class AgentLoop(
                 ToolResult.error("Interrupted during '${call.name}'.")
             }
             val elapsedMs = (System.nanoTime() - t0) / 1_000_000
-            listener.onEvent(AgentEvent.ToolFinished(call.name, toolResult))
+            listener.onEvent(AgentEvent.ToolFinished(call.name, toolResult, call.id))
             if (elapsedMs > 500) listener.onEvent(AgentEvent.Info("⚡ ${call.name} completed in ${elapsedMs}ms"))
             ContentBlock.ToolResult(call.id, toolResult.content, toolResult.isError)
         }
@@ -691,7 +691,7 @@ class AgentLoop(
                             ToolResult.error("Interrupted during '${call.name}'.")
                         }
                         val elapsedMs = (System.nanoTime() - t0) / 1_000_000
-                        listener.onEvent(AgentEvent.ToolFinished(call.name, toolResult))
+                        listener.onEvent(AgentEvent.ToolFinished(call.name, toolResult, call.id))
                         if (elapsedMs > 500) {
                             listener.onEvent(AgentEvent.Info("⚡ ${call.name} completed in ${elapsedMs}ms"))
                         }

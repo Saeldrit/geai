@@ -128,6 +128,8 @@
   .tool-entry .ts{flex-shrink:0}
   .tool-entry .ts.ok{color:#4ec98b}
   .tool-entry .ts.err{color:#e06c75}
+  .tool-result{font-family:ui-monospace,Consolas,monospace;font-size:11px;white-space:pre-wrap;word-break:break-word;margin:1px 0 5px 14px;opacity:.9}
+  .tool-result.err{color:#e06c75}
 
   /* markdown extras inside assistant bubbles */
   .msg.assistant h2{font-size:1.1em;font-weight:700;margin:10px 0 4px;padding-bottom:3px;border-bottom:1px solid var(--border)}
@@ -360,17 +362,23 @@
         var preview=esc((ev.args||'').replace(/\s+/g,' ').slice(0,100));
         entry.innerHTML='<span class="tn">'+esc(ev.tool)+'</span><span class="ta">'+preview+'</span><span class="ts">⏳</span>';
         tEntries.appendChild(entry);
-        tPending[ev.tool]=entry;
+        tPending[ev.id||ev.tool]=entry;
         if(atBottom()) scroll.scrollTop=scroll.scrollHeight;
         break;
       }
       case 'toolFinished': {
-        var ent=tPending[ev.tool];
+        var key=ev.id||ev.tool, ent=tPending[key];
         if(ent){
           var ts=ent.querySelector('.ts');
           ts.textContent=ev.error?'✗':'✓';
           ts.className='ts '+(ev.error?'err':'ok');
-          delete tPending[ev.tool];
+          // Surface WHY a tool failed (the reason already crosses the bridge) instead of a bare ✗.
+          if(ev.error&&ev.content){
+            var sub=document.createElement('div'); sub.className='tool-result err';
+            sub.textContent=ev.content.replace(/\s+/g,' ').trim().slice(0,300);
+            if(ent.parentNode) ent.parentNode.insertBefore(sub, ent.nextSibling);
+          }
+          delete tPending[key];
         }
         if(atBottom()) scroll.scrollTop=scroll.scrollHeight;
         break;
