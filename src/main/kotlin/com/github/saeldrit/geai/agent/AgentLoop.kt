@@ -71,6 +71,8 @@ class AgentLoop(
     private val project: Project,
     private val registry: ToolRegistry,
     private val profile: LoopProfile = LoopProfile.MAIN,
+    /** Test seam: inject a scripted client. Production leaves this null → the real provider client. */
+    private val clientOverride: LlmClient? = null,
 ) {
 
     // [PERF] Cache advertised tool specs — rebuilt only when activeGroups/grace/tiered change.
@@ -81,7 +83,7 @@ class AgentLoop(
         session.messages.add(ChatMessage.user(userText))
         listener.onEvent(AgentEvent.UserMessage(userText))
 
-        val client = try {
+        val client = clientOverride ?: try {
             LlmClientFactory.create()
         } catch (e: LlmException) {
             listener.onEvent(AgentEvent.Error(e.message ?: "Geai is not configured."))
