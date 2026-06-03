@@ -46,12 +46,13 @@ class AnthropicClient(
         onEvent: (com.github.saeldrit.geai.llm.StreamEvent) -> Unit,
     ): ChatResult {
         val body = buildRequestBody(request, streaming = true)
-        val stopReasonRef = kotlinx.atomicfu.atomic("")
-        val usageRef = kotlinx.atomicfu.atomic<TokenUsage?>(null)
+        // SSE is read on one thread (HttpTransport.postJsonSse) and dispatched inline — plain vars suffice.
+        var rawStopReason = ""
+        var streamedUsage: TokenUsage? = null
+        var currentToolId: String? = null
         val textBuilder = StringBuilder()
         val toolUseBuilders = mutableMapOf<String, StringBuilder>()
         val toolNames = mutableMapOf<String, String>()
-        val currentToolId = kotlinx.atomicfu.atomic<String?>(null)
 
         val result = HttpTransport.postJsonSse(
             url = "$baseUrl/v1/messages",
@@ -78,7 +79,7 @@ class AnthropicClient(
                             "tool_use" -> {
                                 val id = block.stringOrNull("id").orEmpty()
                                 val name = block.stringOrNull("name").orEmpty()
-                                currentToolId.value = id
+                                currentToolId = id
                                 toolNames[id] = name
                                 toolUseBuilders[id] = StringBuilder(block.get("input")?.toString() ?: "")
                                 onEvent(com.github.saeldrit.geai.llm.StreamEvent.ToolUseStarted(id, name))
@@ -95,16 +96,16 @@ class AnthropicClient(
                             }
                             "input_json_delta" -> {
                                 val chunk = delta.stringOrNull("partial_json") ?: ""
-                                val id = currentToolId.value ?: return@postJsonSse
+                                val id = currentToolId ?: return@postJsonSse
                                 toolUseBuilders.computeIfAbsent(id) { StringBuilder() }.append(chunk)
                                 onEvent(com.github.saeldrit.geai.llm.StreamEvent.ToolUseInputDelta(id, chunk))
                             }
                         }
                     }
                     "message_delta" -> {
-                        data.stringOrNull("stop_reason")?.let { stopReasonRef.value = it }
+                        data.stringOrNull("stop_reason")?.let { rawStopReason = it }
                         data.objectOrNull("usage")?.let { usageObj ->
-                            usageRef.value = TokenUsage(
+                            streamedUsage = TokenUsage(
                                 inputTokens = usageObj.intOr("input_tokens", 0),
                                 outputTokens = usageObj.intOr("output_tokens", 0),
                                 cacheReadTokens = usageObj.intOr("cache_read_input_tokens", 0),
@@ -136,13 +137,13 @@ class AnthropicClient(
         }
         if (blocks.isEmpty()) blocks.add(ContentBlock.Text(""))
 
-        val stopReason = when (stopReasonRef.value) {
+        val stopReason = when (rawStopReason) {
             "tool_use" -> StopReason.TOOL_USE
             "end_turn", "stop_sequence" -> StopReason.END_TURN
             "max_tokens" -> StopReason.MAX_TOKENS
             else -> StopReason.OTHER
         }
-        val usage = usageRef.value ?: TokenUsage.ZERO
+        val usage = streamedUsage ?: TokenUsage.ZERO
 
         onEvent(com.github.saeldrit.geai.llm.StreamEvent.Done)
         return ChatResult(ChatMessage.assistant(blocks), stopReason, usage)
