@@ -131,6 +131,28 @@ class ContextCompressorTest {
         assertTrue("fell back to truncation", content.contains("truncated"))
     }
 
+    @Test
+    fun `summariser sees full tool output, not the 800-char eager head`() {
+        val task = ChatMessage.user("original task")
+        val finding = "FINDING_AT_CHAR_3000"
+        // An old tool result whose key finding sits well past the 800-char eager-truncation head.
+        val body = "x".repeat(3_000) + finding + "y".repeat(3_000)
+        val middle = (1..8).flatMap { i ->
+            listOf(
+                ChatMessage.assistant(listOf(ContentBlock.ToolUse("t$i", "read_file", """{"path":"F$i"}"""))),
+                ChatMessage.toolResults(listOf(ContentBlock.ToolResult("t$i", if (i == 1) body else "CONTENT ".repeat(700)))),
+            )
+        }
+        val recent = (1..6).map { ChatMessage.assistantText("recent $it") }
+        val messages = listOf(task) + middle + recent
+
+        var captured = ""
+        val result = ContextCompressor.compress(messages, 1_000, 100, 0) { seg -> captured = seg; "RECAP" }
+
+        assertTrue("summariser must receive the finding past the 800-char head", captured.contains(finding))
+        assertTrue("middle was folded into the recap", result.any { it.text.contains("RECAP") })
+    }
+
     /** Every tool_result must be preceded by its tool_use, or the provider rejects the transcript. */
     private fun assertValidToolPairing(messages: List<ChatMessage>) {
         val seen = HashSet<String>()

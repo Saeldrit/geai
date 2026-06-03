@@ -58,11 +58,17 @@ object ContextCompressor {
         val eagerlyTrimmed = if (toolCount <= EAGER_KEEP_RECENT_TOOLS + 2) messages else eagerlyTruncateOldToolResults(messages)
         if (estimateChars(eagerlyTrimmed) <= budget) return eagerlyTrimmed
 
-        // Preferred: fold the old middle into a recap (keeps findings, not just the first 400 chars).
+        // Preferred: fold the old middle into a recap. Summarise from the ORIGINAL (untrimmed) middle so
+        // findings past the eager 800-char head survive into the recap — folding is what shrinks it, so
+        // pre-truncating the summariser's input would defeat the "preserve evidence" goal. If the full
+        // render is too large for one summariser call it throws; retry on the eager-trimmed copy.
         if (summarizer != null) {
-            val summarised = runCatching { summarizeOldContext(eagerlyTrimmed, summarizer) }.getOrNull()
-            if (summarised != null && summarised !== eagerlyTrimmed) {
-                return if (estimateChars(summarised) <= budget) summarised else truncateToBudget(summarised, budget)
+            val summarised = runCatching { summarizeOldContext(messages, summarizer) }.getOrNull()
+                ?: runCatching { summarizeOldContext(eagerlyTrimmed, summarizer) }.getOrNull()
+            if (summarised != null && summarised !== messages && summarised !== eagerlyTrimmed) {
+                // The recap shrank the middle; the kept recent tail is still verbatim — eager-trim it too.
+                val trimmed = eagerlyTruncateOldToolResults(summarised)
+                return if (estimateChars(trimmed) <= budget) trimmed else truncateToBudget(trimmed, budget)
             }
         }
         // Fallback: deterministic truncation.
