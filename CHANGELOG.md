@@ -2,6 +2,21 @@
 
 # geai Changelog
 
+## [0.0.48]
+
+### Changed
+- The GRACE context bundle and all structural navigation now run on IntelliJ's **live PSI/index** instead
+  of a materialized code graph. The bundle seeds and builds its neighbourhood (class methods, super types,
+  file siblings, governing specs) from PSI on demand — always fresh, no full-graph build, and it works on a
+  cold project with no wait. Natural-language seed-finding is now tokenized (it was a whole-string substring
+  that almost never matched a class name, so the bundle was usually empty on real tasks).
+
+### Removed
+- The parallel materialized code graph is gone — `GeaiGraphStore`, `GraphIndexer`, `GraphRefresher`, and
+  `graph_reindex` — it duplicated what IntelliJ's PSI already holds live. This also removes the per-edit
+  reindex (every `edit_file`/`write_file`/`run_command` used to trigger a debounced full-PSI walk) and the
+  first-use cold-start build. `SpecStore.list()` is now parse-cached. Net: less work per turn, nothing stale.
+
 ## [0.0.47]
 
 ### Changed
