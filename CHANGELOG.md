@@ -2,6 +2,16 @@
 
 # geai Changelog
 
+## [0.0.44]
+
+### Performance
+- `search_text` no longer reads every file in the project on each call. For a plain substring it now asks
+  IntelliJ's word/trigram index which files could contain the query (milliseconds, regardless of project
+  size) and scans only those — the substring necessarily contains the indexed word, so results are
+  identical. Regex, word-less queries, and not-yet-indexed projects fall back to the previous bounded
+  scan. On a large project this turns each substring search from seconds into milliseconds — the start of
+  moving navigation onto IntelliJ's native index instead of hand-rolled scans.
+
 ## [0.0.43]
 
 ### Fixed
