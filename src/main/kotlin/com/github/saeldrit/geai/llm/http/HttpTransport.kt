@@ -35,6 +35,10 @@ internal object HttpTransport {
      *  keeps cancellation responsive (a blocking readLine can't see the indicator). */
     private const val SSE_IDLE_CAP_MS = 180_000L
 
+    /** A larger budget for TIME-TO-FIRST-byte: a cold/heavy provider (big prompt, model spin-up, queueing)
+     *  can be slow to START but is healthy. Only inter-token gaps use the tighter [SSE_IDLE_CAP_MS]. */
+    private const val SSE_CONNECT_CAP_MS = 300_000L
+
     /** Parse an SSE event line. Returns null for comments, heartbeat, or blank lines. */
     data class SseEvent(val event: String, val data: String)
 
@@ -67,7 +71,7 @@ internal object HttpTransport {
 
             // Transient error BEFORE any stream data — safe to retry the connection (no partial output),
             // mirroring postJson. A 429/503 at connect no longer hard-aborts the turn.
-            val errorBody = try { response.body()?.bufferedReader(Charsets.UTF_8)?.readText().orEmpty() } catch (_: Exception) { "" }
+            val errorBody = try { response.body()?.use { it.bufferedReader(Charsets.UTF_8).readText() }.orEmpty() } catch (_: Exception) { "" }
             if (status in RETRYABLE_STATUS && attempt < MAX_RETRIES) {
                 val waitMillis = retryAfterMillis(response) ?: (500L shl attempt)
                 attempt++
@@ -95,7 +99,7 @@ internal object HttpTransport {
         val eof = Any()
         val queue = LinkedBlockingQueue<Any>()
         val readerError = java.util.concurrent.atomic.AtomicReference<Exception?>()
-        val readerThread = Thread {
+        Thread {
             try {
                 while (true) queue.put(reader.readLine() ?: break)
             } catch (e: Exception) {
@@ -108,21 +112,29 @@ internal object HttpTransport {
         var eventType = ""
         var dataBuffer = StringBuilder()
         var idleMs = 0L
+        var firstByteSeen = false
         try {
             while (true) {
                 if (indicator.isCanceled) return SseResult(0, "", isError = false, isCancelled = true)
                 val item = queue.poll(POLL_MS, TimeUnit.MILLISECONDS)
                 if (item == null) {
                     idleMs += POLL_MS
-                    if (idleMs >= SSE_IDLE_CAP_MS) {
-                        throw LlmException("Stream stalled — no data for ${SSE_IDLE_CAP_MS / 1000}s; aborted. Try again.")
+                    // Tight inter-token cap once streaming; a larger budget while waiting for the first byte.
+                    val cap = if (firstByteSeen) SSE_IDLE_CAP_MS else SSE_CONNECT_CAP_MS
+                    if (idleMs >= cap) {
+                        throw LlmException("Stream stalled — no data for ${cap / 1000}s; aborted. Try again.")
                     }
                     continue
                 }
                 idleMs = 0
+                firstByteSeen = true
                 if (item === eof) {
                     val err = readerError.get()
-                    if (err != null && !indicator.isCanceled) throw LlmException("SSE stream error: ${err.message}", cause = err)
+                    // A benign close (our own cancel/abort) interrupts the read — don't surface it as a
+                    // stream error; only a genuine mid-stream failure should.
+                    if (err != null && !indicator.isCanceled && err !is java.io.InterruptedIOException) {
+                        throw LlmException("SSE stream error: ${err.message}", cause = err)
+                    }
                     break
                 }
                 val line = item as String
