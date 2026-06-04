@@ -29,6 +29,11 @@ class SpecStore(private val project: Project) {
 
     private val lock = Any()
 
+    /** Parsed-spec cache, keyed by a cheap (name+mtime) dir signature. The context bundle calls
+     *  list() on every turn; without this it re-parsed every spec file from disk each time. */
+    @Volatile
+    private var listCache: Pair<String, List<Spec>>? = null
+
     private fun specDir(): Path {
         val base = project.basePath
         val dir = if (base != null) Paths.get(base, "spec") else Paths.get(PathManager.getSystemPath(), "geai", project.locationHash, "spec")
@@ -50,12 +55,27 @@ class SpecStore(private val project: Project) {
     }
 
     fun list(): List<Spec> = synchronized(lock) {
-        runCatching {
+        val signature = listSignature()
+        listCache?.let { if (it.first == signature) return@synchronized it.second }
+        val specs = runCatching {
             Files.list(specDir()).use { stream ->
                 stream.filter { it.toString().endsWith(SUFFIX) }.toList()
             }.mapNotNull { parse(it) }.sortedBy { it.id }
         }.getOrDefault(emptyList())
+        listCache = signature to specs
+        specs
     }
+
+    /** Cheap fingerprint of the spec dir (file names + mtimes) — re-parse only when a spec changed. */
+    private fun listSignature(): String = runCatching {
+        Files.list(specDir()).use { stream ->
+            stream.filter { it.toString().endsWith(SUFFIX) }
+                .map { "${it.fileName}:${Files.getLastModifiedTime(it).toMillis()}" }
+                .sorted()
+                .toList()
+                .joinToString("|")
+        }
+    }.getOrDefault("")
 
     fun find(specId: String): Spec? = synchronized(lock) {
         // Read path: a malformed id is simply "no such spec", not an error to surface to the model.
@@ -143,5 +163,6 @@ class SpecStore(private val project: Project) {
         }
         runCatching { JDOMUtil.write(root, fileFor(spec.id)) }
             .onFailure { thisLogger().warn("Geai: failed to write spec ${spec.id}", it) }
+        listCache = null
     }
 }

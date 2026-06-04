@@ -15,9 +15,8 @@ import com.github.saeldrit.geai.tools.ToolResult
 object ContextBundleTool : AgentTool {
     override val name = "context_bundle"
     override val description =
-        "Build a minimal context bundle for a task by walking the GRACE graph: governing rules, " +
-            "live-resolved contracts/symbols, and a neighborhood to navigate. Start here for a feature " +
-            "or diagnosis. Run graph_reindex first if the graph is empty."
+        "Build a minimal context bundle for a task from live PSI + specs: governing rules, " +
+            "live-resolved contracts/symbols, and a neighborhood to navigate. Start here for a feature or diagnosis."
     override val parametersJsonSchema = """
         {"type":"object","properties":{
           "query":{"type":"string","description":"The task or question to gather context for"},

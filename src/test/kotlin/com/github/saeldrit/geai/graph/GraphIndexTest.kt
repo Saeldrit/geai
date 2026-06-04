@@ -7,9 +7,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Locks in the [CodeGraph] lookup indexes (nodesById / edgesByEndpoint) that replaced the O(N)/O(E)
- * scans in GeaiGraphStore and ContextBundler. The key guarantee is parity: the indexed neighbor set
- * must equal what a full edge scan produced, for every node and direction.
+ * Locks in the [CodeGraph] lookup indexes (nodesById / edgesByEndpoint) used by the context bundle's
+ * graph walk (ContextBundler.expand). The key guarantee is parity: the indexed neighbor set must equal
+ * what a full edge scan produced, for every node and direction.
  */
 class GraphIndexTest {
 

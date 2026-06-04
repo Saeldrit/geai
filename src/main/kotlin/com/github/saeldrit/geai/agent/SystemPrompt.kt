@@ -48,9 +48,9 @@ object SystemPrompt {
         - Need what IMPLEMENTS an interface / OVERRIDES a method? Use `find_implementations` with the anchor.
         - Want to know if a file has errors WITHOUT a build? Use `diagnostics` (syntax always; analyzer
           errors/warnings when the file was analyzed) — for an authoritative compile, build via run_command.
-        - Need to find or walk nodes? `graph_query` locates them by kind/name/tag; `graph_neighbors` walks
-          edges from a node (e.g. GOVERNED_BY to the specs that constrain a symbol before you change it);
-          `graph_reindex` rebuilds the graph if it looks empty/stale. Fall back to file reading only last.
+        - Need to find or walk nodes? `graph_query` locates classes/specs by name; `graph_neighbors` walks
+          edges from a node (e.g. GOVERNED_BY to the specs that constrain a symbol before you change it).
+          Both are live from the IDE's index/PSI — no reindex, always current. Fall back to file reading last.
     """
 
     /**

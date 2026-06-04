@@ -3,7 +3,6 @@ package com.github.saeldrit.geai.agent
 import com.github.saeldrit.geai.bundle.ContextBundler
 import com.github.saeldrit.geai.context.ContextCompressor
 import com.github.saeldrit.geai.cost.UsageFormat
-import com.github.saeldrit.geai.graph.GeaiGraphStore
 import com.github.saeldrit.geai.llm.ChatMessage
 import com.github.saeldrit.geai.llm.ChatRequest
 import com.github.saeldrit.geai.llm.ContentBlock
@@ -98,18 +97,16 @@ class AgentLoop(
         // doctrine stays cacheable across turns.
         val rawBundleSuffix: String = run {
             val bundle: String = if (settings.graceEnabled) {
-                val store = GeaiGraphStore.getInstance(project)
-                if (store.graph().nodes.isEmpty()) {
-                    store.ensureBuiltInBackground()
-                    ""
-                } else {
-                    val b = try {
-                        ContextBundler.build(project, userText, emptyList(), maxNodes = 10, hops = 2, charBudget = 4_000)
-                    } catch (e: Exception) {
-                        null
-                    }
-                    if (b != null && b.text.isNotBlank()) "<context_bundle>\n${b.text}\n</context_bundle>" else ""
+                // Built LIVE from PSI (no materialized graph, no cold-start wait). Inject only when it
+                // actually found seeds — skip the "No seeds matched" stub.
+                val b = try {
+                    ContextBundler.build(project, userText, emptyList(), maxNodes = 10, hops = 2, charBudget = 4_000)
+                } catch (e: ProcessCanceledException) {
+                    throw e
+                } catch (e: Exception) {
+                    null
                 }
+                if (b != null && b.nodeIds.isNotEmpty()) "<context_bundle>\n${b.text}\n</context_bundle>" else ""
             } else {
                 ""
             }

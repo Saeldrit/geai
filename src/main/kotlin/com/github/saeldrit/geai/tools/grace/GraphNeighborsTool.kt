@@ -1,7 +1,7 @@
 package com.github.saeldrit.geai.tools.grace
 
+import com.github.saeldrit.geai.graph.Direction
 import com.github.saeldrit.geai.graph.EdgeKind
-import com.github.saeldrit.geai.graph.GeaiGraphStore
 import com.github.saeldrit.geai.graph.PsiStructure
 import com.github.saeldrit.geai.tools.AgentTool
 import com.github.saeldrit.geai.tools.ToolArgs
@@ -31,9 +31,9 @@ object GraphNeighborsTool : AgentTool {
         val nodeId = args.string("node_id").trim()
         val edgeKind = args.stringOrNull("edge_kind")?.let { runCatching { EdgeKind.valueOf(it.uppercase()) }.getOrNull() }
         val direction = when (args.stringOrNull("direction")?.lowercase()) {
-            "out" -> GeaiGraphStore.Direction.OUT
-            "in" -> GeaiGraphStore.Direction.IN
-            else -> GeaiGraphStore.Direction.BOTH
+            "out" -> Direction.OUT
+            "in" -> Direction.IN
+            else -> Direction.BOTH
         }
         val max = args.int("max_results", 50).coerceIn(1, 300)
 

@@ -127,7 +127,7 @@ class GeaiToolsetTest {
         // Drift guard: the system prompt and tool error texts reference these, so they MUST be
         // advertised+executable when GRACE is on — or a literal model hits an "Unknown tool" dead-end.
         val grace = names(GeaiToolset.advertisedTools(graceEnabled = true, activeGroups = emptySet()))
-        listOf("context_bundle", "graph_query", "graph_neighbors", "graph_reindex").forEach {
+        listOf("context_bundle", "graph_query", "graph_neighbors").forEach {
             assertTrue("GRACE must advertise '$it' (named by the doctrine)", grace.contains(it))
         }
         val sub = names(GeaiToolset.delegateTools())

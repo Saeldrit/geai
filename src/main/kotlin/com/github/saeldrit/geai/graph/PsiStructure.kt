@@ -2,10 +2,12 @@ package com.github.saeldrit.geai.graph
 
 import com.github.saeldrit.geai.spec.SpecStore
 import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.psi.JavaPsiFacade
 import com.intellij.psi.PsiClass
+import com.intellij.psi.PsiClassOwner
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.search.PsiShortNamesCache
 
@@ -14,6 +16,9 @@ data class LiveEdge(val kind: EdgeKind, val outgoing: Boolean, val otherId: Stri
 
 /** A node resolved live: a code class (psi:) or a spec header (spec:). */
 data class LiveNode(val id: String, val kind: NodeKind, val name: String, val anchor: String?, val summary: String?)
+
+/** Edge-walk direction for [PsiStructure.neighbors]. */
+enum class Direction { IN, OUT, BOTH }
 
 /**
  * Resolves graph neighbours from IntelliJ's LIVE PSI (code structure) plus the spec overlay
@@ -24,15 +29,17 @@ data class LiveNode(val id: String, val kind: NodeKind, val name: String, val an
  */
 object PsiStructure {
 
+    private val NON_WORD = Regex("[^a-z0-9]+")
+
     fun neighbors(
         project: Project,
         nodeId: String,
         kind: EdgeKind?,
-        direction: GeaiGraphStore.Direction,
+        direction: Direction,
         max: Int,
     ): List<LiveEdge> {
-        val out = direction != GeaiGraphStore.Direction.IN
-        val incoming = direction != GeaiGraphStore.Direction.OUT
+        val out = direction != Direction.IN
+        val incoming = direction != Direction.OUT
         val edges = ArrayList<LiveEdge>()
 
         if (nodeId.startsWith("psi:") && !DumbService.isDumb(project)) {
@@ -102,10 +109,15 @@ object PsiStructure {
      * (CONTAINS) and find_symbol; spec items via spec_lookup. Used by graph_query and as bundle seeds.
      */
     fun findNodes(project: Project, kind: NodeKind?, query: String?, limit: Int): List<LiveNode> {
-        val needle = query?.lowercase()?.takeIf { it.isNotBlank() }
-        val nodes = ArrayList<LiveNode>()
+        // Tokenise the query — the auto-bundle passes a natural-language task, so a whole-string substring
+        // match almost never hits a class name. Match a node if its name contains ANY term, and rank by
+        // how many distinct terms it matches so the most-relevant seeds win.
+        val terms = query?.lowercase()?.split(NON_WORD)?.filter { it.length >= 3 }?.distinct().orEmpty()
+        fun score(haystack: String): Int = if (terms.isEmpty()) 1 else terms.count { haystack.contains(it) }
+
         val wantCode = kind == null || kind == NodeKind.SYMBOL || kind == NodeKind.CONTRACT || kind == NodeKind.FILE
         val wantSpec = kind == null || kind == NodeKind.SPEC
+        val scored = ArrayList<Pair<LiveNode, Int>>()
 
         if (wantCode && !DumbService.isDumb(project)) {
             runCatching {
@@ -113,35 +125,150 @@ object PsiStructure {
                     val cache = PsiShortNamesCache.getInstance(project)
                     val scope = GlobalSearchScope.projectScope(project)
                     for (name in cache.allClassNames) {
-                        if (nodes.size >= limit) break
-                        if (needle != null && !name.lowercase().contains(needle)) continue
+                        if (scored.size >= limit * 8) break // bound candidate gathering on a broad term
+                        val hits = score(name.lowercase())
+                        if (hits == 0) continue
                         for (cls in cache.getClassesByName(name, scope)) {
                             val fq = cls.qualifiedName ?: continue
-                            nodes.add(LiveNode("psi:$fq", NodeKind.SYMBOL, cls.name ?: fq, "psi:$fq", classSummary(cls)))
-                            if (nodes.size >= limit) break
+                            scored.add(LiveNode("psi:$fq", NodeKind.SYMBOL, cls.name ?: fq, "psi:$fq", classSummary(cls)) to hits)
                         }
                     }
                 }
-            }
+            }.onFailure { if (it is ProcessCanceledException) throw it }
         }
         if (wantSpec) {
             runCatching {
                 SpecStore.getInstance(project).list().forEach { spec ->
-                    if (nodes.size < limit) {
-                        val hay = "${spec.id} ${spec.title} ${spec.domain ?: ""}".lowercase()
-                        if (needle == null || hay.contains(needle)) {
-                            nodes.add(LiveNode("spec:${spec.id}", NodeKind.SPEC, spec.title, null, spec.domain))
-                        }
-                    }
+                    val hits = score("${spec.id} ${spec.title} ${spec.domain ?: ""}".lowercase())
+                    if (hits > 0) scored.add(LiveNode("spec:${spec.id}", NodeKind.SPEC, spec.title, null, spec.domain) to hits)
                 }
             }
         }
-        return nodes.take(limit)
+        return scored.sortedByDescending { it.second }.take(limit).map { it.first }
     }
 
     private fun classSummary(cls: PsiClass): String = when {
         cls.isInterface -> "interface ${cls.qualifiedName}"
         cls.isEnum -> "enum ${cls.qualifiedName}"
         else -> "class ${cls.qualifiedName}"
+    }
+
+    // ---- bundle support: seeds + a local graph built live from PSI (no materialized snapshot) ----
+
+    /** Resolve a node id (psi: class/member, spec:, or other anchor) to a [GraphNode] descriptor. */
+    fun resolveNode(project: Project, id: String): GraphNode? {
+        if (id.startsWith("spec:")) {
+            val spec = SpecStore.getInstance(project).find(id.removePrefix("spec:")) ?: return null
+            return GraphNode(id, NodeKind.SPEC, spec.title, null, spec.domain, emptyList())
+        }
+        if (id.startsWith("psi:") && !DumbService.isDumb(project)) {
+            return runCatching {
+                ReadAction.compute<GraphNode?, RuntimeException> {
+                    val (fq, member) = splitPsi(id)
+                    val cls = JavaPsiFacade.getInstance(project).findClass(fq, GlobalSearchScope.allScope(project))
+                        ?: return@compute null
+                    if (member == null) GraphNode(id, NodeKind.SYMBOL, cls.name ?: fq, id, classSummary(cls), emptyList())
+                    else GraphNode(id, NodeKind.SYMBOL, "${cls.name}#$member", id, null, emptyList())
+                }
+            }.getOrElse { if (it is ProcessCanceledException) throw it else null }
+        }
+        return GraphNode(id, NodeKind.FILE, id.substringAfterLast('/').ifBlank { id }, id, null, emptyList())
+    }
+
+    /** Bundle seeds: explicit ids resolved, else the top name matches for the query. */
+    fun bundleSeeds(project: Project, query: String, seedIds: List<String>, limit: Int): List<GraphNode> =
+        if (seedIds.isNotEmpty()) {
+            seedIds.mapNotNull { resolveNode(project, it) }
+        } else {
+            findNodes(project, null, query, limit)
+                .map { GraphNode(it.id, it.kind, it.name, it.anchor, it.summary, emptyList()) }
+        }
+
+    /**
+     * Build a small [CodeGraph] live from PSI around [seeds] (BFS to [hops] over class->methods and
+     * class->super edges) plus the governance edges (code -> the specs that reference it, specs loaded
+     * ONCE). Replaces the full materialized snapshot for the context bundle: fresh, no full PSI walk,
+     * and the bundle's downstream expand/rank/resolve/pack stay unchanged.
+     */
+    fun localGraph(project: Project, seeds: List<GraphNode>, hops: Int, maxNodes: Int): CodeGraph {
+        val nodes = LinkedHashMap<String, GraphNode>()
+        val edges = LinkedHashSet<GraphEdge>()
+        seeds.forEach { nodes[it.id] = it }
+
+        if (!DumbService.isDumb(project)) {
+            runCatching {
+                ReadAction.run<RuntimeException> {
+                    var frontier = seeds.map { it.id }
+                    for (depth in 1..hops.coerceAtLeast(1)) {
+                        if (nodes.size >= maxNodes) break
+                        val next = ArrayList<String>()
+                        frontier.forEach { id ->
+                            codeEdges(project, id).forEach { (edge, other) ->
+                                edges.add(edge)
+                                if (other.id !in nodes && nodes.size < maxNodes) {
+                                    nodes[other.id] = other
+                                    next.add(other.id)
+                                }
+                            }
+                        }
+                        frontier = next
+                    }
+                }
+            }.onFailure { if (it is ProcessCanceledException) throw it }
+        }
+
+        // Governance: which specs govern the code nodes we gathered (specs read once).
+        val specs = SpecStore.getInstance(project).list()
+        if (specs.isNotEmpty()) {
+            nodes.keys.toList().forEach { id ->
+                if (!id.startsWith("spec:")) {
+                    specs.forEach { spec ->
+                        if (spec.items.any { it.kind.isReference && it.ref == id }) {
+                            val specId = "spec:${spec.id}"
+                            nodes.putIfAbsent(specId, GraphNode(specId, NodeKind.SPEC, spec.title, null, spec.domain, emptyList()))
+                            edges.add(GraphEdge(id, specId, EdgeKind.GOVERNED_BY))
+                        }
+                    }
+                }
+            }
+        }
+        return CodeGraph(nodes.values.toList(), edges.toList())
+    }
+
+    /** CONTAINS (class -> its declared methods) + IMPLEMENTS (class -> super types), as graph edges. */
+    private fun codeEdges(project: Project, id: String): List<Pair<GraphEdge, GraphNode>> {
+        if (!id.startsWith("psi:")) return emptyList()
+        val (fq, member) = splitPsi(id)
+        if (member != null) return emptyList()
+        val cls = JavaPsiFacade.getInstance(project).findClass(fq, GlobalSearchScope.allScope(project)) ?: return emptyList()
+        val result = ArrayList<Pair<GraphEdge, GraphNode>>()
+        cls.methods.asSequence().mapNotNull { it.name }.distinct().forEach { m ->
+            val mid = "psi:$fq#$m"
+            result.add(GraphEdge(id, mid, EdgeKind.CONTAINS) to GraphNode(mid, NodeKind.SYMBOL, "${cls.name}#$m", mid, null, emptyList()))
+        }
+        cls.supers.mapNotNull { it.qualifiedName }
+            .filter { it != "java.lang.Object" && it != "kotlin.Any" }
+            .forEach { s ->
+                val sid = "psi:$s"
+                result.add(GraphEdge(id, sid, EdgeKind.IMPLEMENTS) to GraphNode(sid, NodeKind.SYMBOL, s.substringAfterLast('.'), sid, "class $s", emptyList()))
+            }
+        // Sibling top-level classes in the same file — restores the file-locality the old FILE node gave
+        // (common in Kotlin: several classes per file). Reached as hop+1 neighbours of the seed class.
+        (cls.containingFile as? PsiClassOwner)?.classes?.forEach { sib ->
+            val sfq = sib.qualifiedName
+            if (sfq != null && sfq != fq) {
+                val siblingId = "psi:$sfq"
+                result.add(GraphEdge(id, siblingId, EdgeKind.CONTAINS) to GraphNode(siblingId, NodeKind.SYMBOL, sib.name ?: sfq, siblingId, classSummary(sib), emptyList()))
+            }
+        }
+        return result
+    }
+
+    private fun splitPsi(id: String): Pair<String, String?> {
+        val locator = id.removePrefix("psi:")
+        val hash = locator.indexOf('#')
+        val fq = (if (hash >= 0) locator.substring(0, hash) else locator).trim()
+        val member = if (hash >= 0) locator.substring(hash + 1).trim().ifBlank { null } else null
+        return fq to member
     }
 }

@@ -6,7 +6,6 @@ import com.github.saeldrit.geai.tools.ToolContext
 import com.github.saeldrit.geai.tools.ToolResult
 import com.github.saeldrit.geai.tools.grace.ContextBundleTool
 import com.github.saeldrit.geai.tools.grace.GraphQueryTool
-import com.github.saeldrit.geai.tools.grace.GraphReindexTool
 import com.github.saeldrit.geai.tools.grace.ResolveRefTool
 import com.github.saeldrit.geai.tools.grace.SpecRecordTool
 import com.github.saeldrit.geai.tools.grace.SpecValidateTool
@@ -34,12 +33,7 @@ class GraceChainTest : BasePlatformTestCase() {
         assertFalse("psi anchor should resolve: ${resolved.content}", resolved.isError)
         assertTrue("resolved content names the class", resolved.content.contains("GoalService"))
 
-        // 2) build the graph from code + specs
-        val reindex = run(GraphReindexTool, "{}")
-        assertFalse("reindex should succeed: ${reindex.content}", reindex.isError)
-        assertTrue("graph reports nodes", reindex.content.contains("nodes"))
-
-        // 3) the indexed symbol is queryable
+        // 2) the symbol is queryable LIVE from the index — no graph build needed
         val query = run(GraphQueryTool, """{"query":"GoalService"}""")
         assertFalse(query.isError)
         assertTrue("query finds the symbol: ${query.content}", query.content.contains("GoalService"))

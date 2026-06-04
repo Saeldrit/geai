@@ -22,7 +22,6 @@ import com.github.saeldrit.geai.tools.grace.ContextBundleTool
 import com.github.saeldrit.geai.tools.grace.EscalateAuthorTool
 import com.github.saeldrit.geai.tools.grace.GraphNeighborsTool
 import com.github.saeldrit.geai.tools.grace.GraphQueryTool
-import com.github.saeldrit.geai.tools.grace.GraphReindexTool
 import com.github.saeldrit.geai.tools.grace.ResolveRefTool
 import com.github.saeldrit.geai.tools.grace.SpecListTool
 import com.github.saeldrit.geai.tools.grace.SpecLookupTool
@@ -73,17 +72,16 @@ object GeaiToolset {
     )
 
     /**
-     * GRACE / semantic surface: an on-demand context bundle (context_bundle), live Category-B truth
-     * (resolve_ref), graph navigation (graph_query/graph_neighbors/graph_reindex), and PSI semantic
-     * search (find_symbol/find_usages/find_implementations/diagnostics) — the IDE-native alternative to
-     * grepping. Advertised alongside CORE whenever GRACE is enabled.
+     * GRACE / semantic surface, all resolved LIVE from IntelliJ's index + PSI (no materialized graph):
+     * an on-demand context bundle (context_bundle), live Category-B truth (resolve_ref), graph navigation
+     * (graph_query/graph_neighbors), and PSI semantic search (find_symbol/find_usages/find_implementations/
+     * diagnostics) — the IDE-native alternative to grepping. Advertised alongside CORE when GRACE is on.
      */
     private val GRACE: List<AgentTool> = listOf(
         ContextBundleTool,
         ResolveRefTool,
         GraphQueryTool,
         GraphNeighborsTool,
-        GraphReindexTool,
         FindSymbolTool,
         FindUsagesTool,
         FindImplementationsTool,

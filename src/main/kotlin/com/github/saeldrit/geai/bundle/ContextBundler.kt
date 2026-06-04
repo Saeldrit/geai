@@ -3,9 +3,9 @@ package com.github.saeldrit.geai.bundle
 import com.github.saeldrit.geai.anchor.AnchorResolvers
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.github.saeldrit.geai.graph.EdgeKind
-import com.github.saeldrit.geai.graph.GeaiGraphStore
 import com.github.saeldrit.geai.graph.GraphEdge
 import com.github.saeldrit.geai.graph.NodeKind
+import com.github.saeldrit.geai.graph.PsiStructure
 import com.github.saeldrit.geai.spec.SpecStore
 import com.intellij.openapi.project.Project
 
@@ -32,17 +32,15 @@ object ContextBundler {
     )
 
     fun build(project: Project, query: String, seedIds: List<String>, maxNodes: Int, hops: Int, charBudget: Int = CHAR_BUDGET): Bundle {
-        val store = GeaiGraphStore.getInstance(project)
-        val graph = store.graph()
-        if (graph.nodes.isEmpty()) {
-            return Bundle("Graph is empty. Run graph_reindex first.", emptyList(), 0, 0, 0)
-        }
-        val nodesById = graph.nodesById
-
-        val seeds = if (seedIds.isNotEmpty()) seedIds.mapNotNull { nodesById[it] } else store.query(null, query, null, SEED_FALLBACK)
+        // Seeds + a small neighbourhood graph built LIVE from PSI (no materialized snapshot, no full
+        // walk, always fresh). The downstream expand/rank/resolve/pack is unchanged, so the bundle's
+        // shape and quality contract are preserved.
+        val seeds = PsiStructure.bundleSeeds(project, query, seedIds, SEED_FALLBACK)
         if (seeds.isEmpty()) {
-            return Bundle("No seeds matched '$query'. Try graph_query or pass explicit seed_ids.", emptyList(), 0, 0, 0)
+            return Bundle("No seeds matched '$query'. Try graph_query / find_symbol or pass explicit seed_ids.", emptyList(), 0, 0, 0)
         }
+        val graph = PsiStructure.localGraph(project, seeds, hops, MAX_EXPAND)
+        val nodesById = graph.nodesById
 
         val seedSet = seeds.map { it.id }.toSet()
         val hopOf = expand(graph.edgesByEndpoint, seedSet, hops)

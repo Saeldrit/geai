@@ -6,8 +6,6 @@ import com.github.saeldrit.geai.agent.AgentLoop
 import com.github.saeldrit.geai.agent.AgentSession
 import com.github.saeldrit.geai.agent.LoopProfile
 import com.github.saeldrit.geai.cost.Pricing
-import com.github.saeldrit.geai.graph.GeaiGraphStore
-import com.github.saeldrit.geai.graph.GraphIndexer
 import com.github.saeldrit.geai.llm.TokenUsage
 import com.github.saeldrit.geai.settings.GeaiSettings
 import com.github.saeldrit.geai.settings.loopModel
@@ -56,12 +54,6 @@ object BenchmarkRunner {
             for (task in tasks) {
                 for (cfg in configs) {
                     settings.graceEnabled = cfg.graceEnabled
-                    if (cfg.graceEnabled) {
-                        runCatching {
-                            val graph = GraphIndexer.reindex(project)
-                            GeaiGraphStore.getInstance(project).replaceAll(graph)
-                        }
-                    }
                     results.add(runOne(project, task, cfg, settings.loopModel(), settings.modelPrices, indicator))
                 }
             }

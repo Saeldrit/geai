@@ -1,6 +1,5 @@
 package com.github.saeldrit.geai.tools.fs
 
-import com.github.saeldrit.geai.graph.GraphRefresher
 import com.github.saeldrit.geai.tools.AgentTool
 import com.github.saeldrit.geai.tools.ToolArgs
 import com.github.saeldrit.geai.tools.ToolContext
@@ -72,8 +71,6 @@ object EditFileTool : AgentTool {
                 document.setText(updated)
                 FileDocumentManager.getInstance().saveDocument(document)
                 val changed = if (replaceAll) occurrences else 1
-                // Code changed — schedule a debounced graph reindex so GRACE doesn't go stale.
-                GraphRefresher.getInstance(context.project).markDirty()
                 ToolResult.ok("Edited ${FsPaths.relativize(context.project, file)} ($changed replacement(s))")
             }
         }
