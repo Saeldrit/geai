@@ -2,6 +2,7 @@ package com.github.saeldrit.geai.tools.grace
 
 import com.github.saeldrit.geai.graph.EdgeKind
 import com.github.saeldrit.geai.graph.GeaiGraphStore
+import com.github.saeldrit.geai.graph.PsiStructure
 import com.github.saeldrit.geai.tools.AgentTool
 import com.github.saeldrit.geai.tools.ToolArgs
 import com.github.saeldrit.geai.tools.ToolContext
@@ -36,19 +37,19 @@ object GraphNeighborsTool : AgentTool {
         }
         val max = args.int("max_results", 50).coerceIn(1, 300)
 
-        val store = GeaiGraphStore.getInstance(context.project)
-        if (store.findNode(nodeId) == null) {
-            return ToolResult.error("Node '$nodeId' not found. Use graph_query to find a valid id (or graph_reindex).")
+        // Resolved LIVE from PSI (code structure) + the spec overlay (governance) — always fresh, and
+        // works before/without a graph build, so a cold project navigates immediately.
+        val edges = PsiStructure.neighbors(context.project, nodeId, edgeKind, direction, max)
+        if (edges.isEmpty()) {
+            return ToolResult.ok(
+                "No matching edges from '$nodeId'. Use a psi:<fqClass>[#member] id for code or spec:<id> " +
+                    "for a spec (from graph_query / find_symbol). For who-implements/overrides, use find_implementations.",
+            )
         }
-        val edges = store.neighbors(nodeId, edgeKind, direction).take(max)
-        if (edges.isEmpty()) return ToolResult.ok("No matching edges from '$nodeId'.")
 
         val rows = edges.joinToString("\n") { edge ->
-            val otherId = if (edge.from == nodeId) edge.to else edge.from
-            val arrow = if (edge.from == nodeId) "→" else "←"
-            val other = store.findNode(otherId)
-            val label = other?.let { "[${it.kind}] ${it.name}" } ?: "(dangling)"
-            "${edge.kind} $arrow $otherId  $label"
+            val arrow = if (edge.outgoing) "→" else "←"
+            "${edge.kind} $arrow ${edge.otherId}  ${edge.label}"
         }
         return ToolResult.ok("${edges.size} edge(s) for $nodeId:\n$rows")
     }
