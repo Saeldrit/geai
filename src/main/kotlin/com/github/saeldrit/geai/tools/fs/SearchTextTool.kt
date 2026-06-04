@@ -4,14 +4,23 @@ import com.github.saeldrit.geai.tools.AgentTool
 import com.github.saeldrit.geai.tools.ToolArgs
 import com.github.saeldrit.geai.tools.ToolContext
 import com.github.saeldrit.geai.tools.ToolResult
+import com.intellij.find.FindModel
+import com.intellij.find.impl.FindInProjectUtil
 import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.progress.ProcessCanceledException
+import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.roots.ProjectFileIndex
+import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.search.PsiSearchHelper
 import com.intellij.psi.search.UsageSearchContext
+import com.intellij.usageView.UsageInfo
+import com.intellij.usages.FindUsagesProcessPresentation
+import com.intellij.usages.UsageViewPresentation
+import com.intellij.util.Processor
 
 /** Bounded full-text search across project content (substring or regex). */
 object SearchTextTool : AgentTool {
@@ -50,10 +59,30 @@ object SearchTextTool : AgentTool {
         }
         val nameRegex = glob?.let { Globs.toRegex(it) }
 
+        // Regex -> IntelliJ's native Find-in-Path engine (trigram-narrowed candidate files + a correct
+        // regex matcher), so a project-wide regex no longer reads every file. Best-effort: any failure
+        // (or a not-yet-indexed project) falls through to the bounded scan below — no regression.
+        if (isRegex && !DumbService.isDumb(context.project)) {
+            val ide = runCatching { regexViaIde(query, glob, maxResults, context) }
+                .onFailure { if (it is ProcessCanceledException) throw it }
+                .getOrNull()
+            if (ide != null) {
+                if (context.indicator.isCanceled) throw ProcessCanceledException()
+                val needle = "/$query/"
+                return if (ide.isEmpty()) {
+                    ToolResult.ok("No matches for $needle${glob?.let { " in $it" } ?: ""}.")
+                } else {
+                    val shown = ide.take(maxResults)
+                    val capped = if (ide.size >= maxResults) " (capped at $maxResults)" else ""
+                    ToolResult.ok("${shown.size} match(es)$capped for $needle:\n${shown.joinToString("\n")}")
+                }
+            }
+        }
+
         // Index-backed narrowing: for a plain substring with an indexable (>=3 char) word, ask the IDE's
         // word/trigram index which files could contain that word — milliseconds, instead of reading EVERY
         // file. The substring necessarily contains the word, so the candidate set is a sound superset.
-        // Regex, word-less queries, and dumb mode fall back to the bounded full scan (unchanged, correct).
+        // Word-less queries, dumb mode, and a regex that fell back above use the bounded full scan.
         val anchorWord = if (isRegex) null else INDEXABLE_WORD.findAll(query).maxByOrNull { it.value.length }?.value
 
         return ReadAction.compute<ToolResult, RuntimeException> {
@@ -105,5 +134,42 @@ object SearchTextTool : AgentTool {
                 ToolResult.ok("${matches.size} match(es)$capped for $needle:\n${matches.joinToString("\n")}")
             }
         }
+    }
+
+    /**
+     * Project-wide regex via IntelliJ's Find-in-Path engine: it narrows candidate files through the
+     * trigram index and applies the regex natively, instead of this tool reading every file. Returns the
+     * matched "path:line: snippet" rows. Best-effort — the caller falls back to a scan if this throws
+     * (e.g. a platform/test fixture without the find subsystem).
+     */
+    private fun regexViaIde(query: String, glob: String?, maxResults: Int, context: ToolContext): List<String> {
+        val model = FindModel().apply {
+            stringToFind = query
+            isRegularExpressions = true
+            isCaseSensitive = false
+            isWholeWordsOnly = false
+            isProjectScope = true
+            if (!glob.isNullOrBlank()) fileFilter = glob
+        }
+        val presentation = FindUsagesProcessPresentation(UsageViewPresentation())
+        val matches = java.util.Collections.synchronizedList(ArrayList<String>())
+        val consumer = Processor<UsageInfo> { usage ->
+            if (context.indicator.isCanceled) return@Processor false
+            ReadAction.run<RuntimeException> {
+                val vf = usage.virtualFile ?: return@run
+                if (vf.fileType.isBinary) return@run
+                val doc = FileDocumentManager.getInstance().getDocument(vf) ?: return@run
+                val offset = usage.navigationOffset.coerceIn(0, doc.textLength)
+                val line = doc.getLineNumber(offset)
+                val lineText = doc.getText(TextRange(doc.getLineStartOffset(line), doc.getLineEndOffset(line)))
+                matches.add("${FsPaths.relativize(context.project, vf)}:${line + 1}: ${lineText.trim().take(MAX_LINE)}")
+            }
+            matches.size < maxResults
+        }
+        ProgressManager.getInstance().runProcess(
+            { FindInProjectUtil.findUsages(model, context.project, consumer, presentation) },
+            context.indicator,
+        )
+        return matches
     }
 }
