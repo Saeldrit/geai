@@ -6,7 +6,12 @@ import com.github.saeldrit.geai.tools.ToolContext
 import com.github.saeldrit.geai.tools.ToolResult
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.progress.ProcessCanceledException
+import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.roots.ProjectFileIndex
+import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.psi.search.GlobalSearchScope
+import com.intellij.psi.search.PsiSearchHelper
+import com.intellij.psi.search.UsageSearchContext
 
 /** Bounded full-text search across project content (substring or regex). */
 object SearchTextTool : AgentTool {
@@ -27,6 +32,9 @@ object SearchTextTool : AgentTool {
     private const val MAX_FILES = 20_000
     private const val MAX_LINE = 240
 
+    /** Longest run of word chars; the trigram/word index needs >=3 chars to narrow soundly. */
+    private val INDEXABLE_WORD = Regex("""\w{3,}""")
+
     override fun execute(args: ToolArgs, context: ToolContext): ToolResult {
         val query = args.string("query")
         val isRegex = args.boolean("regex", false)
@@ -42,19 +50,26 @@ object SearchTextTool : AgentTool {
         }
         val nameRegex = glob?.let { Globs.toRegex(it) }
 
+        // Index-backed narrowing: for a plain substring with an indexable (>=3 char) word, ask the IDE's
+        // word/trigram index which files could contain that word — milliseconds, instead of reading EVERY
+        // file. The substring necessarily contains the word, so the candidate set is a sound superset.
+        // Regex, word-less queries, and dumb mode fall back to the bounded full scan (unchanged, correct).
+        val anchorWord = if (isRegex) null else INDEXABLE_WORD.findAll(query).maxByOrNull { it.value.length }?.value
+
         return ReadAction.compute<ToolResult, RuntimeException> {
             val matches = ArrayList<String>()
             var scanned = 0
-            ProjectFileIndex.getInstance(context.project).iterateContent { file ->
+
+            fun scan(file: VirtualFile): Boolean {
                 when {
-                    context.indicator.isCanceled -> return@iterateContent false
-                    file.isDirectory -> return@iterateContent true
-                    nameRegex != null && !nameRegex.matches(file.name) -> return@iterateContent true
-                    file.length > MAX_BYTES || file.fileType.isBinary -> return@iterateContent true
-                    scanned >= MAX_FILES -> return@iterateContent false
+                    context.indicator.isCanceled -> return false
+                    file.isDirectory -> return true
+                    nameRegex != null && !nameRegex.matches(file.name) -> return true
+                    file.length > MAX_BYTES || file.fileType.isBinary -> return true
+                    scanned >= MAX_FILES -> return false
                 }
                 scanned++
-                val text = readTextOrNull(file) ?: return@iterateContent true
+                val text = readTextOrNull(file) ?: return true
                 val relative = FsPaths.relativize(context.project, file)
                 for ((index, line) in text.split("\n").withIndex()) {
                     val hit = if (regex != null) regex.containsMatchIn(line) else line.contains(query, ignoreCase = true)
@@ -63,13 +78,28 @@ object SearchTextTool : AgentTool {
                         if (matches.size >= maxResults) break
                     }
                 }
-                matches.size < maxResults
+                return matches.size < maxResults
+            }
+
+            val usedIndex = anchorWord != null && !DumbService.isDumb(context.project)
+            if (usedIndex) {
+                val candidates = ArrayList<VirtualFile>()
+                PsiSearchHelper.getInstance(context.project).processCandidateFilesForText(
+                    GlobalSearchScope.projectScope(context.project),
+                    UsageSearchContext.ANY,
+                    false, // case-insensitive candidate match; the line scan re-confirms
+                    anchorWord!!,
+                ) { vf -> candidates.add(vf); true }
+                for (file in candidates) if (!scan(file)) break
+            } else {
+                ProjectFileIndex.getInstance(context.project).iterateContent { scan(it) }
             }
             if (context.indicator.isCanceled) throw ProcessCanceledException()
 
             val needle = if (isRegex) "/$query/" else "\"$query\""
+            val via = if (usedIndex) "" else " (scanned $scanned files)"
             if (matches.isEmpty()) {
-                ToolResult.ok("No matches for $needle${glob?.let { " in $it" } ?: ""} (scanned $scanned files).")
+                ToolResult.ok("No matches for $needle${glob?.let { " in $it" } ?: ""}$via.")
             } else {
                 val capped = if (matches.size >= maxResults) " (capped at $maxResults)" else ""
                 ToolResult.ok("${matches.size} match(es)$capped for $needle:\n${matches.joinToString("\n")}")
