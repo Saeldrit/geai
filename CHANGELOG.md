@@ -2,6 +2,16 @@
 
 # geai Changelog
 
+## [0.0.50]
+
+### Removed
+- The opt-in **Claude Code CLI engine** is gone. It bypassed the entire GRACE/PSI stack — no semantic
+  navigation, no autonomous debugger, no live context bundle — a second-class, divergent code path that
+  was the source of several engine-drift bugs and an external `claude`-binary dependency. GEAI is now a
+  single, coherent native agent; cost-conscious users are served by the product's actual thesis (GRACE +
+  cheap models + tiered routing). Removes the `useClaudeCodeEngine` / `claudeCliPath` settings and the
+  session's `claudeSessionId`.
+
 ## [0.0.49]
 
 ### Fixed
