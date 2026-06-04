@@ -2,6 +2,15 @@
 
 # geai Changelog
 
+## [0.0.45]
+
+### Performance
+- A project-wide regex `search_text` now runs through IntelliJ's native Find-in-Path engine
+  (trigram-narrowed candidate files + the platform regex matcher) instead of reading every file. Together
+  with 0.0.44's substring path, `search_text` is fully index-backed for both modes — the comment/pattern
+  scans that dominate a big-project "clean up" turn are no longer O(project) per call. Falls back to the
+  bounded scan if the project isn't indexed yet.
+
 ## [0.0.44]
 
 ### Performance
