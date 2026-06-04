@@ -2,6 +2,17 @@
 
 # geai Changelog
 
+## [0.0.49]
+
+### Fixed
+- The agent no longer hangs on a wedged stream. If a provider stopped sending mid-response, the turn used
+  to block until the 10-minute request timeout — and Stop couldn't interrupt it (the cancel check only ran
+  between lines). The SSE body is now read on a worker thread with a responsive poll: Stop takes effect in
+  ~150ms, and a stream that goes silent for 180s (or 5 min before the first byte, allowing cold/heavy
+  providers to start) aborts cleanly with a clear message instead of hanging.
+- A transient connect error (429/502/503/504) on the streaming endpoint now retries (honoring
+  `Retry-After`) instead of hard-failing the turn — matching the non-streaming path.
+
 ## [0.0.48]
 
 ### Changed
