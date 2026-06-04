@@ -18,7 +18,6 @@ internal data class SessionDto(
     var createdAtEpochMs: Long = 0,
     var inputTokens: Int = 0,
     var outputTokens: Int = 0,
-    var claudeSessionId: String? = null,
     var messages: List<MessageDto> = emptyList(),
     var scratchpad: List<String> = emptyList(),
 )
@@ -48,7 +47,6 @@ internal object SessionCodec {
         createdAtEpochMs = session.createdAtEpochMs,
         inputTokens = session.totalUsage.inputTokens,
         outputTokens = session.totalUsage.outputTokens,
-        claudeSessionId = session.claudeSessionId,
         messages = session.messages.map { message ->
             MessageDto(message.role.name, message.content.map(::blockToDto))
         },
@@ -66,7 +64,6 @@ internal object SessionCodec {
             session.messages.add(ChatMessage(role, messageDto.blocks.mapNotNull(::blockFromDto)))
         }
         session.totalUsage = TokenUsage(dto.inputTokens, dto.outputTokens)
-        session.claudeSessionId = dto.claudeSessionId
         session.scratchpad.addAll(dto.scratchpad)
         return session
     }

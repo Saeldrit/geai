@@ -60,7 +60,6 @@ class BenchmarkRunTest : HeavyPlatformTestCase() {
         state.baseUrl = System.getenv("GEAI_BENCH_BASEURL")?.takeIf { it.isNotBlank() }
         state.autoApproveEditTools = true
         state.autoApproveReadTools = true
-        state.useClaudeCodeEngine = false
         // No default price table: a wrong (e.g. Claude) price on a qwen run would lie. Set GEAI_BENCH_PRICES explicitly.
         state.modelPrices = System.getenv("GEAI_BENCH_PRICES")?.takeIf { it.isNotBlank() }
         GeaiSecrets.setApiKey(provider, apiKey)

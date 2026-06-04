@@ -79,12 +79,6 @@ class GeaiSettingsState : BaseState() {
 
     /** Absolute path to geai's own plugin source tree, enabling the self-modification tools. */
     var geaiSourcePath by string()
-
-    /** When true, delegate the agent loop to the local Claude Code CLI (uses your subscription login). */
-    var useClaudeCodeEngine by property(false)
-
-    /** Path to the `claude` executable; blank means resolve "claude" from PATH. */
-    var claudeCliPath by string()
 }
 
 fun GeaiSettingsState.effectiveModel(): String =

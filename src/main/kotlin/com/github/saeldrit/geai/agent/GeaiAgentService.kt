@@ -2,7 +2,6 @@ package com.github.saeldrit.geai.agent
 
 import com.github.saeldrit.geai.context.ContextCompressor
 import com.github.saeldrit.geai.context.TranscriptSummary
-import com.github.saeldrit.geai.engine.ClaudeCodeEngine
 import com.github.saeldrit.geai.llm.LlmClientFactory
 import com.github.saeldrit.geai.llm.LlmException
 import com.github.saeldrit.geai.llm.TokenUsage
@@ -107,11 +106,7 @@ class GeaiAgentService(private val project: Project) {
             override fun run(indicator: ProgressIndicator) {
                 currentIndicator = indicator
                 try {
-                    if (GeaiSettings.getInstance().state.useClaudeCodeEngine) {
-                        ClaudeCodeEngine(project).run(session, text, savingListener, indicator)
-                    } else {
-                        AgentLoop(project, GeaiToolset.registry()).run(session, text, savingListener, indicator)
-                    }
+                    AgentLoop(project, GeaiToolset.registry()).run(session, text, savingListener, indicator)
                 } finally {
                     store.save(session)
                     running.set(false)

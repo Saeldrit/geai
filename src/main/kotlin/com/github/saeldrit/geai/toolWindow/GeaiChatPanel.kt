@@ -93,9 +93,8 @@ class GeaiChatPanel(private val project: Project) : JPanel(BorderLayout()) {
         renderSession()
         syncFromSettings()
         updatePreflight()
-        val usingClaudeCode = GeaiSettings.getInstance().state.useClaudeCodeEngine
-        if (!usingClaudeCode && !LlmClientFactory.isConfigured()) {
-            appendBlock("Setup", "Geai is not configured. Open Settings | Tools | Geai and add an API key, or enable the Claude Code engine.", INFO)
+        if (!LlmClientFactory.isConfigured()) {
+            appendBlock("Setup", "Geai is not configured. Open Settings | Tools | Geai and add an API key.", INFO)
         }
     }
 

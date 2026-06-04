@@ -14,19 +14,14 @@ import javax.swing.JPanel
 
 /**
  * Settings page under **Settings | Tools | Geai**. Deliberately minimal: the everyday tab ("Model")
- * holds only what a user must set to get going — engine and model — while optional/expert flags live
- * under "Advanced". The mechanical loop knobs (iteration ceiling, transcript/turn token budgets) are
- * NOT exposed at all: they have sound internal defaults so the agent just works without anyone tuning
- * a number. The UI is dynamic — the engine toggle swaps the Claude-CLI path for the API provider
- * block, and the navigator model appears only when tiered routing is on. API keys go to [GeaiSecrets].
+ * holds only what a user must set to get going — provider, model, key — while optional/expert flags
+ * live under "Advanced". The mechanical loop knobs (iteration ceiling, transcript/turn token budgets)
+ * are NOT exposed: they have sound internal defaults so the agent just works without anyone tuning a
+ * number. The navigator model appears only when tiered routing is on. API keys go to [GeaiSecrets].
  */
 class GeaiSettingsConfigurable : Configurable {
 
-    // Engine & model (the essentials)
-    private val engineCheck =
-        JBCheckBox("Use Claude Code CLI as the engine (your Claude subscription login — no API key needed)")
-    private val claudePathField = JBTextField()
-
+    // Model (the essentials)
     private val providerCombo = ComboBox(DefaultComboBoxModel(LlmProvider.entries.toTypedArray()))
     private val modelCombo = ComboBox<String>().apply {
         isEditable = true
@@ -45,15 +40,11 @@ class GeaiSettingsConfigurable : Configurable {
     private val autoEditCheck = JBCheckBox("Auto-approve mutating tools (write / edit / run / self-modify) — ON by default; uncheck to require per-call confirmation")
     private val sourcePathField = JBTextField()
 
-    // Sub-panels whose visibility is toggled dynamically.
-    private lateinit var cliPanel: JPanel
-    private lateinit var providerPanel: JPanel
     private lateinit var navigatorPanel: JPanel
 
     override fun getDisplayName(): String = GeaiBundle.message("geai.settings.title")
 
     override fun createComponent(): JComponent {
-        engineCheck.addActionListener { updateEnabled() }
         graceEnabledCheck.addActionListener { updateEnabled() }
         tieredRoutingCheck.addActionListener { updateEnabled() }
         providerCombo.addActionListener {
@@ -64,19 +55,11 @@ class GeaiSettingsConfigurable : Configurable {
             }
         }
 
-        cliPanel = FormBuilder.createFormBuilder()
-            .addLabeledComponent("Claude CLI path:", claudePathField)
-            .panel
-        providerPanel = FormBuilder.createFormBuilder()
+        val modelTab = FormBuilder.createFormBuilder()
             .addLabeledComponent("Provider:", providerCombo)
             .addLabeledComponent("Model:", modelCombo)
             .addLabeledComponent("Base URL:", baseUrlField)
             .addLabeledComponent("API key:", apiKeyField)
-            .panel
-        val modelTab = FormBuilder.createFormBuilder()
-            .addComponent(engineCheck)
-            .addComponent(cliPanel)
-            .addComponent(providerPanel)
             .addComponentFillVertically(JPanel(), 0)
             .panel
 
@@ -110,19 +93,9 @@ class GeaiSettingsConfigurable : Configurable {
     private fun currentModel(): String =
         ((modelCombo.editor.item as? String) ?: (modelCombo.selectedItem as? String)).orEmpty().trim()
 
-    /**
-     * Show only what applies right now. The engine fork swaps the CLI-path block for the API provider
-     * block; the GRACE flags gray out under the Claude Code engine (they drive the native loop only);
-     * the navigator model surfaces only when tiered routing is on. Auto-approve applies to both engines
-     * (geai's own tools are gated by it either way), so it is never disabled.
-     */
+    /** The navigator model surfaces only when GRACE + tiered routing are on. */
     private fun updateEnabled() {
-        val claudeEngine = engineCheck.isSelected
-        cliPanel.isVisible = claudeEngine
-        providerPanel.isVisible = !claudeEngine
-
-        graceEnabledCheck.isEnabled = !claudeEngine
-        val grace = !claudeEngine && graceEnabledCheck.isSelected
+        val grace = graceEnabledCheck.isSelected
         tieredRoutingCheck.isEnabled = grace
         navigatorPanel.isVisible = grace && tieredRoutingCheck.isSelected
         navigatorModelField.isEnabled = grace && tieredRoutingCheck.isSelected
@@ -138,8 +111,6 @@ class GeaiSettingsConfigurable : Configurable {
             autoReadCheck.isSelected != state.autoApproveReadTools ||
             autoEditCheck.isSelected != state.autoApproveEditTools ||
             sourcePathField.text != state.geaiSourcePath.orEmpty() ||
-            engineCheck.isSelected != state.useClaudeCodeEngine ||
-            claudePathField.text != state.claudeCliPath.orEmpty() ||
             graceEnabledCheck.isSelected != state.graceEnabled ||
             tieredRoutingCheck.isSelected != state.tieredRoutingEnabled ||
             navigatorModelField.text != state.navigatorModel.orEmpty() ||
@@ -155,8 +126,6 @@ class GeaiSettingsConfigurable : Configurable {
         state.autoApproveReadTools = autoReadCheck.isSelected
         state.autoApproveEditTools = autoEditCheck.isSelected
         state.geaiSourcePath = sourcePathField.text.trim().ifBlank { null }
-        state.useClaudeCodeEngine = engineCheck.isSelected
-        state.claudeCliPath = claudePathField.text.trim().ifBlank { null }
         state.graceEnabled = graceEnabledCheck.isSelected
         state.tieredRoutingEnabled = tieredRoutingCheck.isSelected
         state.navigatorModel = navigatorModelField.text.trim().ifBlank { null }
@@ -174,9 +143,6 @@ class GeaiSettingsConfigurable : Configurable {
         autoEditCheck.isSelected = state.autoApproveEditTools
         sourcePathField.text = state.geaiSourcePath.orEmpty()
         sourcePathField.emptyText.text = "absolute path to geai's own source — enables self-modification tools"
-        engineCheck.isSelected = state.useClaudeCodeEngine
-        claudePathField.text = state.claudeCliPath.orEmpty()
-        claudePathField.emptyText.text = "blank = resolve 'claude' from PATH"
         graceEnabledCheck.isSelected = state.graceEnabled
         tieredRoutingCheck.isSelected = state.tieredRoutingEnabled
         navigatorModelField.text = state.navigatorModel.orEmpty()

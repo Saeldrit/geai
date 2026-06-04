@@ -185,12 +185,8 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
 
     private fun initState(): JsonObject {
         val settings = GeaiSettings.getInstance().state
-        val engine = if (settings.useClaudeCodeEngine) {
-            "Claude Code · subscription"
-        } else {
-            "${settings.provider.displayName} · ${settings.effectiveModel()}"
-        }
-        val configured = settings.useClaudeCodeEngine || LlmClientFactory.isConfigured()
+        val engine = "${settings.provider.displayName} · ${settings.effectiveModel()}"
+        val configured = LlmClientFactory.isConfigured()
         val session = service.currentSession()
         return JsonObject().apply {
             add("theme", theme())

@@ -30,8 +30,5 @@ class AgentSession(
      */
     val scratchpad: MutableList<String> = java.util.concurrent.CopyOnWriteArrayList()
 
-    /** Claude Code's own session id, used with `--resume` to continue context across turns. */
-    var claudeSessionId: String? = null
-
     val isEmpty: Boolean get() = messages.isEmpty()
 }
