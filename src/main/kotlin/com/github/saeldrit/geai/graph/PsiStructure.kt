@@ -5,10 +5,15 @@ import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.psi.JavaPsiFacade
+import com.intellij.psi.PsiClass
 import com.intellij.psi.search.GlobalSearchScope
+import com.intellij.psi.search.PsiShortNamesCache
 
 /** A neighbour edge resolved live (no materialized graph). [outgoing] = edge points away from the node. */
 data class LiveEdge(val kind: EdgeKind, val outgoing: Boolean, val otherId: String, val label: String)
+
+/** A node resolved live: a code class (psi:) or a spec header (spec:). */
+data class LiveNode(val id: String, val kind: NodeKind, val name: String, val anchor: String?, val summary: String?)
 
 /**
  * Resolves graph neighbours from IntelliJ's LIVE PSI (code structure) plus the spec overlay
@@ -89,5 +94,54 @@ object PsiStructure {
                 }
             }
         }
+    }
+
+    /**
+     * Find nodes live: project classes by name substring (IntelliJ's PsiShortNamesCache — index-backed,
+     * no graph build) plus spec headers from the store. Code methods are reachable via graph_neighbors
+     * (CONTAINS) and find_symbol; spec items via spec_lookup. Used by graph_query and as bundle seeds.
+     */
+    fun findNodes(project: Project, kind: NodeKind?, query: String?, limit: Int): List<LiveNode> {
+        val needle = query?.lowercase()?.takeIf { it.isNotBlank() }
+        val nodes = ArrayList<LiveNode>()
+        val wantCode = kind == null || kind == NodeKind.SYMBOL || kind == NodeKind.CONTRACT || kind == NodeKind.FILE
+        val wantSpec = kind == null || kind == NodeKind.SPEC
+
+        if (wantCode && !DumbService.isDumb(project)) {
+            runCatching {
+                ReadAction.run<RuntimeException> {
+                    val cache = PsiShortNamesCache.getInstance(project)
+                    val scope = GlobalSearchScope.projectScope(project)
+                    for (name in cache.allClassNames) {
+                        if (nodes.size >= limit) break
+                        if (needle != null && !name.lowercase().contains(needle)) continue
+                        for (cls in cache.getClassesByName(name, scope)) {
+                            val fq = cls.qualifiedName ?: continue
+                            nodes.add(LiveNode("psi:$fq", NodeKind.SYMBOL, cls.name ?: fq, "psi:$fq", classSummary(cls)))
+                            if (nodes.size >= limit) break
+                        }
+                    }
+                }
+            }
+        }
+        if (wantSpec) {
+            runCatching {
+                SpecStore.getInstance(project).list().forEach { spec ->
+                    if (nodes.size < limit) {
+                        val hay = "${spec.id} ${spec.title} ${spec.domain ?: ""}".lowercase()
+                        if (needle == null || hay.contains(needle)) {
+                            nodes.add(LiveNode("spec:${spec.id}", NodeKind.SPEC, spec.title, null, spec.domain))
+                        }
+                    }
+                }
+            }
+        }
+        return nodes.take(limit)
+    }
+
+    private fun classSummary(cls: PsiClass): String = when {
+        cls.isInterface -> "interface ${cls.qualifiedName}"
+        cls.isEnum -> "enum ${cls.qualifiedName}"
+        else -> "class ${cls.qualifiedName}"
     }
 }

@@ -1,7 +1,7 @@
 package com.github.saeldrit.geai.tools.grace
 
-import com.github.saeldrit.geai.graph.GeaiGraphStore
 import com.github.saeldrit.geai.graph.NodeKind
+import com.github.saeldrit.geai.graph.PsiStructure
 import com.github.saeldrit.geai.tools.AgentTool
 import com.github.saeldrit.geai.tools.ToolArgs
 import com.github.saeldrit.geai.tools.ToolContext
@@ -15,14 +15,13 @@ import com.github.saeldrit.geai.tools.ToolResult
 object GraphQueryTool : AgentTool {
     override val name = "graph_query"
     override val description =
-        "Find nodes in the GRACE code graph by kind (FILE/SYMBOL/CONTRACT/SPEC/INVARIANT/FORMULA/" +
-            "STATE_MACHINE/INTENT/POLICY), name/text, or tag. Returns ids+anchors. Run graph_reindex " +
-            "first if the graph is empty. Use graph_neighbors to walk edges from a result."
+        "Find code symbols (classes, by name substring) and governance spec headers — resolved LIVE from " +
+            "IntelliJ's index + specs (no graph build needed). Returns psi:/spec: ids to feed graph_neighbors " +
+            "or resolve_ref. For methods use find_symbol; for spec items use spec_lookup."
     override val parametersJsonSchema = """
         {"type":"object","properties":{
-          "kind":{"type":"string","description":"Restrict to one node kind (optional)"},
-          "query":{"type":"string","description":"Free-text over name/id/anchor/summary/tags (optional)"},
-          "tag":{"type":"string","description":"Match nodes carrying this tag (optional)"},
+          "kind":{"type":"string","description":"Restrict: SYMBOL (classes) or SPEC (optional)"},
+          "query":{"type":"string","description":"Name substring over classes / spec id+title (optional)"},
           "max_results":{"type":"integer","description":"Cap (default 40)"}
         }}
     """.trimIndent()
@@ -30,25 +29,21 @@ object GraphQueryTool : AgentTool {
     override fun execute(args: ToolArgs, context: ToolContext): ToolResult {
         val kind = args.stringOrNull("kind")?.let { runCatching { NodeKind.valueOf(it.uppercase()) }.getOrNull() }
         val query = args.stringOrNull("query")
-        val tag = args.stringOrNull("tag")
         val max = args.int("max_results", 40).coerceIn(1, 200)
 
-        val store = GeaiGraphStore.getInstance(context.project)
-        if (store.graph().nodes.isEmpty()) {
-            store.ensureBuiltInBackground()
+        // Live from IntelliJ's class index + the spec store — fresh and works with no graph build.
+        val nodes = PsiStructure.findNodes(context.project, kind, query, max)
+        if (nodes.isEmpty()) {
             return ToolResult.ok(
-                "Graph is empty — I started building it in the background. Retry graph_query shortly, or " +
-                    "call graph_reindex to build it now. Meanwhile use find_symbol/find_files to navigate.",
+                "No nodes matched${query?.let { " '$it'" } ?: ""}. Broaden the query, or use find_symbol " +
+                    "(precise symbol) / spec_lookup (spec items).",
             )
         }
-        val results = store.query(kind, query, tag, max)
-        if (results.isEmpty()) return ToolResult.ok("No nodes matched. Try graph_reindex or a broader filter.")
-
-        val rows = results.joinToString("\n") { node ->
+        val rows = nodes.joinToString("\n") { node ->
             val anchor = node.anchor?.let { "  anchor=$it" } ?: ""
             val summary = node.summary?.let { " — $it" } ?: ""
             "[${node.kind}] ${node.id}$summary$anchor"
         }
-        return ToolResult.ok("${results.size} node(s):\n$rows")
+        return ToolResult.ok("${nodes.size} node(s):\n$rows")
     }
 }
