@@ -10,6 +10,7 @@ import java.net.http.HttpResponse
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutionException
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
@@ -28,6 +29,11 @@ internal object HttpTransport {
     private const val MAX_RETRIES = 3
     private val RETRYABLE_STATUS = setOf(429, 502, 503, 504)
     private const val POLL_MS = 150L
+
+    /** Abort a stream that goes completely silent this long — it is wedged (a live LLM stream never
+     *  pauses minutes between bytes). Bounds a stall to this instead of the 10-min request timeout, and
+     *  keeps cancellation responsive (a blocking readLine can't see the indicator). */
+    private const val SSE_IDLE_CAP_MS = 180_000L
 
     /** Parse an SSE event line. Returns null for comments, heartbeat, or blank lines. */
     data class SseEvent(val event: String, val data: String)
@@ -52,43 +58,90 @@ internal object HttpTransport {
             .apply { headers.forEach { (key, value) -> header(key, value) } }
             .build()
 
-        val future = client.sendAsync(request, HttpResponse.BodyHandlers.ofInputStream())
-        val response = awaitCancellable(future, indicator)
-        val status = response.statusCode()
-        if (status !in 200..299) {
+        var attempt = 0
+        while (true) {
+            val future = client.sendAsync(request, HttpResponse.BodyHandlers.ofInputStream())
+            val response = awaitCancellable(future, indicator)
+            val status = response.statusCode()
+            if (status in 200..299) return streamBody(status, response, indicator, onEvent)
+
+            // Transient error BEFORE any stream data — safe to retry the connection (no partial output),
+            // mirroring postJson. A 429/503 at connect no longer hard-aborts the turn.
             val errorBody = try { response.body()?.bufferedReader(Charsets.UTF_8)?.readText().orEmpty() } catch (_: Exception) { "" }
+            if (status in RETRYABLE_STATUS && attempt < MAX_RETRIES) {
+                val waitMillis = retryAfterMillis(response) ?: (500L shl attempt)
+                attempt++
+                sleepCancellable(waitMillis, indicator)
+                continue
+            }
             return SseResult(status, errorBody, isError = true)
         }
+    }
+
+    /**
+     * Read the 2xx response body as an SSE stream on a daemon thread while the caller polls a queue — so a
+     * blocking readLine can't hide cancellation, and a stalled stream aborts at [SSE_IDLE_CAP_MS]. (The
+     * old loop only checked the indicator BETWEEN lines, so a mid-line wedge ignored Stop until the 10-min
+     * request timeout.) The future is already complete once headers arrive, so we close the reader — not
+     * cancel the future — to unblock a wedged read.
+     */
+    private fun streamBody(
+        status: Int,
+        response: HttpResponse<java.io.InputStream>,
+        indicator: ProgressIndicator,
+        onEvent: (SseEvent) -> Unit,
+    ): SseResult {
+        val reader = response.body()?.bufferedReader(Charsets.UTF_8) ?: return SseResult(status, "", isError = false)
+        val eof = Any()
+        val queue = LinkedBlockingQueue<Any>()
+        val readerError = java.util.concurrent.atomic.AtomicReference<Exception?>()
+        val readerThread = Thread {
+            try {
+                while (true) queue.put(reader.readLine() ?: break)
+            } catch (e: Exception) {
+                readerError.set(e) // happens-before the consumer via the queue's put/poll barrier
+            } finally {
+                queue.put(eof)
+            }
+        }.apply { isDaemon = true; name = "geai-sse-reader"; start() }
 
         var eventType = ""
         var dataBuffer = StringBuilder()
+        var idleMs = 0L
         try {
-            response.body()?.bufferedReader(Charsets.UTF_8)?.use { reader ->
-                while (true) {
-                    if (indicator.isCanceled) {
-                        future.cancel(true)
-                        return SseResult(0, "", isError = false, isCancelled = true)
+            while (true) {
+                if (indicator.isCanceled) return SseResult(0, "", isError = false, isCancelled = true)
+                val item = queue.poll(POLL_MS, TimeUnit.MILLISECONDS)
+                if (item == null) {
+                    idleMs += POLL_MS
+                    if (idleMs >= SSE_IDLE_CAP_MS) {
+                        throw LlmException("Stream stalled — no data for ${SSE_IDLE_CAP_MS / 1000}s; aborted. Try again.")
                     }
-                    val line = reader.readLine() ?: break
-                    when {
-                        line.startsWith("event:") -> eventType = line.removePrefix("event:").trim()
-                        line.startsWith("data:") -> {
-                            val data = line.removePrefix("data:").trim()
-                            if (dataBuffer.isNotEmpty()) dataBuffer.append('\n')
-                            dataBuffer.append(data)
-                        }
-                        line.isEmpty() && dataBuffer.isNotEmpty() -> {
-                            onEvent(SseEvent(eventType.ifBlank { "message" }, dataBuffer.toString()))
-                            eventType = ""
-                            dataBuffer = StringBuilder()
-                        }
+                    continue
+                }
+                idleMs = 0
+                if (item === eof) {
+                    val err = readerError.get()
+                    if (err != null && !indicator.isCanceled) throw LlmException("SSE stream error: ${err.message}", cause = err)
+                    break
+                }
+                val line = item as String
+                when {
+                    line.startsWith("event:") -> eventType = line.removePrefix("event:").trim()
+                    line.startsWith("data:") -> {
+                        val data = line.removePrefix("data:").trim()
+                        if (dataBuffer.isNotEmpty()) dataBuffer.append('\n')
+                        dataBuffer.append(data)
+                    }
+                    line.isEmpty() && dataBuffer.isNotEmpty() -> {
+                        onEvent(SseEvent(eventType.ifBlank { "message" }, dataBuffer.toString()))
+                        eventType = ""
+                        dataBuffer = StringBuilder()
                     }
                 }
             }
-        } catch (_: java.io.InterruptedIOException) {
-            // Reader interrupted by cancellation — stop quietly.
-        } catch (e: Exception) {
-            if (!indicator.isCanceled) throw LlmException("SSE stream error: ${e.message}", cause = e)
+        } finally {
+            runCatching { reader.close() } // unblocks the daemon reader + releases the connection
         }
         if (dataBuffer.isNotEmpty()) {
             onEvent(SseEvent(eventType.ifBlank { "message" }, dataBuffer.toString()))
