@@ -2,6 +2,14 @@
 
 # geai Changelog
 
+## [0.0.47]
+
+### Changed
+- `graph_query` now finds code symbols (classes by name) live from IntelliJ's class index and spec
+  headers from the store, instead of the materialized graph — fresh, and works with no graph build. With
+  0.0.46 (`graph_neighbors`), structural navigation is now PSI-native; the parallel code graph is on its
+  way out. (Methods → `find_symbol`; spec items → `spec_lookup`.)
+
 ## [0.0.46]
 
 ### Changed
