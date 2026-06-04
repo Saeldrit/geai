@@ -2,6 +2,15 @@
 
 # geai Changelog
 
+## [0.0.46]
+
+### Changed
+- `graph_neighbors` now resolves code structure from IntelliJ's **live PSI** (a class's declared methods,
+  its super types) and governance from the spec overlay, instead of a materialized graph snapshot. So it
+  is always fresh and works immediately on a cold project — no waiting for a graph build. (Who-implements
+  lookups stay in `find_implementations`.) First step of moving structural navigation onto IntelliJ's
+  native model rather than maintaining a parallel graph.
+
 ## [0.0.45]
 
 ### Performance
