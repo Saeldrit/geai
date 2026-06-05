@@ -2,6 +2,19 @@
 
 # geai Changelog
 
+## [Unreleased]
+
+### Removed
+- The in-IDE MCP server (`McpToolServer`) is gone. It existed only to expose geai's tools to the
+  external Claude Code CLI engine — removed in 0.0.50 — so nothing constructed it any more. The
+  external-client tool surface left with the engine that used it.
+
+### Changed
+- Documentation synced to the current architecture: structure navigation and the context bundle are
+  resolved **live from IntelliJ's PSI/index** (no materialized graph, no `graph_reindex`), search is
+  index-backed, and there is a single native agent engine (the Claude Code CLI mode is gone). Updated
+  README, `docs/GRACE_ARCHITECTURE.md`, and the plugin-manifest description.
+
 ## [0.0.50]
 
 ### Removed

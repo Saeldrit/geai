@@ -8,9 +8,8 @@ tool window, describe a bug or task in plain language, and geai navigates the pr
 data flow, sets breakpoints, drives the debugger, reads and edits files, and applies fixes that
 match your codebase's style.
 
-It connects to **Claude** (Anthropic) or any **OpenAI-compatible** endpoint (DeepSeek, Qwen,
-OpenRouter, local models via Ollama / LM Studio / vLLM), or runs through the **Claude Code CLI**
-using your subscription login with no per-token cost.
+It connects to **Claude** (Anthropic) or any **OpenAI-compatible** endpoint — DeepSeek, Qwen,
+OpenRouter, or local models via Ollama / LM Studio / vLLM.
 <!-- Plugin description end -->
 
 ## Installation
@@ -20,18 +19,13 @@ Install the `.zip` from [Releases](https://github.com/Saeldrit/geai/releases) vi
 
 Requires IntelliJ IDEA 2025.2+.
 
-## Engines
+## Models & providers
 
-Two modes, configured in **Settings → Tools → Geai**:
-
-**API key mode** — geai runs its own agent loop and calls the provider HTTP API directly.
-Works with Anthropic Claude, DeepSeek, Qwen/DashScope, OpenRouter, or any OpenAI-compatible
-server. API keys are stored in the IDE credential store (PasswordSafe), never in plain config.
-
-**Claude Code engine** — enable *"Use Claude Code CLI as the engine"*. geai hosts an in-IDE
-MCP server exposing all its tools and delegates the loop to your locally installed `claude` CLI,
-which authenticates with your Claude Pro/Max subscription. No API key, no per-token cost.
-Requires the [Claude Code CLI](https://code.claude.com) installed and logged in.
+geai runs its own agent loop and calls the provider's HTTP API directly — there is no external
+CLI or sidecar process. Configure it in **Settings → Tools → Geai**: Anthropic Claude,
+DeepSeek, Qwen/DashScope, OpenRouter, or any OpenAI-compatible server (including local Ollama /
+LM Studio / vLLM). Responses stream token-by-token. API keys are stored in the IDE credential
+store (PasswordSafe), never in plain config.
 
 ## GRACE
 
@@ -48,10 +42,13 @@ reads these before implementing anything and must never violate them.
 `openapi:` (endpoint schema from generated OpenAPI). This keeps contracts current with the
 actual codebase and prevents hallucinated signatures.
 
-The code graph is built with `graph_reindex` (FILE → class → method, inheritance, governance
-edges) and navigated with `graph_query`, `graph_neighbors`, and `context_bundle`. The bundle
-assembles a focused slice of anchors, specs, and neighborhood for a given task — the cheapest
-path to "enough context to act" without reading whole files.
+Code structure is read **live from IntelliJ's PSI and index** — geai keeps no separate
+materialized graph. `graph_query` finds symbols by name and the governing specs that apply to
+them, `graph_neighbors` expands a symbol's neighbourhood (declared methods, super types, file
+siblings, governing rules), and `context_bundle` assembles a focused slice — specs verbatim,
+resolved contracts, and that neighbourhood — for a given task. It is the cheapest path to
+"enough context to act" without reading whole files. Because structure comes from the IDE's own
+index, it is always current and needs no rebuild step.
 
 `spec_validate` detects drift: it re-resolves all Category-B anchors and reports OK / DRIFT /
 BROKEN so regressions are caught mechanically.
@@ -61,9 +58,9 @@ BROKEN so regressions are caught mechanically.
 One provider, one API key, two model roles. Enable with *"GRACE tiered routing"* in settings.
 
 The **navigator** (cheap model, e.g. `deepseek-chat` or `claude-haiku-4-5`) drives the agent
-loop: planning, tool calls, graph navigation, context assembly. The **author** (strong model,
-e.g. `claude-sonnet-4-6`) is invoked only via `escalate_author` when code must be written, and
-receives a pre-assembled context bundle so it spends tokens on authoring, not orientation.
+loop: planning, tool calls, structure navigation, context assembly. The **author** (strong
+model, e.g. `claude-sonnet-4-6`) is invoked only via `escalate_author` when code must be written,
+and receives a pre-assembled context bundle so it spends tokens on authoring, not orientation.
 
 When tiering is off, all steps use the single configured model.
 
@@ -104,11 +101,11 @@ Targets IntelliJ IDEA 2025.2 (build 252), JDK 21. The build daemon is pinned to 
 settings/       provider, model, keys (PasswordSafe), settings UI
 llm/            provider-agnostic message/tool model + Anthropic & OpenAI-compatible clients
 tools/
-  fs/           read / list / search / find / write / edit
+  fs/           read / list / search (index-backed) / find / write / edit
   debug/        breakpoints, debug-session control, variable inspection, expression eval
   system/       run_command
   selfmod/      self_info / self_patch
-  grace/        resolve_ref, spec_*, graph_*, context_bundle, escalate_author
+  grace/        resolve_ref, spec_*, graph_query / graph_neighbors, context_bundle, escalate_author
   knowledge/    kb_lookup / kb_record / kb_forget (persistent NAV/STYLE/TECH/LESSON index)
   interaction/  ask_user
 agent/          AgentLoop (background, cancellable), system prompt, approval policy
@@ -116,18 +113,18 @@ context/        project snapshot + transcript compaction
 session/        JSON persistence + resume
 anchor/         AnchorResolver SPI + file: / psi: / openapi: resolvers
 spec/           SpecStore — reads/writes spec/*.spec.xml (Category A)
-graph/          GeaiGraphStore + GraphIndexer (PSI + governance edges)
+graph/          PsiStructure — live PSI navigation (symbols, neighbours, bundle seeds) + GraphModel vocabulary
 bundle/         ContextBundler + Ranker SPI (deterministic default, vector shim)
 toolWindow/     JCEF chat UI + Swing fallback
-mcp/            in-IDE MCP server (for Claude Code engine)
 ```
 
 ## Limitations
 
-- Responses are non-streaming; the UI updates after each complete agent step.
 - Concurrent sessions across multiple project windows are not supported.
-- GRACE graph operations require a fully indexed project — run `graph_reindex` after large
-  refactors or initial clone.
+- Structure navigation and search read IntelliJ's index, so results are most complete once the
+  initial project indexing finishes — during "dumb mode" geai falls back to a direct scan.
+- `psi:` anchors and class-structure navigation require the Java/JVM plugin; on a non-JVM IDE they
+  degrade to a clean error and geai relies on file-level and spec context.
 
 ---
 

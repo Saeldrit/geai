@@ -42,13 +42,12 @@ Claude 4.8) подключаются как **авторы кода**, а не �
 ```
 spec/                      # Категория A — авторитетные XML-спеки, в VCS
   <domain>/<name>.spec.xml
-.geai/graph/               # производный граф (узлы+рёбра+хэши якорей), rebuildable
-  nodes.xml  edges.xml     # НЕ источник истины для B — хранит указатели и хэши, не контент
-.geai/knowledge.xml        # существующие оси (эволюционируют в узлы графа)
+.geai/knowledge.xml        # существующие оси (NAV/STYLE/TECH/LESSON)
 ```
-`spec/` коммитится (это замысел). `.geai/graph/` производный — пересобирается из код+спеки,
-можно gitignore. Контент Категории Б **нигде не кешируется** — только `ref` + `contentHash`
-на момент индексации (для детекта дрейфа).
+`spec/` коммитится (это замысел). **Граф кода не материализуется и не хранится** — структура
+(классы, методы, иерархия, соседи) читается на лету из PSI/индекса IntelliJ (`PsiStructure`),
+поэтому всегда актуальна и не требует пересборки. Контент Категории Б **нигде не кешируется** —
+только `ref`, который резолвится в живой источник по запросу.
 
 ---
 
@@ -117,7 +116,9 @@ IntelliJ-хост регистрирует PSI-резолверы; будущи�
 
 ## 5. Graph-RAG: сборка контекста
 
-Retrieval = детерминированный обход графа, не векторный «авось»:
+Retrieval = детерминированный обход графа, не векторный «авось». Граф **не материализован**: на
+каждый запрос `PsiStructure` собирает эфемерный подграф из живого PSI (структура) + спек
+(governance), и по нему идёт обход:
 
 1. **Seed** — стартовые узлы по имени/тегу/оси (из запроса задачи).
 2. **Expand** — N хопов по выбранным типам рёбер (`calls`, `governed_by`, `refs`, `tested_by`).
@@ -160,8 +161,8 @@ Navigator готовит минимальный точный bundle → Author �
 ## 8. Инструменты geai (новые)
 
 **Navigator (read, дёшево):**
-- `graph_query` — узлы по оси/тегу/имени/связи → id + краткое описание
-- `graph_neighbors` — раскрыть рёбра узла (`calls`/`governed_by`/`refs`…)
+- `graph_query` — найти символы по имени (вживую из индекса IntelliJ) + governing-спеки → id + краткое описание
+- `graph_neighbors` — раскрыть соседей узла: методы/супертипы/файловые соседи (PSI) + `governed_by`/`refs` (спеки)
 - `resolve_ref` — резолв якоря в живой ground truth (через Resolver SPI)
 - `context_bundle` — собрать минимальный bundle под задачу (seed→expand→resolve→pack) ← ключевой
 - `spec_lookup` / `spec_list` — читать спеки A
@@ -169,8 +170,11 @@ Navigator готовит минимальный точный bundle → Author �
 
 **Author / сопровождение (mutating, под апрувом):**
 - `spec_record` — писать/расширять спеки, create-or-update с CAS по `version` (как текущий kb)
-- `graph_reindex` — пересобрать граф из код+спеки (инкрементально)
 - существующие `edit_file`/`write_file`/`run_command`/debug-* — без изменений
+
+> Отдельного `graph_reindex` нет: граф кода не индексируется и не хранится — `graph_query`/
+> `graph_neighbors`/`context_bundle` читают структуру вживую из PSI/индекса IntelliJ
+> (`PsiStructure`). Пересобирать нечего.
 
 Текущие `kb_*` остаются как тонкий фасад над `graph_query`/`spec_*` (обратная совместимость).
 
@@ -182,7 +186,8 @@ Navigator готовит минимальный точный bundle → Author �
 - Факты Категории Б → **всегда** `resolve_ref`, **никогда** не вспоминать и не копировать.
 - Перед написанием кода подтянуть `governed_by` (INVARIANT/POLICY/LESSON) и применить как
   жёсткие ограничения.
-- После правок → `spec_validate` + сборка/тесты (`run_command`) + `graph_reindex`.
+- После правок → `spec_validate` + сборка/тесты (`run_command`). Граф пересобирать не нужно —
+  структура живая (PSI).
 - При неудаче → `spec_record` LESSON.
 - Эскалация на Author tier — только для авторской работы, с готовым bundle.
 
@@ -193,16 +198,16 @@ Navigator готовит минимальный точный bundle → Author �
 1. Автор пишет/расширяет `spec/`: `INVARIANT` + `CONTRACT ref=…` + `POLICY`.
 2. Navigator: `context_bundle` → спека + резолвленные контракты + governing-правила + соседи.
 3. Author: пишет код, удовлетворяющий инвариантам, применяя полиси.
-4. Navigator: `spec_validate` + build/tests + `graph_reindex`.
+4. Navigator: `spec_validate` + build/tests.
 5. На грабли → `LESSON`.
 
 ---
 
 ## 11. Грациозная деградация
 
-Нет `spec/` и графа → geai падает на текущие оси + PSI-навигацию. GRACE **усиливает**, но не
-является обязательным: маленький проект работает и без спек. Граф строится инкрементально, по
-мере касания узлов, а не «весь проект сразу».
+Нет `spec/` → geai работает на чистой PSI-навигации + файловом контексте. GRACE **усиливает**, но
+не обязателен: маленький проект работает и без спек. Структура не строится заранее и не хранится —
+она читается из индекса IntelliJ по мере необходимости, а не «весь проект сразу».
 
 ---
 
@@ -217,11 +222,13 @@ Navigator готовит минимальный точный bundle → Author �
   spec id), инструменты `spec_list`/`spec_lookup`/`spec_record`/`spec_validate`, правка доктрины.
   Ссылочные items (CONTRACT/GOVERNED_BY) штампуются hash-базлайном при записи; `spec_validate`
   re-резолвит якоря и репортит OK/DRIFT/BROKEN/NO-BASELINE. Категория A заработала.
-- **Ф3 — Граф. ✅ СДЕЛАНО.** `graph/` пакет: `GraphModel` (NodeKind/EdgeKind), `GeaiGraphStore`
-  (`.geai/graph/graph.xml`, кэш + JDOM), `GraphIndexer` (PSI: FILE→class→method + IMPLEMENTS,
-  bounded `MAX_NODES`, деградация на не-JVM; + governance из спек: REFS/GOVERNED_BY). Инструменты
-  `graph_query`/`graph_neighbors`/`graph_reindex` + доктрина. *Call-рёбра (calls/reads/writes)
-  отложены — дорогой проход, не нужен для governance-навигации.*
+- **Ф3 — Граф. ✅ СДЕЛАНО, позже заменён на живой PSI (см. Ф6).** Изначально `graph/` пакет:
+  `GraphModel` (NodeKind/EdgeKind), материализованный `GeaiGraphStore` (`.geai/graph/graph.xml`,
+  кэш + JDOM), `GraphIndexer` (PSI: FILE→class→method + IMPLEMENTS, bounded `MAX_NODES`; governance
+  из спек: REFS/GOVERNED_BY), инструменты `graph_query`/`graph_neighbors`/`graph_reindex`.
+  **Материализованный стор и `graph_reindex` удалены в Ф6** — они дублировали то, что индекс
+  IntelliJ уже держит вживую. Вокабуляр `GraphModel` (NodeKind/EdgeKind) остался — на нём строится
+  эфемерный `CodeGraph` для обхода.
 - **Ф4 — Graph-RAG bundle. ✅ СДЕЛАНО.** `bundle/` пакет: `Ranker` SPI + `DeterministicRanker`
   (hops + term-overlap + kind-prior) + `Rankers` (шов под вектор, флаг `graceVectorRanker`),
   `ContextBundler` (seed→expand(BFS)→rank→resolve→pack: правила A дословно + контракты B живьём +
@@ -231,6 +238,16 @@ Navigator готовит минимальный точный bundle → Author �
   через `escalate_author` на сильной main-модели (`authorModel()`), тир = имя модели в
   `ChatRequest` (тот же провайдер/ключ; кросс-провайдер — позже). Author-доктрина без
   инструментов; условная routing-подсказка в системном промпте. Один ключ.
+- **Ф6 — Уход на инструментарий IntelliJ (живой PSI). ✅ СДЕЛАНО.** Материализованный граф
+  (`GeaiGraphStore`/`GraphIndexer`/`GraphRefresher`/`graph_reindex`) удалён. Структурная навигация
+  и context bundle резолвятся вживую из PSI/индекса IntelliJ через `PsiStructure`: `graph_query`
+  → `PsiShortNamesCache` (классы по имени) + заголовки спек; `graph_neighbors`/bundle → методы
+  класса (CONTAINS), супертипы (IMPLEMENTS), файловые соседи (`PsiClassOwner`) + governance
+  (GOVERNED_BY/REFS) из `SpecStore`. На каждый запрос собирается эфемерный `CodeGraph` для обхода
+  (`ContextBundler.expand`), а не персистится. `search_text` ушёл на индекс IntelliJ
+  (`PsiSearchHelper` для подстроки, Find-in-Path/`FindInProjectUtil` для regex) вместо O(project)
+  скана. Эффект: ноль cold-start, ничего не устаревает, меньше работы на ход. Также удалён
+  CLI-движок (Claude Code) — остался один нативный `AgentLoop`.
 
 Каждая фаза самостоятельна и проверяема сборкой.
 
@@ -244,7 +261,8 @@ Navigator готовит минимальный точный bundle → Author �
 ## 13. Открытые вопросы (развилки)
 
 1. **Формат спек** — XML подтверждён; нужен финальный словарь тегов (узлы §3 ↔ теги).
-2. **Хранение графа** — производный + gitignored (рекомендую) vs коммитить.
+2. **Хранение графа** — *решено:* **не хранить.** Граф не материализуется; структура читается
+   вживую из PSI/индекса IntelliJ (`PsiStructure`, Ф6).
 3. **Старт реализации** — Ф1 (якоря) первым (рекомендую: фундамент) vs сразу граф.
 4. **Ребинд якорей** — авто при ренейме vs только флаг в `spec_validate`.
 5. **Векторный слой** — *решено:* **шов с первого дня, эмбеддинги инкрементально.** В пайплайн
