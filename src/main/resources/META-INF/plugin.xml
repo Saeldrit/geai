@@ -13,6 +13,18 @@
     -->
     <depends optional="true" config-file="geai-java.xml">com.intellij.modules.java</depends>
 
+    <!-- IDE product compatibility — geai works on any IntelliJ-platform IDE -->
+    <productDescriptor code="IC" name="IntelliJ IDEA"/>
+    <productDescriptor code="PC" name="PyCharm"/>
+    <productDescriptor code="AI" name="Android Studio"/>
+    <productDescriptor code="GO" name="GoLand"/>
+    <productDescriptor code="WS" name="WebStorm"/>
+    <productDescriptor code="CL" name="CLion"/>
+    <productDescriptor code="RD" name="Rider"/>
+    <productDescriptor code="DB" name="DataGrip"/>
+    <productDescriptor code="PS" name="PhpStorm"/>
+    <productDescriptor code="RM" name="RubyMine"/>
+
     <resource-bundle>messages.GeaiBundle</resource-bundle>
 
     <actions>
