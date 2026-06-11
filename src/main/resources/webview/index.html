@@ -132,8 +132,12 @@
   .tool-result.err{color:#e06c75}
 
   /* markdown extras inside assistant bubbles */
+  .msg.assistant h1{font-size:1.2em;font-weight:700;margin:10px 0 4px;padding-bottom:3px;border-bottom:1px solid var(--border)}
   .msg.assistant h2{font-size:1.1em;font-weight:700;margin:10px 0 4px;padding-bottom:3px;border-bottom:1px solid var(--border)}
   .msg.assistant h3{font-size:1em;font-weight:700;margin:8px 0 3px}
+  .msg.assistant h4{font-size:0.95em;font-weight:600;margin:6px 0 2px;color:var(--muted)}
+  .msg.assistant h5{font-size:0.9em;font-weight:600;margin:4px 0 2px;color:var(--muted)}
+  .msg.assistant h6{font-size:0.85em;font-weight:600;margin:4px 0 2px;color:var(--muted);text-transform:uppercase;letter-spacing:.3px}
   .msg.assistant ul,.msg.assistant ol{padding-left:1.4em;margin:4px 0}
   .msg.assistant li{margin:1px 0}
   .msg.assistant table{border-collapse:collapse;margin:6px 0;font-size:0.92em;width:100%}
@@ -252,9 +256,8 @@
         while(i<lines.length&&/^\s*\|/.test(lines[i])){tbl.push(lines[i]);i++;}
         out.push(renderTable(tbl));continue;
       }
-      // h2 / h3
-      var h2=l.match(/^##\s+(.+)/);if(h2){flushPara();out.push('<h2>'+inlineMd(h2[1])+'</h2>');i++;continue;}
-      var h3=l.match(/^###\s+(.+)/);if(h3){flushPara();out.push('<h3>'+inlineMd(h3[1])+'</h3>');i++;continue;}
+      // h1–h6
+      var h=l.match(/^(#{1,6})\s+(.+)/);if(h){flushPara();var lv=h[1].length;out.push('<h'+lv+'>'+inlineMd(h[2])+'</h'+lv+'>');i++;continue;}
       // unordered list
       if(/^[-*]\s+/.test(l)){
         flushPara();var items=[];
