@@ -1,16 +1,25 @@
 package com.github.saeldrit.geai.settings
 
 import com.github.saeldrit.geai.GeaiBundle
+import com.github.saeldrit.geai.llm.LlmException
+import com.github.saeldrit.geai.llm.openai.OpenAiCompatibleClient
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.ui.ComboBox
+import com.intellij.openapi.ui.Messages
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBPasswordField
 import com.intellij.ui.components.JBTabbedPane
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.FormBuilder
+import java.awt.BorderLayout
 import javax.swing.DefaultComboBoxModel
+import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JPanel
+import javax.swing.SwingUtilities
+import javax.swing.event.DocumentEvent
+import javax.swing.event.DocumentListener
 
 /**
  * Settings page under **Settings | Tools | Geai**. Deliberately minimal: the everyday tab ("Model")
@@ -27,6 +36,10 @@ class GeaiSettingsConfigurable : Configurable {
         isEditable = true
         toolTipText = "Editable — pick a suggestion or type any model id (e.g. an OpenRouter model like anthropic/claude-sonnet-4)"
     }
+    private val refreshModelsButton = JButton("🔄").apply {
+        toolTipText = "Fetch available models from the provider"
+        isFocusable = false
+    }
     private val baseUrlField = JBTextField()
     private val apiKeyField = JBPasswordField()
 
@@ -42,31 +55,51 @@ class GeaiSettingsConfigurable : Configurable {
 
     private lateinit var navigatorPanel: JPanel
 
+    /** Full list of all known model ids — used for editor filtering. */
+    private val allModelItems = mutableListOf<String>()
+
+    /** Guard flag preventing DocumentListener re-entrancy (infinite loop on setSelectedItem). */
+    private var isFilteringModels = false
+
     override fun getDisplayName(): String = GeaiBundle.message("geai.settings.title")
 
     override fun createComponent(): JComponent {
         graceEnabledCheck.addActionListener { updateEnabled() }
         tieredRoutingCheck.addActionListener { updateEnabled() }
-        providerCombo.addActionListener {
-            (providerCombo.selectedItem as? LlmProvider)?.let { provider ->
-                populateModels(provider)
-                modelCombo.selectedItem = null // fall back to the new provider's default
-                baseUrlField.emptyText.text = provider.defaultBaseUrl
-            }
+        providerCombo.addActionListener { onProviderChanged() }
+        refreshModelsButton.addActionListener { refreshModelsAsync() }
+
+        // Filter the combo popup
+        val editorComponent = modelCombo.editor.editorComponent
+        if (editorComponent is javax.swing.text.JTextComponent) {
+            editorComponent.document.addDocumentListener(object : DocumentListener {
+                override fun insertUpdate(e: DocumentEvent?) = applyFilter()
+                override fun removeUpdate(e: DocumentEvent?) = applyFilter()
+                override fun changedUpdate(e: DocumentEvent?) = applyFilter()
+
+                private fun applyFilter() {
+                    if (isFilteringModels) return
+                    val text = editorComponent.text?.trim() ?: ""
+                    SwingUtilities.invokeLater { filterModels(text) }
+                }
+            })
         }
 
-        val modelTab = FormBuilder.createFormBuilder()
+        val modelPanel = JPanel(BorderLayout())
+        modelPanel.add(modelCombo, BorderLayout.CENTER)
+        modelPanel.add(refreshModelsButton, BorderLayout.EAST)
+
+        val mainForm = FormBuilder.createFormBuilder()
             .addLabeledComponent("Provider:", providerCombo)
-            .addLabeledComponent("Model:", modelCombo)
+            .addLabeledComponent("Model:", modelPanel)
             .addLabeledComponent("Base URL:", baseUrlField)
             .addLabeledComponent("API key:", apiKeyField)
-            .addComponentFillVertically(JPanel(), 0)
             .panel
 
         navigatorPanel = FormBuilder.createFormBuilder()
             .addLabeledComponent("Navigator model:", navigatorModelField)
             .panel
-        val advancedTab = FormBuilder.createFormBuilder()
+        val advancedInner = FormBuilder.createFormBuilder()
             .addComponent(graceEnabledCheck)
             .addComponent(tieredRoutingCheck)
             .addComponent(navigatorPanel)
@@ -75,19 +108,149 @@ class GeaiSettingsConfigurable : Configurable {
             .addComponent(autoEditCheck)
             .addSeparator()
             .addLabeledComponent("Geai source path:", sourcePathField)
-            .addComponentFillVertically(JPanel(), 0)
             .panel
+        val advancedToggle = javax.swing.JCheckBox("Show advanced settings")
+        advancedToggle.foreground = javax.swing.UIManager.getColor("Component.infoForeground")
+        advancedInner.isVisible = false
+        advancedToggle.addActionListener { advancedInner.isVisible = advancedToggle.isSelected }
+        val advancedSection = JPanel(java.awt.BorderLayout())
+        advancedSection.add(advancedToggle, java.awt.BorderLayout.NORTH)
+        advancedSection.add(advancedInner, java.awt.BorderLayout.CENTER)
 
-        val tabs = JBTabbedPane()
-        tabs.addTab("Model", modelTab)
-        tabs.addTab("Advanced", advancedTab)
+        val wrapper = JPanel(java.awt.BorderLayout())
+        wrapper.add(mainForm, java.awt.BorderLayout.NORTH)
+        wrapper.add(advancedSection, java.awt.BorderLayout.SOUTH)
         reset()
-        return tabs
+        return wrapper
+    }
+
+    private fun onProviderChanged() {
+        val provider = providerCombo.selectedItem as? LlmProvider ?: return
+        populateModels(provider)
+        modelCombo.selectedItem = null // fall back to the new provider's default
+        baseUrlField.emptyText.text = provider.defaultBaseUrl
     }
 
     private fun populateModels(provider: LlmProvider) {
+        allModelItems.clear()
+        allModelItems.addAll(provider.suggestedModels)
         modelCombo.removeAllItems()
         provider.suggestedModels.forEach { modelCombo.addItem(it) }
+    }
+
+    /**
+     * Filter the combo-box popup items to those matching [text] (case-insensitive).
+     * Uses [isFilteringModels] guard to prevent re-entrancy: [setSelectedItem] changes
+     * the editor document which would otherwise fire DocumentListener → infinite loop.
+     */
+    private fun filterModels(text: String) {
+        if (isFilteringModels) return
+        isFilteringModels = true
+        try {
+            if (text.isEmpty()) {
+                if (modelCombo.itemCount != allModelItems.size) {
+                    val selected = modelCombo.selectedItem as? String
+                    modelCombo.removeAllItems()
+                    allModelItems.forEach { modelCombo.addItem(it) }
+                    if (selected != null) modelCombo.selectedItem = selected
+                }
+                return
+            }
+            val lower = text.lowercase()
+            val matching = allModelItems.filter { it.lowercase().contains(lower) }
+            // Always keep the current editor text visible so the user can type custom models
+            val toShow = if (text !in matching && text.isNotBlank()) {
+                matching + text
+            } else {
+                matching
+            }
+            // Skip UI update if nothing actually changed (avoid redundant DocumentEvents)
+            if (toShow.toSet() == (0 until modelCombo.itemCount).map { modelCombo.getItemAt(it) }.toSet()) return
+            modelCombo.removeAllItems()
+            toShow.forEach { modelCombo.addItem(it) }
+            modelCombo.selectedItem = text
+        } finally {
+            isFilteringModels = false
+        }
+    }
+
+    /**
+     * Fetch models from the provider API on a background thread, then update the UI.
+     */
+    private fun refreshModelsAsync() {
+        val provider = providerCombo.selectedItem as? LlmProvider ?: return
+        val apiKey = String(apiKeyField.password).trim()
+        if (apiKey.isEmpty()) {
+            Messages.showWarningDialog(
+                "Enter an API key first, then refresh models.",
+                "No API Key",
+            )
+            return
+        }
+
+        // For native Anthropic API we know listModels is not supported
+        if (provider == LlmProvider.ANTHROPIC) {
+            Messages.showInfoMessage(
+                "Model list is not available for ${provider.displayName}.",
+                "Not Supported",
+            )
+            return
+        }
+
+        refreshModelsButton.isEnabled = false
+        refreshModelsButton.text = "⏳"
+
+        val baseUrlValue = baseUrlField.text.trim().ifBlank { provider.defaultBaseUrl }
+
+        ApplicationManager.getApplication().executeOnPooledThread {
+            try {
+                val client = OpenAiCompatibleClient(baseUrlValue, apiKey)
+                val models = client.listModels(com.intellij.openapi.progress.EmptyProgressIndicator())
+
+                SwingUtilities.invokeLater {
+                    refreshModelsButton.isEnabled = true
+                    refreshModelsButton.text = "🔄"
+
+                    if (models != null) {
+                        if (models.isNotEmpty()) {
+                            allModelItems.clear()
+                            allModelItems.addAll(models)
+                            modelCombo.removeAllItems()
+                            models.forEach { modelCombo.addItem(it) }
+                            modelCombo.selectedItem = null
+                        } else {
+                            Messages.showInfoMessage(
+                                "Provider returned an empty model list.",
+                                "No Models",
+                            )
+                        }
+                    } else {
+                        Messages.showInfoMessage(
+                            "Model list is not available for ${provider.displayName}.",
+                            "Not Supported",
+                        )
+                    }
+                }
+            } catch (e: LlmException) {
+                SwingUtilities.invokeLater {
+                    refreshModelsButton.isEnabled = true
+                    refreshModelsButton.text = "🔄"
+                    Messages.showErrorDialog(
+                        "Failed to fetch models: ${e.message}",
+                        "API Error",
+                    )
+                }
+            } catch (e: Exception) {
+                SwingUtilities.invokeLater {
+                    refreshModelsButton.isEnabled = true
+                    refreshModelsButton.text = "🔄"
+                    Messages.showErrorDialog(
+                        "Unexpected error: ${e.message ?: e.javaClass.simpleName}",
+                        "Error",
+                    )
+                }
+            }
+        }
     }
 
     private fun currentModel(): String =

@@ -16,6 +16,7 @@ import com.github.saeldrit.geai.llm.http.objectOrNull
 import com.github.saeldrit.geai.llm.http.stringOrNull
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
+import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.progress.ProgressIndicator
 
 /**
@@ -129,8 +130,16 @@ class AnthropicClient(
                         }
                     }
                 }
-            } catch (_: Exception) {
-                // Skip a malformed SSE chunk.
+            } catch (e: Exception) {
+                // Only skip genuinely malformed SSE data (parse/type-cast errors). Programming bugs
+                // (NPE, IndexOutOfBounds, etc.) must propagate — silencing them hides real issues.
+                if (e is com.google.gson.JsonSyntaxException ||
+                    e is ClassCastException ||
+                    e is NumberFormatException) {
+                    thisLogger().debug("Skipping malformed SSE chunk: ${e.message}")
+                } else {
+                    throw e
+                }
             }
         }
 
@@ -200,7 +209,7 @@ class AnthropicClient(
                 tools.add(JsonObject().apply {
                     addProperty("name", spec.name)
                     addProperty("description", spec.description)
-                    add("input_schema", JsonSupport.parseElement(spec.parametersJsonSchema))
+                    add("input_schema", spec.parsedSchema)
                     // Breakpoint on the last tool caches the whole (stable) tool catalog prefix.
                     if (index == request.tools.lastIndex) add("cache_control", ephemeral())
                 })

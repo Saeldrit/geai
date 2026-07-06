@@ -100,15 +100,21 @@
   #input{width:100%;border:none;outline:none;resize:none;background:transparent;color:var(--fg);
     font-family:inherit;font-size:13px;min-height:60px;max-height:50vh;overflow-y:auto;line-height:1.45}
   #footer{display:flex;align-items:center;gap:10px;margin-top:6px}
-  #engine{color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  #tokens{color:var(--muted);font-size:12px;margin-left:auto}
+  #tokens{color:var(--muted);font-size:12px}
   #send{background:var(--accent);color:#fff;border:none;border-radius:8px;padding:6px 14px;cursor:pointer;font-weight:600}
   #send:hover{filter:brightness(1.08)}
   #send.stop{background:#5a5d63}
   .hidden{display:none!important}
   .iconbtn.active{color:var(--accent);background:var(--card-hover);opacity:1}
-  /* "steps only" mode: hide narration + reasoning, keep the action steps */
-  #chat.steps-only .msg.assistant,#chat.steps-only .reason{display:none}
+  /* context usage bar */
+  #ctxbar{display:flex;align-items:center;gap:8px;margin-top:6px;padding:4px 0}
+  #ctxbar .bar{flex:1;height:4px;border-radius:2px;background:var(--border);overflow:hidden;position:relative}
+  #ctxbar .bar .fill{height:100%;border-radius:2px;transition:width .3s ease}
+  #ctxbar .bar .fill.ok{background:#4ec98b}
+  #ctxbar .bar .fill.warn{background:#d4a037}
+  #ctxbar .bar .fill.danger{background:#e06c75}
+  #ctxbar .pct{font-size:11px;color:var(--muted);min-width:36px;text-align:right}
+  #ctxbar .cost{font-size:11px;color:var(--muted);margin-left:auto}
   .codeblock{position:relative}
   .codeblock .copybtn{position:absolute;top:6px;right:6px;font-size:11px;padding:2px 8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--muted);cursor:pointer;opacity:0;transition:opacity .12s}
   .codeblock:hover .copybtn{opacity:.85}
@@ -165,11 +171,8 @@
     <span class="brand"><span class="mark"><svg viewBox="0 0 24 24" width="1.05em" height="1.05em" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/><path d="M12 2.5a9.5 9.5 0 0 1 8.2 5" opacity="0.6"/></svg></span>geai</span>
     <span class="spacer"></span>
     <span id="status">Ready</span>
-    <button class="iconbtn" id="btnSteps" aria-label="Steps only" data-tip="Steps only — hide reasoning"><svg class="ico" viewBox="0 0 24 24"><line x1="8" y1="6" x2="20" y2="6"/><line x1="8" y1="12" x2="20" y2="12"/><line x1="8" y1="18" x2="20" y2="18"/><line x1="4" y1="6" x2="4.01" y2="6"/><line x1="4" y1="12" x2="4.01" y2="12"/><line x1="4" y1="18" x2="4.01" y2="18"/></svg></button>
     <button class="iconbtn" id="btnNew" aria-label="New session" data-tip="New session"><svg class="ico" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
     <button class="iconbtn" id="btnHistory" aria-label="History" data-tip="Session history"><svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 16 14"/></svg></button>
-    <button class="iconbtn" id="btnBench" aria-label="Benchmark" data-tip="A/B benchmark: baseline vs GRACE"><svg class="ico" viewBox="0 0 24 24"><line x1="6" y1="20" x2="6" y2="14"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="18" y1="20" x2="18" y2="10"/></svg></button>
-    <button class="iconbtn" id="btnCompact" aria-label="Compress context" data-tip="Compress context — shrink token use, keep the thread"><svg class="ico" viewBox="0 0 24 24"><polyline points="8 5 12 9 16 5"/><polyline points="8 19 12 15 16 19"/><line x1="4" y1="12" x2="20" y2="12"/></svg></button>
     <button class="iconbtn" id="btnSettings" aria-label="Settings" data-tip="Settings"><svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
   </div>
 
@@ -188,8 +191,8 @@
     <div id="inputwrap">
       <textarea id="input" placeholder="Describe the bug, e.g. “invalid data reaches the UI, I can’t find where we lose it”. Enter to send, Shift+Enter for a new line. Type / for commands."></textarea>
     </div>
+    <div id="ctxbar"><div class="bar"><div class="fill ok" id="ctxfill" style="width:0%"></div></div><span class="pct" id="ctxpct"></span><span class="cost" id="ctxcost"></span></div>
     <div id="footer">
-      <span id="engine"></span>
       <span id="tokens"></span>
       <button id="send">Send</button>
     </div>
@@ -201,7 +204,7 @@
   var running=false, started=false;
   var el=function(id){return document.getElementById(id)};
   var scroll=el('scroll'), chat=el('chat'), welcome=el('welcome'), input=el('input'),
-      send=el('send'), statusEl=el('status'), tokensEl=el('tokens'), engineEl=el('engine'), cmdMenu=el('cmdmenu');
+      send=el('send'), statusEl=el('status'), tokensEl=el('tokens'), cmdMenu=el('cmdmenu');
   // slash-command discoverability ("/" menu): catalog from Kotlin, current matches, highlighted row
   var cmds=[], cmdMatches=[], cmdActive=-1;
   // tool-group state (reset each agent turn)
@@ -407,17 +410,18 @@
   function oneLine(s){ s=(s||'').replace(/\s+/g,' ').trim(); return s.length>180?s.slice(0,180)+'…':s; }
   function setTokens(i,o){ tokensEl.textContent='↑'+fmt(i)+' ↓'+fmt(o); }
   function fmt(n){ n=n||0; return n>=1000?(n/1000).toFixed(1)+'k':(''+n); }
-  // Token panel: current context fill / active window / % used / session cost. Warns as the window fills.
   function setUsage(u){
     if(!u){ return; }
     var ctx=u.contextTokens||0, win=u.contextWindow||0;
     var pct=win>0?Math.round(100*ctx/win):0;
-    var s='context '+fmt(ctx)+(win?' / '+fmt(win):'')+' · '+pct+'%';
-    if(u.costUsd!=null) s+=' · ~$'+(u.costUsd).toFixed(4);
-    else if((u.tokensIn||0)+(u.tokensOut||0)>0) s+=' · ↑'+fmt(u.tokensIn)+' ↓'+fmt(u.tokensOut);
-    tokensEl.textContent=s;
-    tokensEl.title='Context ~'+ctx+' tokens of a '+win+' window ('+pct+'%). This session ↑'+(u.tokensIn||0)+' ↓'+(u.tokensOut||0)+(u.costUsd!=null?' · ~$'+u.costUsd.toFixed(4):'')+'. 🗜 to compress.';
-    tokensEl.style.color = pct>=80 ? '#e06c75' : (pct>=60 ? '#d19a66' : '');
+    var fill=el('ctxfill'), pctEl=el('ctxpct'), costEl=el('ctxcost');
+    if(fill){ fill.style.width=pct+'%'; fill.className='fill '+(pct>=80?'danger':pct>=60?'warn':'ok'); }
+    if(pctEl){ pctEl.textContent=win?pct+'%':''; }
+    var cs='';
+    if(u.costUsd!=null) cs='~$'+u.costUsd.toFixed(4);
+    else if((u.tokensIn||0)+(u.tokensOut||0)>0) cs='↑'+fmt(u.tokensIn)+' ↓'+fmt(u.tokensOut);
+    if(costEl) costEl.textContent=cs;
+    tokensEl.textContent='context '+fmt(ctx)+(win?' / '+fmt(win):'');
   }
 
   function renderSkills(skills){
@@ -470,9 +474,7 @@
   el('btnNew').onclick=function(){ send2k({action:'newSession'}); };
   el('btnSettings').onclick=function(){ send2k({action:'openSettings'}); };
   el('btnHistory').onclick=function(){ send2k({action:'history'}); };
-  el('btnBench').onclick=function(){ send2k({action:'benchmark'}); };
-  el('btnCompact').onclick=function(){ send2k({action:'compact'}); };
-  el('btnSteps').onclick=function(){ var on=chat.classList.toggle('steps-only'); this.classList.toggle('active',on); };
+
   chat.addEventListener('click', function(e){
     var ref = e.target.closest ? e.target.closest('.srcref') : null;
     if(ref){ e.preventDefault();
@@ -491,7 +493,7 @@
   window.geaiInit=function(state){
     if(state.theme){ var r=document.documentElement.style;
       for(var k in state.theme){ r.setProperty('--'+k, state.theme[k]); } }
-    if(state.engine) engineEl.textContent=state.engine;
+    if(state.engine) tokensEl.title=state.engine;
     renderSkills(state.skills);
     cmds = state.commands || [];
     chat.innerHTML=''; streamBody=null; streamRaw=''; reasonBody=null; started=false; welcome.classList.remove('hidden'); chat.classList.add('hidden');

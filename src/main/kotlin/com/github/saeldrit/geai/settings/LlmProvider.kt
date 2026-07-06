@@ -52,4 +52,16 @@ enum class LlmProvider(
             "openai/gpt-4o-mini",
         ),
     ),
+    XIAOMI(
+        displayName = "Xiaomi MiMo",
+        defaultBaseUrl = "https://api.xiaomimimo.com",
+        defaultModel = "MiMo-V2.5-Pro",
+        suggestedModels = listOf(
+            "MiMo-V2.5-Pro",
+            "MiMo-V2.5",
+            "MiMo-V2-Flash",
+            "MiMo-V2.5-DFlash",
+            "MiMo-V2.5-Pro-FP4-DFlash",
+        ),
+    ),
 }

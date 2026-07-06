@@ -163,6 +163,33 @@ internal object HttpTransport {
 
     data class SseResult(val statusCode: Int, val errorBody: String, val isError: Boolean, val isCancelled: Boolean = false)
 
+    /**
+     * Simple GET request returning the response body as a string.
+     * Supports cancellation via [indicator]. Used to fetch model lists and other
+     * lightweight read-only resources.
+     */
+    fun getJson(
+        url: String,
+        headers: Map<String, String> = emptyMap(),
+        indicator: ProgressIndicator,
+        requestTimeout: Duration = Duration.ofSeconds(30),
+    ): String {
+        val request = HttpRequest.newBuilder()
+            .uri(URI.create(url))
+            .timeout(requestTimeout)
+            .header("Accept", "application/json")
+            .GET()
+            .apply { headers.forEach { (key, value) -> header(key, value) } }
+            .build()
+
+        val future = client.sendAsync(request, HttpResponse.BodyHandlers.ofString(Charsets.UTF_8))
+        val response = awaitCancellable(future, indicator)
+        val status = response.statusCode()
+        val payload = response.body().orEmpty()
+        if (status in 200..299) return payload
+        throw LlmException(describeHttpError(status, payload), statusCode = status)
+    }
+
     fun postJson(
         url: String,
         headers: Map<String, String>,

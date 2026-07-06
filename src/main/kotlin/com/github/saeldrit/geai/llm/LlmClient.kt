@@ -25,6 +25,12 @@ interface LlmClient {
         indicator: ProgressIndicator,
         onEvent: (StreamEvent) -> Unit,
     ): ChatResult = chat(request, indicator)
+
+    /**
+     * Fetch the list of available models from the provider's `/v1/models` endpoint.
+     * Returns null if the provider does not support this (e.g. native Anthropic API).
+     */
+    fun listModels(indicator: ProgressIndicator): List<String>? = null
 }
 
 /** Events emitted during a streaming response. */

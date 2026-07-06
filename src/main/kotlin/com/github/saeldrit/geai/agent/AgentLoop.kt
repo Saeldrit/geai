@@ -23,6 +23,7 @@ import com.github.saeldrit.geai.tools.ToolContext
 import com.github.saeldrit.geai.tools.ToolRegistry
 import com.github.saeldrit.geai.tools.ToolResult
 import com.github.saeldrit.geai.tools.debug.DebuggerSupport
+import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.project.Project
@@ -48,7 +49,7 @@ data class LoopProfile(
          * guard), or is cancelled; it compacts the context to keep going rather than stopping. This
          * high ceiling only caps a pathological non-repeating runaway. Internal — never a tunable knob.
          */
-        const val DEFAULT_MAIN_ITERATIONS = 500
+        const val DEFAULT_MAIN_ITERATIONS = 50
 
         /** Main loop: high anti-runaway backstop, no cumulative-cost terminal (maxTurnTokens is unused
          *  for the main loop — only sub-agents are token-bounded). It compacts context and works on. */
@@ -119,6 +120,7 @@ class AgentLoop(
         // Sub-agents have a cumulative-cost terminal; the main loop compacts context and runs until done.
         val subTokenBudget = if (profile.isSubAgent) profile.maxTurnTokens else 0
 
+        val metrics = AgentMetrics()
         try {
             var iteration = 0
 
@@ -170,6 +172,8 @@ class AgentLoop(
 
                 // Skip LLM-based context compression during debugging: the transcript stays short.
                 val skipCompression = activeGroups.contains("debug")
+                val compStart = System.currentTimeMillis()
+                val messagesBeforeComp = session.messages.size
                 val compacted = if (skipCompression) {
                     session.messages
                 } else {
@@ -181,14 +185,17 @@ class AgentLoop(
                         summarizer,
                     )
                 }
+                var compressionUsed = false
                 if (!skipCompression && compacted !== session.messages) {
                     val foldedAway = session.messages.size - compacted.size
+                    compressionUsed = foldedAway > 0
                     session.messages.clear()
                     session.messages.addAll(compacted)
                     if (foldedAway > 0) {
                         listener.onEvent(AgentEvent.Info("🗜 Folded $foldedAway earlier step(s) into a recap to keep the context lean — continuing."))
                     }
                 }
+                val compressionMs = System.currentTimeMillis() - compStart
                 val outgoing = appendNotesAsTrailingUser(session.messages, session.scratchpad)
                 val request = ChatRequest(
                     model = settings.loopModel(),
@@ -201,6 +208,8 @@ class AgentLoop(
                 )
 
                 listener.onEvent(AgentEvent.Thinking)
+                val llmStart = System.currentTimeMillis()
+                val contextChars = outgoing.sumOf { m: ChatMessage -> m.text.length + m.content.sumOf { b -> b.toString().length } }
                 val result = client.chatStream(request, indicator) { event ->
                     when (event) {
                         // Stream text/thinking as deltas to the UI; full message emitted once as AssistantText.
@@ -213,6 +222,7 @@ class AgentLoop(
                         is com.github.saeldrit.geai.llm.StreamEvent.Done -> Unit
                     }
                 }
+                val llmMs = System.currentTimeMillis() - llmStart
                 session.totalUsage += result.usage
                 turnUsage += result.usage
                 session.messages.add(result.message)
@@ -242,6 +252,7 @@ class AgentLoop(
                 toolUses.forEach { listener.onEvent(AgentEvent.ToolStarted(it.name, it.inputJson, it.id)) }
 
                 // 1. Meta tools: sequential, must finish before regular tools
+                val toolStart = System.currentTimeMillis()
                 val metaResults = executeMetaTools(
                     metaCalls, session, activeGroups, indicator, listener,
                     delegationCount, turnUsage, interrupted,
@@ -263,6 +274,27 @@ class AgentLoop(
                 }
 
                 session.messages.add(ChatMessage.toolResults(toolResults))
+                val toolMs = System.currentTimeMillis() - toolStart
+                // Record per-turn metrics
+                metrics.record(AgentMetrics.TurnMetrics(
+                    turnIndex = iteration,
+                    llmCallMs = llmMs,
+                    toolExecutionMs = toolMs,
+                    compressionMs = compressionMs,
+                    turnTotalMs = System.currentTimeMillis() - compStart,
+                    messagesBefore = messagesBeforeComp,
+                    messagesAfter = session.messages.size,
+                    toolCallCount = toolUses.size,
+                    parallelToolCalls = regularCalls.count { t -> val tt = registry.find(t.name); tt?.mutating != true && tt?.interactive != true },
+                    sequentialToolCalls = regularCalls.size - regularCalls.count { t -> val tt = registry.find(t.name); tt?.mutating != true && tt?.interactive != true },
+                    contextChars = contextChars,
+                    inputTokens = result.usage.inputTokens,
+                    outputTokens = result.usage.outputTokens,
+                    compressed = compressionUsed,
+                    summarized = false,
+                ))
+                thisLogger().info("[metrics] turn=${iteration} llm=${llmMs}ms tools=${toolMs}ms comp=${compressionMs}ms total=${System.currentTimeMillis() - compStart}ms ctx=${contextChars}ch inTok=${result.usage.inputTokens} outTok=${result.usage.outputTokens} toolCalls=${toolUses.size} compressed=$compressionUsed")
+
                 if (interrupted) {
                     listener.onEvent(AgentEvent.Cancelled())
                     return
@@ -335,6 +367,8 @@ class AgentLoop(
             listener.onEvent(AgentEvent.Error(e.message ?: "LLM request failed."))
         } catch (e: Exception) {
             listener.onEvent(AgentEvent.Error("Unexpected error: ${e.message ?: e.javaClass.simpleName}"))
+        } finally {
+            thisLogger().info("[metrics]\n${metrics.summary()}")
         }
     }
 
@@ -610,19 +644,24 @@ class AgentLoop(
         // Pass 2 (parallel): run the reserved delegates concurrently. Cap threads so a big fan-out does
         // not slam the LLM endpoint with too many simultaneous requests.
         if (delegateIndices.isNotEmpty()) {
-            val executor: ExecutorService = Executors.newFixedThreadPool(delegateIndices.size.coerceAtMost(8))
-            try {
-                val futures = delegateIndices.map { idx ->
-                    idx to executor.submit(Callable { runDelegateTimed(calls[idx], indicator, listener) })
-                }
-                for ((idx, future) in futures) {
+            val futures = delegateIndices.map { idx ->
+                idx to SHARED_POOL.submit(Callable { runDelegateTimed(calls[idx], indicator, listener) })
+            }
+            for ((idx, future) in futures) {
+                try {
                     val outcome = future.get()
                     metaTurnUsage += outcome.usage
                     session.totalUsage += outcome.usage
                     results[idx] = ContentBlock.ToolResult(calls[idx].id, outcome.result.content, outcome.result.isError)
+                } catch (e: Exception) {
+                    // Each delegate is independent — a failure in one must not break the others or
+                    // leave a missing tool_result (which would corrupt the transcript on resume).
+                    val msg = if (e is java.util.concurrent.ExecutionException) {
+                        e.cause?.message ?: e.message
+                    } else e.message
+                    thisLogger().warn("Delegate failed: $msg", e)
+                    results[idx] = ContentBlock.ToolResult(calls[idx].id, "Delegate failed: $msg", isError = true)
                 }
-            } finally {
-                executor.shutdown()
             }
         }
         return MetaResult(metaInterrupted, metaDelegationCount, metaTurnUsage, results.filterNotNull())
@@ -663,6 +702,9 @@ class AgentLoop(
                 executeTool(call, settings, indicator)
             } catch (_: ProcessCanceledException) {
                 ToolResult.error("Interrupted during '${call.name}'.")
+            } catch (e: Exception) {
+                thisLogger().warn("Tool '${call.name}' threw unexpectedly: ${e.message}", e)
+                ToolResult.error("Tool '${call.name}' failed: ${e.message}")
             }
             val elapsedMs = (System.nanoTime() - t0) / 1_000_000
             listener.onEvent(AgentEvent.ToolFinished(call.name, toolResult, call.id))
@@ -671,7 +713,7 @@ class AgentLoop(
         }
     }
 
-    /** Execute regular tools in parallel using a fork-join pool. */
+    /** Execute regular tools in parallel using a shared fork-join pool. */
     private fun executeToolsParallel(
         calls: List<ContentBlock.ToolUse>,
         settings: GeaiSettingsState,
@@ -679,10 +721,9 @@ class AgentLoop(
         listener: AgentListener,
     ): List<ContentBlock.ToolResult> {
         if (calls.isEmpty()) return emptyList()
-        val executor: ExecutorService = Executors.newWorkStealingPool()
-        return try {
-            val futures = calls.map { call ->
-                executor.submit(Callable {
+        val futures: List<Pair<ContentBlock.ToolUse, java.util.concurrent.Future<ContentBlock.ToolResult>>> =
+            calls.map { call ->
+                call to SHARED_POOL.submit(Callable {
                     if (indicator.isCanceled) {
                         ContentBlock.ToolResult(call.id, "Skipped: turn was interrupted.", isError = true)
                     } else {
@@ -691,6 +732,9 @@ class AgentLoop(
                             executeTool(call, settings, indicator)
                         } catch (_: ProcessCanceledException) {
                             ToolResult.error("Interrupted during '${call.name}'.")
+                        } catch (e: Exception) {
+                            thisLogger().warn("Tool '${call.name}' threw unexpectedly: ${e.message}", e)
+                            ToolResult.error("Tool '${call.name}' failed: ${e.message}")
                         }
                         val elapsedMs = (System.nanoTime() - t0) / 1_000_000
                         listener.onEvent(AgentEvent.ToolFinished(call.name, toolResult, call.id))
@@ -701,9 +745,15 @@ class AgentLoop(
                     }
                 })
             }
-            futures.map { it.get() }
-        } finally {
-            executor.shutdown()
+        // Per-future get: one failure must not discard the others (which would leave missing
+        // tool_results and corrupt the transcript on resume).
+        return futures.map { (call, future) ->
+            try {
+                future.get()
+            } catch (e: Exception) {
+                thisLogger().warn("Parallel tool '${call.name}' execution failed: ${e.message}", e)
+                ContentBlock.ToolResult(call.id, "Tool execution failed: ${e.message}", isError = true)
+            }
         }
     }
 
@@ -733,5 +783,10 @@ class AgentLoop(
                 "needed to keep working: the original task; files, symbols and APIs examined WITH their " +
                 "file:line locations; concrete findings and conclusions; decisions and edits already made; and " +
                 "open questions / next steps. Drop raw file contents and chatter. Terse bullet points, no preamble."
+
+        /** Shared pool for parallel tool execution — reused across turns to avoid repeated thread creation. */
+        private val SHARED_POOL: ExecutorService = Executors.newFixedThreadPool(
+            Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
+        )
     }
 }

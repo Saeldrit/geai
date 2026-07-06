@@ -18,7 +18,7 @@ import com.github.saeldrit.geai.llm.Role
 object ContextCompressor {
 
     private const val CHARS_PER_TOKEN = 4
-    private const val SAFETY = 0.6
+    private const val SAFETY = 0.5
     private const val KEEP_RECENT = 6
     private const val TRUNCATED_HEAD = 400
     private const val MIN_BUDGET = 20_000
@@ -29,8 +29,8 @@ object ContextCompressor {
      * budget. This stops the transcript from ballooning between compactions (file dumps, search
      * tables) and keeps caching cheap: stable older content stays small and reusable.
      */
-    private const val EAGER_KEEP_RECENT_TOOLS = 4
-    private const val EAGER_TOOL_HEAD = 800
+    private const val EAGER_KEEP_RECENT_TOOLS = 2
+    private const val EAGER_TOOL_HEAD = 400
 
     /** Suffix marking an eagerly-truncated tool result, so re-compaction is idempotent (no re-trim) —
      *  the loop persists compaction back into the transcript, so this must be a fixed point. */
@@ -49,30 +49,32 @@ object ContextCompressor {
         summarizer: Summarizer? = null,
     ): List<ChatMessage> {
         val budget = charBudget(contextWindowTokens, outputReserveTokens, systemPromptChars)
-        // [PERF] Fast path: transcript well under 70% of budget — skip all processing entirely.
-        if (estimateChars(messages) <= budget * 0.7) return messages
-        // Eager pass: shrink stale tool_result blocks unconditionally so even short transcripts stay
-        // lean. Runs even when under-budget — the goal is small payloads, not just not-exceeding.
-        // Skip when the transcript is tiny (< 10 tool results): no savings possible, only wasted copy.
-        val toolCount = messages.count { it.role == Role.TOOL }
-        val eagerlyTrimmed = if (toolCount <= EAGER_KEEP_RECENT_TOOLS + 2) messages else eagerlyTruncateOldToolResults(messages)
-        if (estimateChars(eagerlyTrimmed) <= budget) return eagerlyTrimmed
+        val originalChars = estimateChars(messages)
 
-        // Preferred: fold the old middle into a recap. Summarise from the ORIGINAL (untrimmed) middle so
-        // findings past the eager 800-char head survive into the recap — folding is what shrinks it, so
-        // pre-truncating the summariser's input would defeat the "preserve evidence" goal. If the full
-        // render is too large for one summariser call it throws; retry on the eager-trimmed copy.
+        // Under budget: only apply eager truncation when approaching the limit (>70%).
+        // When context is small (early turns), this saves an O(n) pass over all messages.
+        if (originalChars <= budget) {
+            if (originalChars > budget * 0.7) {
+                return eagerlyTruncateOldToolResults(messages)
+            }
+            return messages
+        }
+
+        // Over budget: preferred path is summarisation — fold the old middle into a dense recap.
+        // Use the ORIGINAL (untrimmed) messages so findings past the eager head survive into the recap;
+        // if the full render is too large for the summariser it throws — retry on the eager-trimmed copy.
         if (summarizer != null) {
+            val eagerlyTrimmed = eagerlyTruncateOldToolResults(messages)
             val summarised = runCatching { summarizeOldContext(messages, summarizer) }.getOrNull()
                 ?: runCatching { summarizeOldContext(eagerlyTrimmed, summarizer) }.getOrNull()
-            if (summarised != null && summarised !== messages && summarised !== eagerlyTrimmed) {
+            if (summarised != null && summarised !== messages) {
                 // The recap shrank the middle; the kept recent tail is still verbatim — eager-trim it too.
                 val trimmed = eagerlyTruncateOldToolResults(summarised)
                 return if (estimateChars(trimmed) <= budget) trimmed else truncateToBudget(trimmed, budget)
             }
         }
-        // Fallback: deterministic truncation.
-        return truncateToBudget(eagerlyTrimmed, budget)
+        // Fallback: deterministic truncation with eager pre-pass.
+        return truncateToBudget(eagerlyTruncateOldToolResults(messages), budget)
     }
 
     /**

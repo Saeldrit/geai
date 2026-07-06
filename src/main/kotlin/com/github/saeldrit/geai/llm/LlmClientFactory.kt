@@ -21,7 +21,7 @@ object LlmClientFactory {
         return when (provider) {
             LlmProvider.ANTHROPIC -> AnthropicClient(baseUrl, apiKey)
             // OpenRouter speaks the OpenAI Chat-Completions dialect — same client, different base URL.
-            LlmProvider.OPENAI_COMPATIBLE, LlmProvider.OPENROUTER -> OpenAiCompatibleClient(baseUrl, apiKey)
+            LlmProvider.OPENAI_COMPATIBLE, LlmProvider.OPENROUTER, LlmProvider.XIAOMI -> OpenAiCompatibleClient(baseUrl, apiKey)
         }
     }
 

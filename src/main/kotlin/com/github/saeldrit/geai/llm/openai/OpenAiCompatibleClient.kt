@@ -17,6 +17,7 @@ import com.github.saeldrit.geai.llm.http.objectOrNull
 import com.github.saeldrit.geai.llm.http.stringOrNull
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
+import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.progress.ProgressIndicator
 
 /**
@@ -38,6 +39,22 @@ class OpenAiCompatibleClient(
 
     /** OpenRouter is the only OpenAI-compatible endpoint that honours explicit cache_control blocks. */
     private val supportsExplicitCacheControl: Boolean = baseUrl.contains("openrouter.ai", ignoreCase = true)
+
+    override fun listModels(indicator: ProgressIndicator): List<String>? {
+        val modelsUrl = modelsListUrl(baseUrl)
+        val raw = try {
+            HttpTransport.getJson(
+                url = modelsUrl,
+                headers = mapOf("Authorization" to "Bearer $apiKey"),
+                indicator = indicator,
+            )
+        } catch (_: Exception) {
+            return null
+        }
+        val root = JsonSupport.parseObject(raw)
+        val data = root.getAsJsonArray("data") ?: return emptyList()
+        return data.mapNotNull { it.asJsonObject?.stringOrNull("id") }
+    }
 
     override fun chat(request: ChatRequest, indicator: ProgressIndicator): ChatResult {
         val raw = HttpTransport.postJson(
@@ -107,8 +124,14 @@ class OpenAiCompatibleClient(
                 }
 
                 choice.stringOrNull("finish_reason")?.let { if (it.isNotEmpty()) finishReason = it }
-            } catch (_: Exception) {
-                // Skip a malformed SSE chunk.
+            } catch (e: Exception) {
+                if (e is com.google.gson.JsonSyntaxException ||
+                    e is ClassCastException ||
+                    e is NumberFormatException) {
+                    thisLogger().debug("Skipping malformed SSE chunk: ${e.message}")
+                } else {
+                    throw e
+                }
             }
         }
 
@@ -148,10 +171,35 @@ class OpenAiCompatibleClient(
         var started: Boolean = false
     }
 
-    /** Tolerate base URLs given either with or without a trailing `/v1`. */
+    /**
+     * Build the final `/v1/chat/completions` URL from a configurable base. Tolerates:
+     *  - bare host: `https://api.example.com`
+     *  - with `/v1`: `https://api.example.com/v1`
+     *  - full path: `https://api.example.com/v1/chat/completions`
+     *  - alias like `https://api.xiaomimimo.com/v1/chat/completions` (Mimo Xiaomi)
+     */
     private fun chatCompletionsUrl(base: String): String {
         val trimmed = base.trimEnd('/')
-        return if (trimmed.endsWith("/v1")) "$trimmed/chat/completions" else "$trimmed/v1/chat/completions"
+        return when {
+            trimmed.endsWith("/chat/completions") -> trimmed
+            trimmed.endsWith("/v1") -> "$trimmed/chat/completions"
+            else -> "$trimmed/v1/chat/completions"
+        }
+    }
+
+    /**
+     * Build the `/v1/models` URL for listing models. Tolerates:
+     *  - bare host: `https://api.example.com`
+     *  - with `/v1`: `https://api.example.com/v1`
+     *  - full path: `https://api.example.com/v1/chat/completions`
+     */
+    private fun modelsListUrl(base: String): String {
+        val trimmed = base.trimEnd('/')
+        return when {
+            trimmed.endsWith("/chat/completions") -> trimmed.removeSuffix("/chat/completions") + "/models"
+            trimmed.endsWith("/v1") -> "$trimmed/models"
+            else -> "$trimmed/v1/models"
+        }
     }
 
     private fun buildRequestBody(request: ChatRequest, streaming: Boolean): JsonObject {
@@ -184,7 +232,7 @@ class OpenAiCompatibleClient(
                     add("function", JsonObject().apply {
                         addProperty("name", spec.name)
                         addProperty("description", spec.description)
-                        add("parameters", JsonSupport.parseElement(spec.parametersJsonSchema))
+                        add("parameters", spec.parsedSchema)
                     })
                 })
             }
