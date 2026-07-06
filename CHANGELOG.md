@@ -15,6 +15,18 @@
   index-backed, and there is a single native agent engine (the Claude Code CLI mode is gone). Updated
   README, `docs/GRACE_ARCHITECTURE.md`, and the plugin-manifest description.
 
+## [0.0.57]
+
+### Fixed
+- **CI build broken** — `modelSupportsVision()` was called in `AgentLoop` but the companion function
+  in `LlmProvider` was an uncommitted local change, never pushed. Committed the missing definition.
+- **Stuck-loop guard bypass** — `stepSignature` hashed `read_file` input including `start_line`/`end_line`,
+  so reading the same file with different ranges always produced a new fingerprint and the guard never
+  fired. Now normalizes volatile params before hashing; also excludes `note` results (whose "Noted N
+  total" text changes every call) and increased the ring from 5 → 10 to catch longer alternation cycles.
+- **Vision retry loop** — the `isVisionError` catch retried indefinitely. Now limited to one retry;
+  a second vision error propagates normally.
+
 ## [0.0.50]
 
 ### Removed

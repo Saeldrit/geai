@@ -8,10 +8,13 @@ import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.Messages
 import com.intellij.ui.components.JBCheckBox
+import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPasswordField
 import com.intellij.ui.components.JBTabbedPane
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.FormBuilder
+import com.intellij.util.ui.UIUtil
+import com.intellij.ui.JBColor
 import java.awt.BorderLayout
 import javax.swing.DefaultComboBoxModel
 import javax.swing.JButton
@@ -54,6 +57,7 @@ class GeaiSettingsConfigurable : Configurable {
     private val sourcePathField = JBTextField()
 
     private lateinit var navigatorPanel: JPanel
+    private val visionIndicator = JBLabel("")
 
     /** Full list of all known model ids — used for editor filtering. */
     private val allModelItems = mutableListOf<String>()
@@ -85,9 +89,14 @@ class GeaiSettingsConfigurable : Configurable {
             })
         }
 
-        val modelPanel = JPanel(BorderLayout())
+        visionIndicator.foreground = JBColor.GRAY
+        updateVisionIndicator()
+        modelCombo.addActionListener { updateVisionIndicator() }
+
+        val modelPanel = JPanel(BorderLayout(4, 0))
         modelPanel.add(modelCombo, BorderLayout.CENTER)
-        modelPanel.add(refreshModelsButton, BorderLayout.EAST)
+        modelPanel.add(visionIndicator, BorderLayout.EAST)
+        modelPanel.add(refreshModelsButton, BorderLayout.LINE_END)
 
         val mainForm = FormBuilder.createFormBuilder()
             .addLabeledComponent("Provider:", providerCombo)
@@ -129,6 +138,14 @@ class GeaiSettingsConfigurable : Configurable {
         populateModels(provider)
         modelCombo.selectedItem = null // fall back to the new provider's default
         baseUrlField.emptyText.text = provider.defaultBaseUrl
+        updateVisionIndicator()
+    }
+
+    private fun updateVisionIndicator() {
+        val selected = modelCombo.selectedItem as? String ?: ""
+        val supports = LlmProvider.modelSupportsVision(selected)
+        visionIndicator.text = if (supports) "🖼 Vision" else "(text only)"
+        visionIndicator.foreground = if (supports) JBColor.GRAY else UIUtil.getInactiveTextColor()
     }
 
     private fun populateModels(provider: LlmProvider) {
