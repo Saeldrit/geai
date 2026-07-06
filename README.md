@@ -78,9 +78,20 @@ When the agent genuinely cannot proceed without your input — ambiguous branch,
 action, whether to start a debug session — it calls `ask_user` and shows a focused dialog.
 Routine tool calls run without interruption.
 
+**Skills** — four quick-start cards in the welcome screen: *Debug*, *Explain*, *Implement*,
+*Review*. Each pre-fills the composer with a task-specific prompt.
+
+**Context bar** — a visual progress indicator below the topbar shows how much of the model's
+context window is used. The bar changes colour as usage grows (green → yellow → red) and
+displays the estimated token cost.
+
 **Tool approval** — mutating tools (write, edit, run, self-patch) are auto-approved by default.
 Disable in settings to get a per-call dialog with three options: Allow once / Allow for session
 / Deny.
+
+**Settings** — the settings page (*Settings → Tools → Geai*) has a single "Show advanced
+settings" toggle at the bottom. GRACE tiered routing, navigator model, and auto-approve options
+are hidden by default to keep the page simple.
 
 ## Build
 
