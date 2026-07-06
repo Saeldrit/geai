@@ -10,8 +10,8 @@
 -->
 <plugins>
   <plugin id="com.github.saeldrit.geai"
-url="https://github.com/Saeldrit/geai/releases/download/v0.0.52/geai-0.0.52.zip"
-          version="0.0.52">
+url="https://github.com/Saeldrit/geai/releases/download/v0.0.54/geai-0.0.54.zip"
+          version="0.0.54">
     <name>geai</name>
     <vendor>saeldrit</vendor>
     <idea-version since-build="252"/>
