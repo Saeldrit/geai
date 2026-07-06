@@ -244,11 +244,22 @@ class AnthropicClient(
     }
 
     private fun textBlocks(blocks: List<ContentBlock>): JsonArray = JsonArray().apply {
-        blocks.filterIsInstance<ContentBlock.Text>().forEach { block ->
-            add(JsonObject().apply {
-                addProperty("type", "text")
-                addProperty("text", block.text)
-            })
+        blocks.forEach { block ->
+            when (block) {
+                is ContentBlock.Text -> add(JsonObject().apply {
+                    addProperty("type", "text")
+                    addProperty("text", block.text)
+                })
+                is ContentBlock.Image -> add(JsonObject().apply {
+                    addProperty("type", "image")
+                    add("source", JsonObject().apply {
+                        addProperty("type", "base64")
+                        addProperty("media_type", block.mediaType)
+                        addProperty("data", block.base64Data)
+                    })
+                })
+                else -> Unit
+            }
         }
     }
 
@@ -267,6 +278,7 @@ class AnthropicClient(
                     add("input", JsonSupport.parseElement(block.inputJson.ifBlank { "{}" }))
                 })
 
+                is ContentBlock.Image -> Unit // never valid inside an assistant turn
                 is ContentBlock.ToolResult -> Unit // never valid inside an assistant turn
             }
         }

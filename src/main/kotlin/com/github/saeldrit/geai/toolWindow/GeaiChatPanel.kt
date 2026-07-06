@@ -2,129 +2,99 @@ package com.github.saeldrit.geai.toolWindow
 
 import com.github.saeldrit.geai.agent.AgentEvent
 import com.github.saeldrit.geai.agent.AgentListener
+import com.github.saeldrit.geai.agent.Attachment
 import com.github.saeldrit.geai.agent.GeaiAgentService
-import com.github.saeldrit.geai.context.ContextCompressor
-import com.github.saeldrit.geai.cost.Pricing
 import com.github.saeldrit.geai.cost.UsageFormat
-import com.github.saeldrit.geai.llm.ChatMessage
-import com.github.saeldrit.geai.llm.ContentBlock
-import com.github.saeldrit.geai.llm.LlmClientFactory
-import com.github.saeldrit.geai.llm.Role
 import com.github.saeldrit.geai.llm.TokenUsage
 import com.github.saeldrit.geai.settings.GeaiSettings
 import com.github.saeldrit.geai.settings.GeaiSettingsConfigurable
 import com.github.saeldrit.geai.settings.LlmProvider
-import com.github.saeldrit.geai.settings.loopModel
+import com.github.saeldrit.geai.tools.ToolResult
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.ui.ComboBox
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
-import com.intellij.ui.components.panels.HorizontalLayout
 import com.intellij.util.ui.JBUI
-import java.awt.BorderLayout
-import java.awt.Color
-import java.awt.Dimension
-import java.awt.event.InputEvent
+import com.intellij.openapi.vfs.LocalFileSystem
+import java.awt.*
+import java.awt.event.ActionEvent
 import java.awt.event.KeyEvent
-import java.util.Locale
-import javax.swing.AbstractAction
-import javax.swing.JButton
-import javax.swing.JComponent
-import javax.swing.JPanel
-import javax.swing.JTextPane
-import javax.swing.KeyStroke
-import javax.swing.event.DocumentEvent
-import javax.swing.event.DocumentListener
-import javax.swing.text.SimpleAttributeSet
-import javax.swing.text.StyleConstants
+import java.awt.event.InputEvent
+import java.io.File
+import java.net.URI
+import javax.swing.*
+import javax.swing.filechooser.FileNameExtensionFilter
+import javax.swing.event.HyperlinkEvent
+import javax.swing.event.HyperlinkListener
+import javax.swing.text.html.HTMLEditorKit
 
 /**
- * Swing chat surface for geai. Renders the transcript in a styled [JTextPane], submits prompts to
- * [GeaiAgentService], and marshals [AgentEvent]s back onto the EDT for display.
- *
- * The toolbar carries quick controls the user reaches for every turn: new session, settings,
- * provider/model pickers, and cost-tier presets (Fast / Balanced / Power). The status bar shows
- * a rich live token counter (↑in ↓out 💾cache · $cost) and a tooltip with the full breakdown.
- * A pre-flight estimate under the input field shows the projected cost BEFORE Send is clicked.
+ * Swing chat surface rendered as HTML via [JEditorPane].
+ * Used when JCEF is unavailable (e.g. Android Studio with a JBR that lacks Chromium natives).
  */
 class GeaiChatPanel(private val project: Project) : JPanel(BorderLayout()) {
 
     private val service = GeaiAgentService.getInstance(project)
 
-    private val transcript = JTextPane().apply {
+    // --- HTML rendering ---
+    private val editorPane = JEditorPane().apply {
         isEditable = false
-        border = JBUI.Borders.empty(8)
+        contentType = "text/html"
+        editorKit = HTMLEditorKit()
+        addHyperlinkListener(HyperlinkListener { e ->
+            if (e.eventType == HyperlinkEvent.EventType.ACTIVATED) {
+                try { Desktop.getDesktop().browse(URI(e.url.toString())) } catch (_: Exception) {}
+            }
+        })
     }
+
+    // --- accumulated HTML fragments per message ---
+    private val messages = mutableListOf<String>()
+    private var streamingIdx = -1
+
+    // --- input / controls ---
     private val input = JBTextArea(3, 0).apply {
-        lineWrap = true
-        wrapStyleWord = true
-        toolTipText = "Describe the bug. Enter to send, Shift+Enter for a new line."
+        lineWrap = true; wrapStyleWord = true
+        toolTipText = "Describe the bug. Enter to send, Shift+Enter for newline."
     }
     private val sendButton = JButton("Send")
     private val stopButton = JButton("Stop").apply { isEnabled = false }
+    private val attachButton = JButton("📎").apply { toolTipText = "Attach file(s)" }
     private val newSessionButton = JButton("New session")
     private val statusLabel = JBLabel("Ready").apply { border = JBUI.Borders.empty(2, 8) }
-
-    /** Per-session cost accumulator; updated on every Info event with usage data. */
-    private var lastTurnUsage: TokenUsage = TokenUsage.ZERO
+    private val attachLabel = JBLabel("").apply {
+        border = JBUI.Borders.empty(0, 8, 2, 8); foreground = JBColor.GRAY
+        isVisible = false
+    }
+    private val pendingAttachments = mutableListOf<Attachment>()
     private val preflightLabel = JBLabel("").apply {
-        border = JBUI.Borders.empty(0, 8, 4, 8)
-        foreground = JBColor.GRAY
+        border = JBUI.Borders.empty(0, 8, 4, 8); foreground = JBColor.GRAY
     }
 
-    private val providerCombo = ComboBox(LlmProvider.entries.toTypedArray()).apply {
-        toolTipText = "Switch provider \u2014 applies immediately to the next turn."
-    }
-    private val modelCombo = ComboBox<String>().apply {
-        isEditable = true
-        toolTipText = "Switch model within the selected provider."
-    }
+    private var lastTurnUsage: TokenUsage = TokenUsage.ZERO
 
+    // ── init ──────────────────────────────────────────────────────────────
     init {
         add(buildToolbar(), BorderLayout.NORTH)
-        add(JBScrollPane(wrapTop(transcript)), BorderLayout.CENTER)
+        add(JBScrollPane(editorPane), BorderLayout.CENTER)
         add(buildInputArea(), BorderLayout.SOUTH)
         wireActions()
-        renderSession()
-        syncFromSettings()
-        updatePreflight()
-        if (!LlmClientFactory.isConfigured()) {
-            appendBlock("Setup", "Geai is not configured. Open Settings | Tools | Geai and add an API key.", INFO)
+        renderWelcome()
+        if (!com.github.saeldrit.geai.llm.LlmClientFactory.isConfigured()) {
+            addInfo("Geai is not configured. Open Settings | Tools | Geai and add an API key.")
         }
     }
 
     private fun buildToolbar(): JComponent = JPanel(BorderLayout()).apply {
         border = JBUI.Borders.empty(4)
-        val left = JPanel(HorizontalLayout(8)).apply {
+        val left = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0)).apply {
             add(newSessionButton)
             add(JButton("Settings").apply {
-                addActionListener {
-                    ShowSettingsUtil.getInstance().showSettingsDialog(project, GeaiSettingsConfigurable::class.java)
-                }
-            })
-            add(JBLabel("Provider:"))
-            add(providerCombo)
-            add(JBLabel("Model:"))
-            add(modelCombo)
-            // Cost-tier presets: one-click switches that prime provider + model + navigator for a
-            // typical workflow without opening Settings. Anthropic-centric defaults that the user can
-            // override later (the preset is fire-and-forget \u2014 it just writes the same fields Settings would).
-            add(JButton("\uD83D\uDE80 Fast").apply {
-                toolTipText = "Haiku / cheap navigator \u2014 fastest, lowest cost."
-                addActionListener { applyPreset(Preset.FAST) }
-            })
-            add(JButton("\u2696 Balanced").apply {
-                toolTipText = "Sonnet \u2014 default trade-off between cost and quality."
-                addActionListener { applyPreset(Preset.BALANCED) }
-            })
-            add(JButton("\uD83D\uDC8E Power").apply {
-                toolTipText = "Opus / strongest model \u2014 expensive, use for hard tasks."
-                addActionListener { applyPreset(Preset.POWER) }
+                addActionListener { ShowSettingsUtil.getInstance().showSettingsDialog(project, GeaiSettingsConfigurable::class.java) }
             })
         }
         add(left, BorderLayout.WEST)
@@ -133,8 +103,6 @@ class GeaiChatPanel(private val project: Project) : JPanel(BorderLayout()) {
 
     private fun buildInputArea(): JComponent = JPanel(BorderLayout()).apply {
         border = JBUI.Borders.empty(4)
-        // Pre-flight estimate sits ABOVE the input row so the user sees the projected cost before
-        // committing to Send. Recomputed on every keystroke (cheap: char-count / heuristic).
         add(preflightLabel, BorderLayout.NORTH)
         val row = JPanel(BorderLayout(8, 0)).apply {
             add(JBScrollPane(input).apply { preferredSize = Dimension(0, 72) }, BorderLayout.CENTER)
@@ -144,261 +112,321 @@ class GeaiChatPanel(private val project: Project) : JPanel(BorderLayout()) {
             }
             add(buttons, BorderLayout.EAST)
         }
+        val bottom = JPanel(BorderLayout()).apply {
+            add(attachButton, BorderLayout.WEST)
+            add(attachLabel, BorderLayout.CENTER)
+        }
         add(row, BorderLayout.CENTER)
+        add(bottom, BorderLayout.SOUTH)
     }
 
-    private fun wrapTop(component: JComponent): JComponent =
-        JPanel(BorderLayout()).apply { add(component, BorderLayout.NORTH) }
-
+    // ── actions ───────────────────────────────────────────────────────────
     private fun wireActions() {
         sendButton.addActionListener { submit() }
         stopButton.addActionListener { service.stop() }
         newSessionButton.addActionListener {
             service.newSession()
-            transcript.text = ""
+            messages.clear(); streamingIdx = -1; renderHtml()
             lastTurnUsage = TokenUsage.ZERO
-            statusLabel.text = "New session"
-            statusLabel.toolTipText = null
-            updatePreflight()
         }
-        // Enter sends; Shift+Enter inserts a newline.
-        input.inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), "geai.send")
-        input.actionMap.put("geai.send", object : AbstractAction() {
-            override fun actionPerformed(e: java.awt.event.ActionEvent) = submit()
+        attachButton.addActionListener { openFileChooser() }
+        input.getInputMap(JComponent.WHEN_FOCUSED).put(
+            KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), "send")
+        input.actionMap.put("send", object : AbstractAction() {
+            override fun actionPerformed(e: ActionEvent?) { submit() }
         })
-        input.inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, InputEvent.SHIFT_DOWN_MASK), "insert-break")
-        input.document.addDocumentListener(object : DocumentListener {
-            override fun insertUpdate(e: DocumentEvent?) = updatePreflight()
-            override fun removeUpdate(e: DocumentEvent?) = updatePreflight()
-            override fun changedUpdate(e: DocumentEvent?) = updatePreflight()
+        input.getInputMap(JComponent.WHEN_FOCUSED).put(
+            KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, InputEvent.SHIFT_DOWN_MASK), "newline")
+        input.actionMap.put("newline", object : AbstractAction() {
+            override fun actionPerformed(e: ActionEvent?) { input.insert("\n", input.caretPosition) }
         })
-        providerCombo.addActionListener {
-            (providerCombo.selectedItem as? LlmProvider)?.let { provider ->
-                val state = GeaiSettings.getInstance().state
-                if (state.provider != provider) {
-                    state.provider = provider
-                    state.model = null
-                    populateModels(provider)
-                    updatePreflight()
-                }
+    }
+
+    private fun openFileChooser() {
+        val chooser = JFileChooser().apply {
+            isMultiSelectionEnabled = true
+            fileSelectionMode = JFileChooser.FILES_ONLY
+            fileFilter = FileNameExtensionFilter(
+                "Images & Text files",
+                "png", "jpg", "jpeg", "gif", "webp", "bmp",
+                "txt", "md", "json", "xml", "csv", "log",
+                "kt", "java", "py", "js", "ts", "html", "css", "sh",
+                "yaml", "yml", "toml", "ini", "cfg", "properties", "gradle", "kts"
+            )
+        }
+        if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
+            val files = chooser.selectedFiles ?: return
+            val remaining = 10 - pendingAttachments.size
+            if (remaining <= 0) return
+            files.take(remaining).forEach { f ->
+                val bytes = f.readBytes()
+                val base64 = java.util.Base64.getEncoder().encodeToString(bytes)
+                val mediaType = java.net.URLConnection.guessContentTypeFromName(f.name)
+                    ?: if (f.name.matches(Regex(".*\\.(kt|java|py|js|ts|sh|md|json|yaml|yml|xml|csv|log|toml|html|css|sql|rb|go|rs|php|txt|cfg|conf|ini|gradle|properties)$", RegexOption.IGNORE_CASE)))
+                        "text/plain" else "application/octet-stream"
+                pendingAttachments += Attachment(f.name, mediaType, base64)
             }
-        }
-        modelCombo.addActionListener {
-            val text = (modelCombo.editor.item as? String)?.trim().orEmpty()
-            val state = GeaiSettings.getInstance().state
-            state.model = text.ifBlank { null }
-            updatePreflight()
+            updateAttachLabel()
         }
     }
 
-    /** Reflect the persisted settings into the toolbar combos (called on init + after presets). */
-    private fun syncFromSettings() {
-        val state = GeaiSettings.getInstance().state
-        providerCombo.selectedItem = state.provider
-        populateModels(state.provider)
-        modelCombo.selectedItem = state.model?.takeIf { it.isNotBlank() } ?: state.provider.defaultModel
-    }
-
-    private fun populateModels(provider: LlmProvider) {
-        modelCombo.removeAllItems()
-        provider.suggestedModels.forEach { modelCombo.addItem(it) }
-    }
-
-    /** Apply a cost-tier preset and refresh the UI; the user can still hand-edit afterwards. */
-    private fun applyPreset(preset: Preset) {
-        val state = GeaiSettings.getInstance().state
-        state.provider = preset.provider
-        state.model = preset.model
-        state.navigatorModel = preset.navigatorModel
-        // Tiered routing only makes sense when a navigator is set AND it differs from the main model.
-        state.tieredRoutingEnabled = preset.navigatorModel != null && preset.navigatorModel != preset.model
-        syncFromSettings()
-        updatePreflight()
-        appendInline("Preset applied: ${preset.label} (${preset.provider.displayName} / ${preset.model})", INFO)
+    private fun updateAttachLabel() {
+        if (pendingAttachments.isEmpty()) {
+            attachLabel.text = ""; attachLabel.isVisible = false
+        } else {
+            attachLabel.text = pendingAttachments.joinToString(", ") { it.name }
+            attachLabel.isVisible = true
+        }
     }
 
     private fun submit() {
         val text = input.text.trim()
-        if (text.isEmpty() || service.isRunning()) return
+        if (text.isEmpty() && pendingAttachments.isEmpty()) return
         input.text = ""
-        setRunning(true)
-        service.submit(text, edtListener())
+        val atts = pendingAttachments.toList()
+        pendingAttachments.clear(); updateAttachLabel()
+        streamingIdx = -1
+        service.submit(text, myListener, atts)
     }
 
-    /** Wraps UI updates so agent-thread events render on the EDT, even under a modal approval dialog. */
-    private fun edtListener(): AgentListener = AgentListener { event ->
-        ApplicationManager.getApplication().invokeLater({ onEvent(event) }, ModalityState.any())
+    // ── Agent listener ────────────────────────────────────────────────────
+    private val myListener = AgentListener { event ->
+        ApplicationManager.getApplication().invokeLater({
+            when (event) {
+                is AgentEvent.UserMessage -> {
+                    addMessage("You", escapeHtml(event.text), "user")
+                    streamingIdx = -1
+                }
+                is AgentEvent.Thinking -> statusLabel.text = "Thinking\u2026"
+                is AgentEvent.Reasoning -> {
+                    messages.add("""<details class="reason"><summary>Reasoning</summary><pre class="rbody">${escapeHtml(event.text)}</pre></details>""")
+                    streamingIdx = messages.size - 1
+                    renderHtml()
+                }
+                is AgentEvent.ReasoningDelta -> {
+                    if (streamingIdx in messages.indices) {
+                        val old = messages[streamingIdx]
+                        messages[streamingIdx] = old.replace("</pre></details>",
+                            "${escapeHtml(event.text)}</pre></details>")
+                        renderHtml()
+                    }
+                }
+                is AgentEvent.AssistantText -> {
+                    finalizeStreaming(Markdown.toHtml(event.text))
+                    streamingIdx = -1
+                    statusLabel.text = "Ready"
+                }
+                is AgentEvent.AssistantTextDelta -> {
+                    appendStreamingDelta(event.text)
+                    statusLabel.text = "Writing\u2026"
+                }
+                is AgentEvent.ToolStarted -> {
+                    val short = if (event.argsJson.length > 80) event.argsJson.take(77) + "\u2026" else event.argsJson
+                    messages.add("""<div class="tool">\u23F3 ${escapeHtml(event.tool)} ${escapeHtml(short)}</div>""")
+                    renderHtml()
+                    statusLabel.text = "Tool: ${event.tool}\u2026"
+                }
+                is AgentEvent.ToolFinished -> {
+                    markLastToolDone(event.result.isError)
+                    if (event.result.isError) addError(event.result.content)
+                }
+                is AgentEvent.Info -> addInfo(event.text)
+                is AgentEvent.Error -> addError(event.text)
+                is AgentEvent.Cancelled -> statusLabel.text = "Stopped."
+                is AgentEvent.Done -> {
+                    statusLabel.text = "Ready"
+                    lastTurnUsage = event.usage
+                }
+            }
+            // stream-status (non-persistent, except Done handled above)
+            when (event) {
+                is AgentEvent.Done -> Unit
+                is AgentEvent.Thinking -> statusLabel.text = "Thinking\u2026"
+                is AgentEvent.AssistantTextDelta, is AgentEvent.AssistantText -> statusLabel.text = "Writing\u2026"
+                is AgentEvent.ToolStarted -> statusLabel.text = "Tool: ${event.tool}\u2026"
+                else -> Unit
+            }
+        }, ModalityState.nonModal())
     }
 
-    private fun onEvent(event: AgentEvent) {
-        when (event) {
-            is AgentEvent.UserMessage -> appendBlock("You", event.text, USER)
-            is AgentEvent.Thinking -> statusLabel.text = "Thinking\u2026"
-            is AgentEvent.Reasoning -> appendInline("\u2304 reasoning: ${preview(event.text)}", INFO)
-            // Streaming deltas are ignored in the Swing fallback \u2014 the trailing AssistantText renders
-            // the complete block, so there is no live token-by-token append here.
-            is AgentEvent.ReasoningDelta -> Unit
-            is AgentEvent.AssistantTextDelta -> Unit
-            is AgentEvent.AssistantText -> appendBlock("geai", event.text, ASSISTANT)
-            is AgentEvent.ToolStarted -> appendInline("\u2192 ${event.tool} ${preview(event.argsJson)}", TOOL)
-            is AgentEvent.ToolFinished -> {
-                val mark = if (event.result.isError) "\u2717" else "\u2713"
-                appendInline("$mark ${event.tool}: ${preview(event.result.content)}", TOOL)
-            }
+    // ── message helpers ───────────────────────────────────────────────────
+    private fun addMessage(who: String, bodyHtml: String, css: String) {
+        messages.add("""<div class="msg $css"><div class="who">$who</div><div class="body">$bodyHtml</div></div>""")
+        renderHtml()
+    }
 
-            is AgentEvent.Info -> appendInline(event.text, INFO)
-            is AgentEvent.Error -> {
-                appendBlock("Error", event.text, ERROR)
-                setRunning(false)
-            }
+    private fun addError(text: String) {
+        messages.add("""<div class="errline">${escapeHtml(text)}</div>""")
+        renderHtml()
+    }
 
-            is AgentEvent.Cancelled -> {
-                appendInline(event.text, INFO)
-                setRunning(false)
-            }
+    private fun addInfo(text: String) {
+        messages.add("""<div class="info">${escapeHtml(text)}</div>""")
+        renderHtml()
+    }
 
-            is AgentEvent.Done -> {
-                lastTurnUsage = event.usage
-                refreshStatus(event.usage)
-                setRunning(false)
-            }
+    // --- streaming helpers ---
+    // We accumulate raw markdown text alongside the rendered HTML so deltas can re-render.
+    private val rawTextBuf = StringBuilder()
+
+    private fun appendStreamingDelta(delta: String) {
+        if (streamingIdx < 0) {
+            streamingIdx = messages.size
+            rawTextBuf.clear()
+            messages.add("") // placeholder
         }
+        rawTextBuf.append(delta)
+        val rendered = Markdown.toHtml(rawTextBuf.toString())
+        messages[streamingIdx] = """<div class="msg assistant"><div class="who">geai</div><div class="body">$rendered</div></div>"""
+        renderHtml(scroll = true)
     }
 
-    /** Status bar HUD: a compact, glanceable token+cost line with a full breakdown in the tooltip. */
-    private fun refreshStatus(sessionUsage: TokenUsage) {
-        val state = GeaiSettings.getInstance().state
-        val model = state.loopModel()
-        val rates = Pricing.parse(state.modelPrices)
-        val rate = Pricing.rateFor(rates, model)
-        val cost = rate?.let { Pricing.costUsd(sessionUsage, it) }
-        val cacheChunk = if (sessionUsage.cacheReadTokens > 0 || sessionUsage.cacheWriteTokens > 0) {
-            " \uD83D\uDCBE${humanK(sessionUsage.cacheReadTokens)}"
+    private fun finalizeStreaming(finalHtml: String) {
+        if (streamingIdx in messages.indices) {
+            rawTextBuf.clear()
+            messages[streamingIdx] = """<div class="msg assistant"><div class="who">geai</div><div class="body">$finalHtml</div></div>"""
         } else {
-            ""
+            addMessage("geai", finalHtml, "assistant")
         }
-        val costChunk = cost?.let { " \u00b7 ~$" + String.format(Locale.US, "%.3f", it) } ?: ""
-        statusLabel.text = "\u2191${humanK(sessionUsage.inputTokens)} \u2193${humanK(sessionUsage.outputTokens)}$cacheChunk$costChunk"
-        statusLabel.toolTipText = "<html>" + UsageFormat.line("session", model, sessionUsage, state.modelPrices)
-            .replace("\u00b7", "&middot;") + "</html>"
+        renderHtml()
     }
 
-    /** Recomputes the projected cost of the NEXT turn from current input + transcript. Cheap heuristic. */
-    private fun updatePreflight() {
-        val text = input.text
-        if (text.isBlank()) {
-            preflightLabel.text = ""
-            return
+    private fun markLastToolDone(isError: Boolean) {
+        for (i in messages.indices.reversed()) {
+            val m = messages[i]
+            if (m.contains("\u23F3")) {
+                messages[i] = m.replace("\u23F3", if (isError) "\u274C" else "\u2705")
+                break
+            }
         }
-        val state = GeaiSettings.getInstance().state
-        val model = state.loopModel()
-        val transcriptTokens = ContextCompressor.estimatedTokens(service.currentSession().messages)
-        // Rough input token estimate: transcript + input text + ~3k for system+tools overhead.
-        val estimatedInput = transcriptTokens + (text.length / 4) + 3_000
-        val rates = Pricing.parse(state.modelPrices)
-        val rate = Pricing.rateFor(rates, model)
-        val costText = rate?.let { r ->
-            // Optimistic: assume the stable prefix hits cache (cacheRead price). Realistic for an
-            // ongoing session; the first turn pays the full input rate, which the user can see in the
-            // status line afterwards.
-            val effectiveRate = if (r.cacheRead > 0 && transcriptTokens > 1000) r.cacheRead else r.input
-            val cost = estimatedInput * effectiveRate / 1_000_000.0
-            " \u00b7 ~$" + String.format(Locale.US, "%.4f", cost)
-        }.orEmpty()
-        preflightLabel.text = "Next turn estimate: ~${humanK(estimatedInput)} input$costText [$model]"
+        renderHtml()
     }
 
-    private fun setRunning(running: Boolean) {
-        sendButton.isEnabled = !running
-        stopButton.isEnabled = running
-        newSessionButton.isEnabled = !running
-        input.isEnabled = !running
-        providerCombo.isEnabled = !running
-        modelCombo.isEnabled = !running
-        if (running) statusLabel.text = "Geai is working\u2026"
+    // ── full HTML rebuild ─────────────────────────────────────────────────
+    private fun renderWelcome() {
+        editorPane.text = buildPage(welcomeHtml())
+        editorPane.caretPosition = 0
     }
 
-    private fun renderSession() {
-        service.currentSession().messages.forEach { message -> renderMessage(message) }
+    private fun renderHtml(scroll: Boolean = false) {
+        val body = if (messages.isEmpty()) welcomeHtml() else messages.joinToString("\n")
+        editorPane.text = buildPage(body)
+        if (scroll) SwingUtilities.invokeLater { editorPane.caretPosition = editorPane.document.length }
     }
 
-    private fun renderMessage(message: ChatMessage) {
-        when (message.role) {
-            Role.USER -> message.text.takeIf { it.isNotBlank() }?.let { appendBlock("You", it, USER) }
-            Role.ASSISTANT -> {
-                message.text.takeIf { it.isNotBlank() }?.let { appendBlock("geai", it, ASSISTANT) }
-                message.toolUses.forEach { appendInline("\u2192 ${it.name} ${preview(it.inputJson)}", TOOL) }
+    private fun welcomeHtml() = """
+        <div class="welcome">
+          <div class="logo"><span class="mark">\u25C9</span> geai</div>
+          <p class="tagline">Describe the bug to get started.</p>
+        </div>
+    """.trimIndent()
+
+    private fun buildPage(body: String): String = """
+        <!DOCTYPE html>
+        <html><head><style>${STYLESHEET}</style></head>
+        <body><div id="root">$body</div></body></html>
+    """.trimIndent()
+
+    fun dispose() { /* listener is passed per-submit, nothing to clean up */ }
+
+    companion object {
+        private const val STYLESHEET = """
+            body {
+                margin:0; padding:0;
+                background:#1e1f22; color:#dfe1e5;
+                font-family:"Segoe UI",system-ui,sans-serif;
+                font-size:13px; line-height:1.5;
             }
-
-            Role.TOOL -> message.content.filterIsInstance<ContentBlock.ToolResult>().forEach {
-                val mark = if (it.isError) "\u2717" else "\u2713"
-                appendInline("$mark ${preview(it.content)}", TOOL)
-            }
-
-            Role.SYSTEM -> Unit
-        }
-    }
-
-    private fun appendBlock(header: String, body: String, headerStyle: SimpleAttributeSet) {
-        append("\n$header\n", headerStyle)
-        append(body.trim() + "\n", BODY)
-        scrollToEnd()
-    }
-
-    private fun appendInline(text: String, style: SimpleAttributeSet) {
-        append(text.trim() + "\n", style)
-        scrollToEnd()
-    }
-
-    private fun append(text: String, style: SimpleAttributeSet) {
-        val doc = transcript.styledDocument
-        doc.insertString(doc.length, text, style)
-    }
-
-    private fun scrollToEnd() {
-        transcript.caretPosition = transcript.styledDocument.length
-    }
-
-    private fun preview(text: String): String {
-        val oneLine = text.replace('\n', ' ').trim()
-        return if (oneLine.length <= 160) oneLine else oneLine.take(160) + "\u2026"
-    }
-
-    /** Compact token count: 1234 -> "1.2k", 12345 -> "12k". */
-    private fun humanK(tokens: Int): String = when {
-        tokens < 1000 -> tokens.toString()
-        tokens < 10_000 -> String.format(Locale.US, "%.1fk", tokens / 1000.0)
-        else -> "${tokens / 1000}k"
-    }
-
-    /**
-     * Cost-tier preset: a one-click bundle of provider + main model + navigator model. The user can
-     * always tweak fields in Settings afterwards \u2014 the preset just writes good defaults.
-     */
-    private enum class Preset(
-        val label: String,
-        val provider: LlmProvider,
-        val model: String,
-        val navigatorModel: String?,
-    ) {
-        FAST("\uD83D\uDE80 Fast", LlmProvider.ANTHROPIC, "claude-haiku-4-5-20251001", null),
-        BALANCED("\u2696 Balanced", LlmProvider.ANTHROPIC, "claude-sonnet-4-6", "claude-haiku-4-5-20251001"),
-        POWER("\uD83D\uDC8E Power", LlmProvider.ANTHROPIC, "claude-opus-4-8", "claude-haiku-4-5-20251001"),
-    }
-
-    private companion object {
-        val USER = style(JBColor(Color(0x2D6FE0), Color(0x589DF6)), bold = true)
-        val ASSISTANT = style(JBColor(Color(0x3C9A57), Color(0x6FAF74)), bold = true)
-        val BODY = style(null, bold = false)
-        val TOOL = style(JBColor.GRAY, bold = false, italic = true)
-        val INFO = style(JBColor.GRAY, bold = false, italic = true)
-        val ERROR = style(JBColor.RED, bold = true)
-
-        fun style(color: JBColor?, bold: Boolean, italic: Boolean = false): SimpleAttributeSet =
-            SimpleAttributeSet().apply {
-                color?.let { StyleConstants.setForeground(this, it) }
-                StyleConstants.setBold(this, bold)
-                StyleConstants.setItalic(this, italic)
-            }
+            #root { padding:14px; }
+            .welcome { text-align:center; padding-top:40px; }
+            .welcome .logo { font-size:26px; font-weight:700; }
+            .welcome .mark { color:#589df6; }
+            .welcome .tagline { color:#8c8c8c; max-width:480px; margin:8px auto 0; }
+            .msg { margin:0 0 14px; }
+            .msg .who { font-weight:600; margin-bottom:3px; }
+            .msg.user .who { color:#589df6; }
+            .msg.assistant .who { color:#4ec98b; }
+            .msg .body { white-space:normal; word-wrap:break-word; }
+            .msg .body p { margin:0 0 8px; }
+            .tool { color:#8c8c8c; font-size:12px; margin:0 0 6px;
+                    font-family:ui-monospace,Consolas,monospace; overflow-wrap:anywhere; }
+            .info { color:#8c8c8c; font-style:italic; margin:0 0 8px; overflow-wrap:anywhere; }
+            .errline { color:#e06c75; font-weight:600; margin:0 0 8px; white-space:pre-wrap; }
+            .reason { margin:0 0 12px; border:1px solid #393b40; border-radius:8px;
+                     background:#2b2d30; overflow:hidden; }
+            .reason summary { cursor:pointer; padding:7px 10px; color:#8c8c8c; font-size:12px; }
+            .reason .rbody { padding:6px 12px 10px; color:#8c8c8c; white-space:pre-wrap;
+                           font-size:12px; border-top:1px solid #393b40;
+                           font-family:ui-monospace,Consolas,monospace; }
+            pre { background:#181a1c; border:1px solid #393b40; border-radius:8px;
+                 padding:9px 11px; overflow-x:auto; margin:6px 0; }
+            code { font-family:ui-monospace,Consolas,monospace; font-size:12px; }
+            p code { background:#181a1c; border:1px solid #393b40; border-radius:4px; padding:1px 4px; }
+            .msg.assistant h1, .msg.assistant h2 { font-size:1.1em; font-weight:700; margin:10px 0 4px;
+                  padding-bottom:3px; border-bottom:1px solid #393b40; }
+            .msg.assistant h3 { font-size:1em; font-weight:700; margin:8px 0 3px; }
+            .msg.assistant ul, .msg.assistant ol { padding-left:1.4em; margin:4px 0; }
+            .msg.assistant li { margin:1px 0; }
+            .msg.assistant table { border-collapse:collapse; margin:6px 0; font-size:0.92em; width:100%%; }
+            .msg.assistant th, .msg.assistant td { border:1px solid #393b40; padding:3px 8px; text-align:left; }
+            .msg.assistant th { background:#35373b; font-weight:600; }
+            a { color:#589df6; }
+            hr { border:none; border-top:1px solid #393b40; margin:8px 0; }
+        """
     }
 }
+
+// ── Lightweight markdown → HTML ───────────────────────────────────────────
+private object Markdown {
+    fun toHtml(md: String): String {
+        val sb = StringBuilder()
+        val lines = md.replace("\r\n", "\n").split("\n")
+        var i = 0
+        var inCode = false
+        val codeBuf = StringBuilder()
+
+        while (i < lines.size) {
+            val line = lines[i]
+            if (line.trimStart().startsWith("```")) {
+                if (!inCode) { inCode = true; codeBuf.clear(); i++; continue }
+                else { sb.append("<pre><code>${escapeHtml(codeBuf.toString().trimEnd('\n'))}</code></pre>\n"); inCode = false; i++; continue }
+            }
+            if (inCode) { if (codeBuf.isNotEmpty()) codeBuf.append('\n'); codeBuf.append(line); i++; continue }
+
+            val trimmed = line.trim()
+            if (trimmed.isEmpty()) { sb.append("<br>"); i++; continue }
+            if (trimmed.matches(Regex("^(?:-{3,}|\\*{3,}|_{3,})$"))) { sb.append("<hr>"); i++; continue }
+
+            val hMatch = Regex("^(#{1,6})\\s+(.+)").matchEntire(trimmed)
+            if (hMatch != null) { val lv = hMatch.groupValues[1].length; sb.append("<h$lv>${inline(hMatch.groupValues[2])}</h$lv>\n"); i++; continue }
+
+            if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+                sb.append("<ul>\n")
+                while (i < lines.size) { val l = lines[i].trim(); if (l.startsWith("- ") || l.startsWith("* ")) { sb.append("<li>${inline(l.substring(2))}</li>\n"); i++ } else break }
+                sb.append("</ul>\n"); continue
+            }
+            if (trimmed.matches(Regex("^\\d+\\.\\s.*"))) {
+                sb.append("<ol>\n")
+                while (i < lines.size) { val m = Regex("^\\d+\\.\\s(.*)").matchEntire(lines[i].trim()); if (m != null) { sb.append("<li>${inline(m.groupValues[1])}</li>\n"); i++ } else break }
+                sb.append("</ol>\n"); continue
+            }
+
+            sb.append("<p>${inline(trimmed)}</p>\n"); i++
+        }
+        if (inCode && codeBuf.isNotEmpty()) sb.append("<pre><code>${escapeHtml(codeBuf.toString())}</code></pre>\n")
+        return sb.toString()
+    }
+
+    private fun inline(text: String): String {
+        var s = escapeHtml(text)
+        s = s.replace(Regex("`([^`]+)`"), "<code>$1</code>")
+        s = s.replace(Regex("\\*\\*\\*(.+?)\\*\\*\\*"), "<b><i>$1</i></b>")
+        s = s.replace(Regex("\\*\\*(.+?)\\*\\*"), "<b>$1</b>")
+        s = s.replace(Regex("\\*(.+?)\\*"), "<i>$1</i>")
+        s = s.replace(Regex("\\[([^]]+)]\\(([^)]+)\\)"), "<a href=\"$2\">$1</a>")
+        return s
+    }
+}
+
+private fun escapeHtml(s: String): String =
+    s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")

@@ -9,6 +9,7 @@ import com.github.saeldrit.geai.llm.ContentBlock
 import com.github.saeldrit.geai.llm.LlmClient
 import com.github.saeldrit.geai.llm.LlmClientFactory
 import com.github.saeldrit.geai.llm.LlmException
+import com.github.saeldrit.geai.llm.Role
 import com.github.saeldrit.geai.llm.StopReason
 import com.github.saeldrit.geai.llm.TokenUsage
 import com.github.saeldrit.geai.llm.ToolSpec
@@ -79,9 +80,16 @@ class AgentLoop(
     private var cachedSpecs: List<ToolSpec>? = null
     private var cachedSpecsKey: Int = 0
 
-    fun run(session: AgentSession, userText: String, listener: AgentListener, indicator: ProgressIndicator) {
-        session.messages.add(ChatMessage.user(userText))
-        listener.onEvent(AgentEvent.UserMessage(userText))
+    fun run(session: AgentSession, userText: String, listener: AgentListener, indicator: ProgressIndicator, attachments: List<Attachment> = emptyList()) {
+        val userContent = mutableListOf<ContentBlock>(ContentBlock.Text(userText))
+        attachments.filter { it.isImage }.forEach { att ->
+            userContent.add(ContentBlock.Image(att.base64Data, att.mediaType))
+        }
+        attachments.filter { !it.isImage }.forEach { att ->
+            userContent.add(ContentBlock.Text("[Attached file: ${att.name}]\n${String(java.util.Base64.getDecoder().decode(att.base64Data))}"))
+        }
+        session.messages.add(ChatMessage(Role.USER, userContent))
+        listener.onEvent(AgentEvent.UserMessage(userText, attachments))
 
         val client = clientOverride ?: try {
             LlmClientFactory.create()

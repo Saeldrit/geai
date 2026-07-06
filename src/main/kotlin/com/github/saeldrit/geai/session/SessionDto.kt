@@ -72,12 +72,14 @@ internal object SessionCodec {
         is ContentBlock.Text -> BlockDto(type = "text", text = block.text)
         is ContentBlock.ToolUse -> BlockDto(type = "tool_use", id = block.id, name = block.name, inputJson = block.inputJson)
         is ContentBlock.ToolResult -> BlockDto(type = "tool_result", toolUseId = block.toolUseId, content = block.content, isError = block.isError)
+        is ContentBlock.Image -> BlockDto(type = "image", text = block.mediaType, content = block.base64Data)
     }
 
     private fun blockFromDto(dto: BlockDto): ContentBlock? = when (dto.type) {
         "text" -> ContentBlock.Text(dto.text.orEmpty())
         "tool_use" -> ContentBlock.ToolUse(dto.id.orEmpty(), dto.name.orEmpty(), dto.inputJson ?: "{}")
         "tool_result" -> ContentBlock.ToolResult(dto.toolUseId.orEmpty(), dto.content.orEmpty(), dto.isError)
+        "image" -> ContentBlock.Image(base64Data = dto.content.orEmpty(), mediaType = dto.text.orEmpty())
         else -> null
     }
 }

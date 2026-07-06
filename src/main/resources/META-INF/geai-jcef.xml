@@ -1,0 +1,4 @@
+<!-- Optional JCEF module config — loaded only when the host IDE ships com.intellij.modules.jcef.
+     Enables the full-fidelity HTML chat UI (GeaiWebPanel). When absent the plugin
+     degrades to the Swing fallback (GeaiChatPanel). -->
+<idea-plugin/>

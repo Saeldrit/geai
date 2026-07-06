@@ -121,6 +121,14 @@
   .codeblock .copybtn:hover{opacity:1;color:var(--fg);border-color:var(--accent)}
   .codeblock .copybtn.done{color:#4ec98b;border-color:#4ec98b;opacity:1}
 
+  /* attachments */
+  #attbar{display:flex;gap:6px;padding:4px 0;overflow-x:auto;flex-wrap:nowrap}
+  .attitem{position:relative;flex-shrink:0;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--card);max-width:120px}
+  .attitem .attimg{display:block;width:100%;height:80px;object-fit:cover}
+  .attitem .attname{display:block;padding:2px 6px 4px;font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .attitem .attremove{position:absolute;top:2px;right:2px;background:rgba(0,0,0,.65);color:#fff;border:none;border-radius:50%;width:18px;height:18px;font-size:11px;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1;padding:0}
+  .attitem .attremove:hover{background:rgba(224,108,117,.85)}
+
   /* tool-group: collapsible block for all tool calls in one agent turn */
   .tools-group{margin:0 0 8px;border:1px solid var(--border);border-radius:8px;background:var(--card);font-size:12px;color:var(--muted)}
   .tools-group>summary{cursor:pointer;list-style:none;padding:5px 10px;display:flex;align-items:center;gap:6px;user-select:none}
@@ -189,10 +197,13 @@
   <div id="composer">
     <div id="cmdmenu" class="hidden"></div>
     <div id="inputwrap">
+      <div id="attbar" class="hidden"></div>
       <textarea id="input" placeholder="Describe the bug, e.g. “invalid data reaches the UI, I can’t find where we lose it”. Enter to send, Shift+Enter for a new line. Type / for commands."></textarea>
     </div>
     <div id="ctxbar"><div class="bar"><div class="fill ok" id="ctxfill" style="width:0%"></div></div><span class="pct" id="ctxpct"></span><span class="cost" id="ctxcost"></span></div>
     <div id="footer">
+      <button class="iconbtn" id="btnAttach" aria-label="Attach file" data-tip="Attach file"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg></button>
+      <input type="file" id="fileInput" multiple style="display:none"/>
       <span id="tokens"></span>
       <button id="send">Send</button>
     </div>
@@ -214,7 +225,7 @@
 
   function send2k(obj){ if(window.geaiSend) window.geaiSend(JSON.stringify(obj)); }
 
-  function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+  function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
   function b64(s){ try{ return btoa(unescape(encodeURIComponent(s))); }catch(e){ return ''; } }
   function unb64(s){ try{ return decodeURIComponent(escape(atob(s))); }catch(e){ return ''; } }
   // turn `path.ext[:line]` references into clickable links that open the file in the editor
@@ -437,8 +448,89 @@
   }
 
   function autoGrow(){ input.style.height='auto'; input.style.height=Math.min(input.scrollHeight, Math.floor(window.innerHeight*0.5))+'px'; }
-  function submit(){ if(running) { send2k({action:'stop'}); return; }
-    var t=input.value.trim(); if(!t) return; input.value=''; hideCmdMenu(); autoGrow(); setRunning(true); send2k({action:'submit',text:t}); }
+  // ---- attachments ----
+  var pendingAttachments = [];
+  var attbar = document.getElementById('attbar');
+  var fileInput = document.getElementById('fileInput');
+  var btnAttach = document.getElementById('btnAttach');
+
+  function renderAttachments(){
+    attbar.innerHTML='';
+    if(!pendingAttachments.length){ attbar.classList.add('hidden'); return; }
+    attbar.classList.remove('hidden');
+    pendingAttachments.forEach(function(a,i){
+      var item=document.createElement('div'); item.className='attitem';
+      if(a.mediaType && a.mediaType.indexOf('image/')===0){
+        var img=document.createElement('img'); img.className='attimg'; img.src='data:'+a.mediaType+';base64,'+a.base64Data;
+        item.appendChild(img);
+      }
+      var nm=document.createElement('div'); nm.className='attname'; nm.textContent=a.name; item.appendChild(nm);
+      var rm=document.createElement('button'); rm.className='attremove'; rm.textContent='\u00d7';
+      rm.onclick=function(e){ e.stopPropagation(); pendingAttachments.splice(i,1); renderAttachments(); };
+      item.appendChild(rm);
+      attbar.appendChild(item);
+    });
+  }
+
+  function readFileAsBase64(file, cb){
+    if(file.size > 20*1024*1024){ cb(null); return; }
+    var reader = new FileReader();
+    reader.onerror = function(){ cb(null); };
+    reader.onload = function(e){
+      var b64 = e.target.result.split(',')[1] || '';
+      cb({ name: file.name, mediaType: file.type || 'application/octet-stream', base64Data: b64 });
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function addFiles(files){
+    if(!files || !files.length) return;
+    var remaining = 10 - pendingAttachments.length;
+    if(remaining <= 0) return;
+    var toRead = Array.prototype.slice.call(files, 0, remaining);
+    var done = 0;
+    toRead.forEach(function(f){
+      readFileAsBase64(f, function(att){
+        if(att) pendingAttachments.push(att);
+        done++;
+        if(done === toRead.length) renderAttachments();
+      });
+    });
+  }
+
+  if(btnAttach) btnAttach.onclick = function(){ fileInput.click(); };
+  if(fileInput) fileInput.onchange = function(){ addFiles(this.files); this.value=''; };
+  var composer = document.getElementById('composer');
+  if(composer){
+    composer.addEventListener('dragover', function(e){ e.preventDefault(); e.stopPropagation(); });
+    composer.addEventListener('drop', function(e){ e.preventDefault(); e.stopPropagation(); addFiles(e.dataTransfer.files); });
+  }
+  if(input){
+    input.addEventListener('paste', function(e){
+      var cd = e.clipboardData || window.clipboardData;
+      if(!cd) return;
+      var items = cd.items;
+      if(!items) return;
+      var imgFiles = [];
+      for(var i=0;i<items.length;i++){
+        if(items[i].type && items[i].type.indexOf('image/')===0){
+          var f = items[i].getAsFile();
+          if(f) imgFiles.push(f);
+        }
+      }
+      if(imgFiles.length){ e.preventDefault(); addFiles(imgFiles); }
+    });
+  }
+
+  function submit(){
+    if(running){ send2k({action:'stop'}); return; }
+    var t=input.value.trim();
+    if(!t && !pendingAttachments.length) return;
+    var atts = pendingAttachments.slice();
+    pendingAttachments=[]; renderAttachments();
+    input.value=''; hideCmdMenu(); autoGrow(); setRunning(true);
+    send2k({action:'submit', text:t, attachments:atts});
+  }
 
   // ---- slash-command menu ----
   function hideCmdMenu(){ cmdMenu.classList.add('hidden'); cmdMenu.innerHTML=''; cmdActive=-1; cmdMatches=[]; }

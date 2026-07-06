@@ -192,6 +192,7 @@ object ContextCompressor {
                 block
             }
 
+        is ContentBlock.Image -> block   // images are never truncated
         is ContentBlock.ToolUse -> block
     }
 
@@ -210,6 +211,7 @@ object ContextCompressor {
     private fun blockLength(block: ContentBlock): Int = when (block) {
         is ContentBlock.Text -> block.text.length
         is ContentBlock.ToolUse -> block.name.length + block.inputJson.length
+        is ContentBlock.Image -> block.base64Data.length  // rough size estimate
         is ContentBlock.ToolResult -> block.content.length
     }
 }

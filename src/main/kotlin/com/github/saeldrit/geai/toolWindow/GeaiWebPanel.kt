@@ -100,7 +100,21 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
     private fun dispatch(action: String, obj: JsonObject) {
         when (action) {
             "ready" -> exec("window.geaiInit(${JsonSupport.gson.toJson(initState())});")
-            "submit" -> obj.get("text")?.asString?.let { submit(it) }
+            "submit" -> {
+                val text = obj.get("text")?.asString ?: ""
+                val attArr = obj.getAsJsonArray("attachments")
+                val attachments = if (attArr != null && attArr.size() > 0) {
+                    attArr.map { a ->
+                        val o = a.asJsonObject
+                        com.github.saeldrit.geai.agent.Attachment(
+                            name = o.get("name")?.asString ?: "file",
+                            mediaType = o.get("mediaType")?.asString ?: "application/octet-stream",
+                            base64Data = o.get("data")?.asString ?: ""
+                        )
+                    }
+                } else emptyList()
+                submitWithAttachments(text, attachments)
+            }
             "stop" -> service.stop()
             "newSession" -> {
                 service.newSession()
@@ -145,12 +159,16 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
         }
     }
 
-    private fun submit(text: String) {
+    private fun submit(text: String) = submitWithAttachments(text, emptyList())
+
+    private fun submitWithAttachments(text: String, attachments: List<com.github.saeldrit.geai.agent.Attachment>) {
         val trimmed = text.trim()
-        if (trimmed.isEmpty() || service.isRunning()) return
+        if (trimmed.isEmpty() && attachments.isEmpty()) return
+        if (service.isRunning()) return
+        val effectiveText = trimmed.ifEmpty { "(file attached)" }
         val session = service.currentSession()
-        if (session.isEmpty && session.title == "New session") session.title = trimmed.take(60)
-        service.submit(trimmed, webListener())
+        if (session.isEmpty && session.title == "New session") session.title = effectiveText.take(60)
+        service.submit(effectiveText, webListener(), attachments)
     }
 
     private fun loadSession(id: String) {

@@ -13,6 +13,9 @@ sealed interface ContentBlock {
     /** Plain text, possibly streamed/aggregated. */
     data class Text(val text: String) : ContentBlock
 
+    /** An inline image attached by the user. [mediaType] is a MIME type (e.g. "image/png"). */
+    data class Image(val base64Data: String, val mediaType: String) : ContentBlock
+
     /** Model's request to invoke a tool. [inputJson] is the raw JSON object argument. */
     data class ToolUse(
         val id: String,

@@ -35,10 +35,14 @@ import com.intellij.openapi.progress.ProgressIndicator
 class OpenAiCompatibleClient(
     private val baseUrl: String,
     private val apiKey: String,
+    private val provider: com.github.saeldrit.geai.settings.LlmProvider = com.github.saeldrit.geai.settings.LlmProvider.OPENAI_COMPATIBLE,
 ) : LlmClient {
 
     /** OpenRouter is the only OpenAI-compatible endpoint that honours explicit cache_control blocks. */
     private val supportsExplicitCacheControl: Boolean = baseUrl.contains("openrouter.ai", ignoreCase = true)
+
+    /** Xiaomi MiMo does not support OpenAI-specific extensions like stream_options or tool_choice. */
+    private val isXiaomiMiMo: Boolean = provider == com.github.saeldrit.geai.settings.LlmProvider.XIAOMI
 
     override fun listModels(indicator: ProgressIndicator): List<String>? {
         val modelsUrl = modelsListUrl(baseUrl)
@@ -211,7 +215,9 @@ class OpenAiCompatibleClient(
                 addProperty("stream", true)
                 // Ask for usage on the terminal SSE chunk; without this many OpenAI-compatible servers
                 // omit token counts on streamed turns, blinding the cost guard and the sub-agent budget.
-                add("stream_options", JsonObject().apply { addProperty("include_usage", true) })
+                if (!isXiaomiMiMo) {
+                    add("stream_options", JsonObject().apply { addProperty("include_usage", true) })
+                }
             }
         }
         val messages = JsonArray()
@@ -237,7 +243,9 @@ class OpenAiCompatibleClient(
                 })
             }
             root.add("tools", tools)
-            root.addProperty("tool_choice", "auto")
+            if (!isXiaomiMiMo) {
+                root.addProperty("tool_choice", "auto")
+            }
         }
         return root
     }
@@ -287,7 +295,27 @@ class OpenAiCompatibleClient(
     private fun appendWireMessages(target: JsonArray, message: ChatMessage, withCacheBreakpoint: Boolean = false) {
         when (message.role) {
             Role.SYSTEM -> target.add(simpleMessage("system", message.text))
-            Role.USER -> target.add(simpleMessage("user", message.text))
+            Role.USER -> {
+                val images = message.content.filterIsInstance<ContentBlock.Image>()
+                if (images.isEmpty()) {
+                    target.add(simpleMessage("user", message.text))
+                } else {
+                    val parts = JsonArray()
+                    parts.add(textPart(message.text, false))
+                    images.forEach { img ->
+                        parts.add(JsonObject().apply {
+                            addProperty("type", "image_url")
+                            add("image_url", JsonObject().apply {
+                                addProperty("url", "data:${img.mediaType};base64,${img.base64Data}")
+                            })
+                        })
+                    }
+                    target.add(JsonObject().apply {
+                        addProperty("role", "user")
+                        add("content", parts)
+                    })
+                }
+            }
             Role.ASSISTANT -> target.add(assistantMessage(message))
             Role.TOOL -> {
                 val results = message.content.filterIsInstance<ContentBlock.ToolResult>()

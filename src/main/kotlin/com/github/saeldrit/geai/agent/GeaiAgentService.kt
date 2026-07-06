@@ -2,6 +2,7 @@ package com.github.saeldrit.geai.agent
 
 import com.github.saeldrit.geai.context.ContextCompressor
 import com.github.saeldrit.geai.context.TranscriptSummary
+import com.github.saeldrit.geai.llm.ContentBlock
 import com.github.saeldrit.geai.llm.LlmClientFactory
 import com.github.saeldrit.geai.llm.LlmException
 import com.github.saeldrit.geai.llm.TokenUsage
@@ -80,9 +81,9 @@ class GeaiAgentService(private val project: Project) {
         currentIndicator?.cancel()
     }
 
-    fun submit(userText: String, listener: AgentListener) {
+    fun submit(userText: String, listener: AgentListener, attachments: List<Attachment> = emptyList()) {
         val text = userText.trim()
-        if (text.isEmpty()) return
+        if (text.isEmpty() && attachments.isEmpty()) return
         if (!running.compareAndSet(false, true)) {
             listener.onEvent(AgentEvent.Error("Geai is already working — press Stop first."))
             return
@@ -93,6 +94,11 @@ class GeaiAgentService(private val project: Project) {
         }
 
         val store = GeaiSessionStore.getInstance(project)
+        // Non-image attachments (text files) are prepended as text blocks
+        val textFileBlocks = attachments.filter { !it.isImage }.map { att ->
+            ContentBlock.Text("[Attached file: ${att.name}]\n${String(java.util.Base64.getDecoder().decode(att.base64Data))}")
+        }
+
         val savingListener = AgentListener { event ->
             listener.onEvent(event)
             when (event) {
@@ -106,7 +112,7 @@ class GeaiAgentService(private val project: Project) {
             override fun run(indicator: ProgressIndicator) {
                 currentIndicator = indicator
                 try {
-                    AgentLoop(project, GeaiToolset.registry()).run(session, text, savingListener, indicator)
+                    AgentLoop(project, GeaiToolset.registry()).run(session, text, savingListener, indicator, attachments)
                 } finally {
                     store.save(session)
                     running.set(false)

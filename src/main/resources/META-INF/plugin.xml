@@ -6,6 +6,15 @@
 
     <depends>com.intellij.modules.platform</depends>
     <!--
+      JCEF (Chromium-based browser) powers the full-fidelity HTML chat UI.
+      Android Studio and some slim JBR builds may omit the native libraries;
+      when JCEF is unavailable the plugin degrades to the Swing fallback
+      (GeaiChatPanel) which looks and works differently.
+      Declaring the dependency here ensures the platform loads the JCEF module
+      when the host IDE ships it.
+    -->
+    <depends optional="true" config-file="geai-jcef.xml">com.intellij.modules.jcef</depends>
+    <!--
       Optional dependency on the Java plugin: enables psi: anchor resolution and live PSI-based
       structure navigation (classes, methods, inheritance) behind graph_query / graph_neighbors /
       context_bundle. geai loads and works without it — psi: anchors and class structure degrade

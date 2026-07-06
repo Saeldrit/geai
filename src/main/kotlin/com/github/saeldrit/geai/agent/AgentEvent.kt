@@ -3,9 +3,18 @@ package com.github.saeldrit.geai.agent
 import com.github.saeldrit.geai.llm.TokenUsage
 import com.github.saeldrit.geai.tools.ToolResult
 
+/** Immutable attachment carried by a user message. */
+data class Attachment(
+    val name: String,
+    val mediaType: String,   // MIME type, e.g. "image/png", "application/pdf"
+    val base64Data: String,
+) {
+    val isImage: Boolean get() = mediaType.startsWith("image/")
+}
+
 /** Events emitted by [AgentLoop] as a turn progresses. Delivered on the agent's worker thread. */
 sealed interface AgentEvent {
-    data class UserMessage(val text: String) : AgentEvent
+    data class UserMessage(val text: String, val attachments: List<Attachment> = emptyList()) : AgentEvent
     data object Thinking : AgentEvent
 
     /** The model's internal reasoning. Rendered collapsed (hidden behind a toggle), never inline. */
