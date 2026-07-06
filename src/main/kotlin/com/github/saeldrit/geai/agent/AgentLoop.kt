@@ -9,6 +9,7 @@ import com.github.saeldrit.geai.llm.ContentBlock
 import com.github.saeldrit.geai.llm.LlmClient
 import com.github.saeldrit.geai.llm.LlmClientFactory
 import com.github.saeldrit.geai.llm.LlmException
+import com.github.saeldrit.geai.settings.LlmProvider
 import com.github.saeldrit.geai.llm.Role
 import com.github.saeldrit.geai.llm.StopReason
 import com.github.saeldrit.geai.llm.TokenUsage
@@ -81,11 +82,21 @@ class AgentLoop(
     private var cachedSpecsKey: Int = 0
 
     fun run(session: AgentSession, userText: String, listener: AgentListener, indicator: ProgressIndicator, attachments: List<Attachment> = emptyList()) {
+        val settings = GeaiSettings.getInstance().state
+        val modelSupportsVision = LlmProvider.modelSupportsVision(settings.model ?: "")
+
         val userContent = mutableListOf<ContentBlock>(ContentBlock.Text(userText))
-        attachments.filter { it.isImage }.forEach { att ->
-            userContent.add(ContentBlock.Image(att.base64Data, att.mediaType))
+        val imageAttachments = attachments.filter { it.isImage }
+        val nonImageAttachments = attachments.filter { !it.isImage }
+
+        if (imageAttachments.isNotEmpty() && !modelSupportsVision) {
+            listener.onEvent(AgentEvent.Info("⚠ Модель ${settings.model} не поддерживает изображения — они будут проигнорированы. Выберите vision-модель для работы с картинками."))
+        } else {
+            imageAttachments.forEach { att ->
+                userContent.add(ContentBlock.Image(att.base64Data, att.mediaType))
+            }
         }
-        attachments.filter { !it.isImage }.forEach { att ->
+        nonImageAttachments.forEach { att ->
             userContent.add(ContentBlock.Text("[Attached file: ${att.name}]\n${String(java.util.Base64.getDecoder().decode(att.base64Data))}"))
         }
         session.messages.add(ChatMessage(Role.USER, userContent))
@@ -98,7 +109,6 @@ class AgentLoop(
             return
         }
 
-        val settings = GeaiSettings.getInstance().state
         val systemPrompt = SystemPrompt.build(project)
         // A leading /<cmd> selects a MODE: pre-load its tool group and steer via a focused directive.
         val command = SlashCommands.parse(userText)
@@ -132,11 +142,13 @@ class AgentLoop(
         try {
             var iteration = 0
 
+
             // Stuck-loop detection: fingerprint each step (calls + their FULL results) and keep a small
             // ring of recent fingerprints. A recurring fingerprint = no progress (a consecutive repeat OR
             // an A/B/A/B cycle) → nudge once, then abort if it persists.
             val recentStepSignatures = ArrayDeque<Long>()
             var noProgressHits = 0
+            var visionRetries = 0
             // On-demand tool groups (progressive disclosure). Pre-seeded with the mode's group and,
             // while a debug session is live, the debug group — saving a load_tools round-trip.
             val activeGroups = linkedSetOf<String>()
@@ -218,17 +230,24 @@ class AgentLoop(
                 listener.onEvent(AgentEvent.Thinking)
                 val llmStart = System.currentTimeMillis()
                 val contextChars = outgoing.sumOf { m: ChatMessage -> m.text.length + m.content.sumOf { b -> b.toString().length } }
-                val result = client.chatStream(request, indicator) { event ->
-                    when (event) {
-                        // Stream text/thinking as deltas to the UI; full message emitted once as AssistantText.
-                        is com.github.saeldrit.geai.llm.StreamEvent.TextDelta ->
-                            listener.onEvent(AgentEvent.AssistantTextDelta(event.text))
-                        is com.github.saeldrit.geai.llm.StreamEvent.ThinkingDelta ->
-                            listener.onEvent(AgentEvent.ReasoningDelta(event.text))
-                        is com.github.saeldrit.geai.llm.StreamEvent.ToolUseStarted,
-                        is com.github.saeldrit.geai.llm.StreamEvent.ToolUseInputDelta,
-                        is com.github.saeldrit.geai.llm.StreamEvent.Done -> Unit
+                val result: com.github.saeldrit.geai.llm.ChatResult = try {
+                    client.chatStream(request, indicator) { event ->
+                        when (event) {
+                            is com.github.saeldrit.geai.llm.StreamEvent.TextDelta ->
+                                listener.onEvent(AgentEvent.AssistantTextDelta(event.text))
+                            is com.github.saeldrit.geai.llm.StreamEvent.ThinkingDelta ->
+                                listener.onEvent(AgentEvent.ReasoningDelta(event.text))
+                            is com.github.saeldrit.geai.llm.StreamEvent.ToolUseStarted,
+                            is com.github.saeldrit.geai.llm.StreamEvent.ToolUseInputDelta,
+                            is com.github.saeldrit.geai.llm.StreamEvent.Done -> Unit
+                        }
                     }
+                } catch (e: LlmException) {
+                    if (isVisionError(e.message ?: "") && stripImagesFromSession(session) && visionRetries++ < 1) {
+                        listener.onEvent(AgentEvent.Info("⚠ Изображения удалены из сессии — повторяю запрос без них..."))
+                        continue // retry the loop iteration with stripped session — at most once
+                    }
+                    throw e // not a vision error, nothing to strip, or already retried — propagate
                 }
                 val llmMs = System.currentTimeMillis() - llmStart
                 session.totalUsage += result.usage
@@ -372,7 +391,21 @@ class AgentLoop(
         } catch (_: ProcessCanceledException) {
             listener.onEvent(AgentEvent.Cancelled())
         } catch (e: LlmException) {
-            listener.onEvent(AgentEvent.Error(e.message ?: "LLM request failed."))
+            // If the provider rejected the request because the model doesn't support images,
+            // strip all image blocks from the session transcript so the user can retry without
+            // the same error repeating forever.
+            val msg = e.message ?: ""
+            if (session.messages.any { it.content.any { c -> c is ContentBlock.Image } }
+                && isVisionError(msg)) {
+                stripImagesFromSession(session)
+                listener.onEvent(AgentEvent.Error(
+                    "⚠ Model doesn't support image input. The image has been removed from the session — " +
+                        "please retry without attachments or switch to a vision-capable model " +
+                        "(Claude, GPT-4o, Gemini). Details: $msg"
+                ))
+            } else {
+                listener.onEvent(AgentEvent.Error(msg.ifBlank { "LLM request failed." }))
+            }
         } catch (e: Exception) {
             listener.onEvent(AgentEvent.Error("Unexpected error: ${e.message ?: e.javaClass.simpleName}"))
         } finally {
@@ -485,13 +518,30 @@ class AgentLoop(
         var h = 1125899906842597L
         for (c in calls) {
             h = h * 31 + c.name.hashCode()
-            h = h * 31 + c.inputJson.hashCode()
+            // Normalize read_file: strip start_line/end_line so that reading the same file with
+            // different ranges produces the same fingerprint — otherwise the stuck-loop guard
+            // never fires for an agent that varies its read ranges each iteration.
+            h = h * 31 + normalizeForSignature(c.name, c.inputJson).hashCode()
         }
         for (r in results) {
+            // Exclude note results — they contain "Noted (N total)" where N grows each call,
+            // masking repeated tool patterns behind a changing scratchpad size.
+            if (r.toolUseId.isNotBlank()) {
+                val callerName = calls.firstOrNull { it.id == r.toolUseId }?.name
+                if (callerName == GeaiToolset.NOTE) continue
+            }
             h = h * 31 + r.isError.hashCode()
             h = h * 31 + r.content.hashCode()
         }
         return h
+    }
+
+    /** Strip volatile parameters from tool input JSON for stable fingerprinting. */
+    private fun normalizeForSignature(toolName: String, inputJson: String): String {
+        if (toolName != "read_file") return inputJson
+        return inputJson
+            .replace(Regex("""\s*"start_line"\s*:\s*\d+\s*,?"""), "")
+            .replace(Regex("""\s*,?\s*"end_line"\s*:\s*\d+"""), "")
     }
 
     /**
@@ -776,7 +826,7 @@ class AgentLoop(
         const val MAX_DELEGATIONS = 16
 
         /** Stuck-loop guard: how many recent step fingerprints to remember (enough to catch short cycles). */
-        const val STUCK_RING_SIZE = 5
+        const val STUCK_RING_SIZE = 10
 
         /** Soft cap on notes shown to the model — older notes fold with a marker. */
         const val MAX_NOTES_RETAINED = 50
@@ -791,6 +841,36 @@ class AgentLoop(
                 "needed to keep working: the original task; files, symbols and APIs examined WITH their " +
                 "file:line locations; concrete findings and conclusions; decisions and edits already made; and " +
                 "open questions / next steps. Drop raw file contents and chatter. Terse bullet points, no preamble."
+
+        /** Keywords that signal a provider rejected the request because images aren't supported. */
+        private val VISION_ERROR_KEYWORDS = listOf(
+            "image input", "image_url", "vision", "visual",
+            "does not support image", "doesn't support image",
+            "no endpoints found",
+        )
+
+        /** Heuristic: does [errorMessage] look like the provider rejected image content? */
+        private fun isVisionError(errorMessage: String): Boolean {
+            val lower = errorMessage.lowercase()
+            return VISION_ERROR_KEYWORDS.any { lower.contains(it) }
+        }
+
+        /** Remove all [ContentBlock.Image] blocks from every message in [session]. Returns true if any images were stripped. */
+        private fun stripImagesFromSession(session: AgentSession): Boolean {
+            var stripped = false
+            for (msg in session.messages) {
+                val images = msg.content.filterIsInstance<ContentBlock.Image>()
+                if (images.isNotEmpty()) {
+                    stripped = true
+                    val cleaned = msg.content.filter { it !is ContentBlock.Image }.toMutableList()
+                    if (cleaned.isEmpty()) cleaned.add(ContentBlock.Text("(image removed — not supported by model)"))
+                    // ChatMessage is a data class — replace in-place via the mutable list
+                    val idx = session.messages.indexOf(msg)
+                    session.messages[idx] = msg.copy(content = cleaned)
+                }
+            }
+            return stripped
+        }
 
         /** Shared pool for parallel tool execution — reused across turns to avoid repeated thread creation. */
         private val SHARED_POOL: ExecutorService = Executors.newFixedThreadPool(

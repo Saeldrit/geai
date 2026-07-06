@@ -164,6 +164,7 @@ class ContextCompressorTest {
                         assertTrue("orphaned tool_result ${block.toolUseId}", seen.contains(block.toolUseId))
 
                     is ContentBlock.Text -> Unit
+                    is ContentBlock.Image -> Unit
                 }
             }
         }
