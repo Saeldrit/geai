@@ -1,6 +1,7 @@
 package com.github.saeldrit.geai.session
 
 import com.github.saeldrit.geai.agent.AgentSession
+import com.github.saeldrit.geai.context.NoteEntry
 import com.github.saeldrit.geai.llm.ChatMessage
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -11,14 +12,14 @@ class SessionCodecTest {
     @Test
     fun `scratchpad survives a dto round-trip`() {
         val session = AgentSession(title = "T")
-        session.scratchpad.add("finding A at Foo.kt:10")
-        session.scratchpad.add("decision: use the repository pattern")
+        session.scratchpad.add(NoteEntry("finding A at Foo.kt:10"))
+        session.scratchpad.add(NoteEntry("decision: use the repository pattern"))
 
         val restored = SessionCodec.fromDto(SessionCodec.toDto(session))
 
         assertEquals(
             listOf("finding A at Foo.kt:10", "decision: use the repository pattern"),
-            restored.scratchpad,
+            restored.scratchpad.map { it.text },
         )
     }
 

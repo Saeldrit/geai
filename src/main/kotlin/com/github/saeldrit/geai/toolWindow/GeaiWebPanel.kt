@@ -123,7 +123,7 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
 
             "openSettings" -> ShowSettingsUtil.getInstance().showSettingsDialog(project, GeaiSettingsConfigurable::class.java)
             "benchmark" -> com.github.saeldrit.geai.benchmark.BenchmarkLauncher.launch(project)
-            "compact" -> service.compact(webListener())
+            "compact" -> service.compact(webListener(service.currentSession().id))
             "history" -> exec("window.geaiHistory(${JsonSupport.gson.toJson(historyList())});")
             "loadSession" -> obj.get("id")?.asString?.let { loadSession(it) }
             "deleteSession" -> obj.get("id")?.asString?.let {
@@ -168,7 +168,7 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
         val effectiveText = trimmed.ifEmpty { "(file attached)" }
         val session = service.currentSession()
         if (session.isEmpty && session.title == "New session") session.title = effectiveText.take(60)
-        service.submit(effectiveText, webListener(), attachments)
+        service.submit(effectiveText, webListener(session.id), attachments)
     }
 
     private fun loadSession(id: String) {
@@ -177,7 +177,11 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
         exec("window.geaiInit(${JsonSupport.gson.toJson(initState())});")
     }
 
-    private fun webListener(): AgentListener = AgentListener { event ->
+    private fun webListener(sessionId: String): AgentListener = AgentListener { event ->
+        // Guard: silently drop events from a session that is no longer active.
+        // Without this, a still-running turn from the old session would push events into
+        // the new session's chat after the user switches.
+        if (service.currentSession()?.id != sessionId) return@AgentListener
         val json = JsonSupport.gson.toJson(eventToJson(event))
         ApplicationManager.getApplication().invokeLater({
             exec("window.geaiEvent($json);")

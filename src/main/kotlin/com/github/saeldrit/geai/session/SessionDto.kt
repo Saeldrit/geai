@@ -1,6 +1,8 @@
 package com.github.saeldrit.geai.session
 
 import com.github.saeldrit.geai.agent.AgentSession
+import com.github.saeldrit.geai.context.NoteEntry
+import com.github.saeldrit.geai.context.NotePriority
 import com.github.saeldrit.geai.llm.ChatMessage
 import com.github.saeldrit.geai.llm.ContentBlock
 import com.github.saeldrit.geai.llm.Role
@@ -20,6 +22,15 @@ internal data class SessionDto(
     var outputTokens: Int = 0,
     var messages: List<MessageDto> = emptyList(),
     var scratchpad: List<String> = emptyList(),
+    var notes: List<NoteEntryDto> = emptyList(),
+    var activeTask: String = "",
+)
+
+internal data class NoteEntryDto(
+    var text: String = "",
+    var priority: String = "NORMAL",
+    var anchor: String? = null,
+    var turn: Int = 0,
 )
 
 internal data class MessageDto(
@@ -50,7 +61,11 @@ internal object SessionCodec {
         messages = session.messages.map { message ->
             MessageDto(message.role.name, message.content.map(::blockToDto))
         },
-        scratchpad = session.scratchpad.toList(),
+        scratchpad = emptyList(), // legacy field kept for schema compat; new data in 'notes'
+        notes = session.scratchpad.map { note ->
+            NoteEntryDto(note.text, note.priority.name, note.anchor, note.turn)
+        },
+        activeTask = session.activeTask,
     )
 
     fun fromDto(dto: SessionDto): AgentSession {
@@ -64,7 +79,20 @@ internal object SessionCodec {
             session.messages.add(ChatMessage(role, messageDto.blocks.mapNotNull(::blockFromDto)))
         }
         session.totalUsage = TokenUsage(dto.inputTokens, dto.outputTokens)
-        session.scratchpad.addAll(dto.scratchpad)
+        if (dto.notes.isNotEmpty()) {
+            session.scratchpad.addAll(dto.notes.map { noteDto ->
+                NoteEntry(
+                    text = noteDto.text,
+                    priority = runCatching { NotePriority.valueOf(noteDto.priority.uppercase()) }.getOrDefault(NotePriority.NORMAL),
+                    anchor = noteDto.anchor,
+                    turn = noteDto.turn,
+                )
+            })
+        } else if (dto.scratchpad.isNotEmpty()) {
+            // Backward compat: old sessions stored scratchpad as List<String>
+            session.scratchpad.addAll(dto.scratchpad.map { NoteEntry(text = it, priority = NotePriority.NORMAL) })
+        }
+        session.activeTask = dto.activeTask
         return session
     }
 

@@ -14,13 +14,9 @@ import com.intellij.openapi.progress.ProgressIndicator
  */
 object TranscriptSummary {
 
-    private const val MAX_TOKENS = 1500
+    private const val MAX_TOKENS = 2000
 
-    const val DOCTRINE =
-        "You compress an AI coding agent's transcript. Output a DENSE recap that preserves everything " +
-            "needed to keep working: the original task; files, symbols and APIs examined WITH their " +
-            "file:line locations; concrete findings and conclusions; decisions and edits already made; and " +
-            "open questions / next steps. Drop raw file contents and chatter. Terse bullet points, no preamble."
+    val DOCTRINE: String = SemanticCompressor.DOCTRINE
 
     fun summarizer(
         client: LlmClient,

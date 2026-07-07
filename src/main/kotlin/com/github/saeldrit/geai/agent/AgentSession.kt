@@ -1,5 +1,6 @@
 package com.github.saeldrit.geai.agent
 
+import com.github.saeldrit.geai.context.NoteEntry
 import com.github.saeldrit.geai.llm.ChatMessage
 import com.github.saeldrit.geai.llm.TokenUsage
 import java.util.UUID
@@ -28,7 +29,15 @@ class AgentSession(
      * multi-file task keeps what it found while the raw file contents that produced it can be dropped.
      * Persists across turns within a live session so a "continue" accumulates rather than re-discovers.
      */
-    val scratchpad: MutableList<String> = java.util.concurrent.CopyOnWriteArrayList()
+    val scratchpad: MutableList<NoteEntry> = java.util.concurrent.CopyOnWriteArrayList()
 
     val isEmpty: Boolean get() = messages.isEmpty()
+
+    /**
+     * Current active task description — injected as the LAST user message in the outgoing context
+     * so the model always sees "this is what I should be working on right now" regardless of how
+     * much the middle of the transcript was compressed. Survives compaction. Set on every new
+     * user message in [AgentLoop.run].
+     */
+    var activeTask: String = ""
 }

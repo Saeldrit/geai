@@ -34,6 +34,7 @@ import com.github.saeldrit.geai.tools.psi.FindUsagesTool
 import com.github.saeldrit.geai.tools.knowledge.KbForgetTool
 import com.github.saeldrit.geai.tools.knowledge.KbLookupTool
 import com.github.saeldrit.geai.tools.knowledge.KbRecordTool
+import com.github.saeldrit.geai.tools.knowledge.SkillTool
 import com.github.saeldrit.geai.tools.project.ProjectOverviewTool
 import com.github.saeldrit.geai.tools.selfmod.SelfInfoTool
 import com.github.saeldrit.geai.tools.selfmod.SelfPatchTool
@@ -54,6 +55,8 @@ object GeaiToolset {
     const val LOAD_TOOLS = "load_tools"
     const val DELEGATE = "delegate"
     const val NOTE = "note"
+    const val REQUEST_CONTEXT = "request_context"
+    const val CONTEXT_STATUS = "context_status"
     const val ESCALATE = "escalate_author"
 
     /** Always advertised: knowledge axes, interaction, navigation, reading, editing. */
@@ -61,6 +64,7 @@ object GeaiToolset {
         KbLookupTool,
         KbRecordTool,
         KbForgetTool,
+        SkillTool,
         AskUserTool,
         ProjectOverviewTool,
         FindFilesTool,
@@ -196,8 +200,22 @@ object GeaiToolset {
                 "do not keep raw file contents in context (older ones are dropped to save tokens) — note the " +
                 "finding and move on, re-reading specific lines later only if needed."
         val schema =
-            """{"type":"object","properties":{"text":{"type":"string","description":"A concise finding/decision/next-step, with file:line where relevant."}},"required":["text"]}"""
+            """{"type":"object","properties":{"text":{"type":"string","description":"A concise finding/decision/next-step, with file:line where relevant."},"priority":{"type":"string","enum":["CRITICAL","NORMAL","LOW"],"description":"CRITICAL = must survive all compression, NORMAL = default, LOW = ephemeral observation"},"anchor":{"type":"string","description":"Optional file:line reference, e.g. 'src/main/Foo.kt:42'"}},"required":["text"]}"""
         return ToolSpec(NOTE, description, schema)
+    }
+
+    /** The `request_context` meta-tool spec: let the model pull a fresh context bundle for a code area. */
+    fun requestContextSpec(): ToolSpec {
+        val description = "Request a fresh context bundle for a specific code area. Use when your investigation leads to a module not covered by the current bundle."
+        val schema = """{"type":"object","properties":{"query":{"type":"string","description":"Code area to explore (class name, module, feature)"}},"required":["query"]}"""
+        return ToolSpec(REQUEST_CONTEXT, description, schema)
+    }
+
+    /** The `context_status` meta-tool spec: show the agent its current context state. */
+    fun contextStatusSpec(): ToolSpec {
+        val description = "Show current context state: token usage, note counts, active task, compression stats."
+        val schema = """{"type":"object","properties":{}}"""
+        return ToolSpec(CONTEXT_STATUS, description, schema)
     }
 
     /** The `load_tools` meta-tool spec, advertised by the agent loop so the model can pull groups in. */

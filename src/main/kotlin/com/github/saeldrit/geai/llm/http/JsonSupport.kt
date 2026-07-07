@@ -25,10 +25,21 @@ internal object JsonSupport {
     /**
      * A human-readable message from a provider error body. Both Anthropic and OpenAI-compatible APIs
      * wrap the reason in {"error":{"message": "..."}}, so surface that instead of a 2000-char raw-JSON
-     * dump. Falls back to a whitespace-collapsed, bounded slice of the raw body (e.g. an HTML 502 page).
+     * dump. Some providers (e.g. OpenRouter, DeepSeek) return {"error": "plain string"} instead,
+     * so we also check for a direct string value. Falls back to a whitespace-collapsed, bounded slice
+     * of the raw body (e.g. an HTML 502 page).
      */
     fun humanError(raw: String): String {
-        val message = runCatching { parseObject(raw).objectOrNull("error")?.stringOrNull("message") }.getOrNull()
+        val message = runCatching {
+            val root = parseObject(raw)
+            val error = root.get("error")
+            when {
+                error == null || error.isJsonNull -> null
+                error.isJsonObject -> error.asJsonObject.stringOrNull("message")
+                error.isJsonPrimitive -> error.asString
+                else -> null
+            }
+        }.getOrNull()
         return message?.takeIf { it.isNotBlank() } ?: raw.replace(Regex("\\s+"), " ").trim().take(500)
     }
 }

@@ -29,8 +29,8 @@ object ContextCompressor {
      * budget. This stops the transcript from ballooning between compactions (file dumps, search
      * tables) and keeps caching cheap: stable older content stays small and reusable.
      */
-    private const val EAGER_KEEP_RECENT_TOOLS = 2
-    private const val EAGER_TOOL_HEAD = 400
+    private const val EAGER_KEEP_RECENT_TOOLS = 8
+    private const val EAGER_TOOL_HEAD = 2_000
 
     /** Suffix marking an eagerly-truncated tool result, so re-compaction is idempotent (no re-trim) —
      *  the loop persists compaction back into the transcript, so this must be a fixed point. */
@@ -41,12 +41,25 @@ object ContextCompressor {
         fun summarize(renderedSegment: String): String
     }
 
+    /** Compression metrics from the last compress() call. */
+    data class CompressionMetrics(
+        val inputChars: Int,
+        val outputChars: Int,
+        val ratio: Float,
+        val method: String, // "none", "eager", "summarize", "truncate"
+    )
+
+    @Volatile
+    var lastMetrics: CompressionMetrics? = null
+        private set
+
     fun compress(
         messages: List<ChatMessage>,
         contextWindowTokens: Int,
         outputReserveTokens: Int,
         systemPromptChars: Int = 0,
         summarizer: Summarizer? = null,
+        activeTask: String = "",
     ): List<ChatMessage> {
         val budget = charBudget(contextWindowTokens, outputReserveTokens, systemPromptChars)
         val originalChars = estimateChars(messages)
@@ -55,8 +68,11 @@ object ContextCompressor {
         // When context is small (early turns), this saves an O(n) pass over all messages.
         if (originalChars <= budget) {
             if (originalChars > budget * 0.7) {
-                return eagerlyTruncateOldToolResults(messages)
+                val result = eagerlyTruncateOldToolResults(messages)
+                lastMetrics = CompressionMetrics(originalChars, estimateChars(result), 1.0f, "eager")
+                return result
             }
+            lastMetrics = CompressionMetrics(originalChars, originalChars, 1.0f, "none")
             return messages
         }
 
@@ -65,16 +81,22 @@ object ContextCompressor {
         // if the full render is too large for the summariser it throws — retry on the eager-trimmed copy.
         if (summarizer != null) {
             val eagerlyTrimmed = eagerlyTruncateOldToolResults(messages)
-            val summarised = runCatching { summarizeOldContext(messages, summarizer) }.getOrNull()
-                ?: runCatching { summarizeOldContext(eagerlyTrimmed, summarizer) }.getOrNull()
+            val summarised = runCatching { summarizeOldContext(messages, summarizer, activeTask) }.getOrNull()
+                ?: runCatching { summarizeOldContext(eagerlyTrimmed, summarizer, activeTask) }.getOrNull()
             if (summarised != null && summarised !== messages) {
                 // The recap shrank the middle; the kept recent tail is still verbatim — eager-trim it too.
                 val trimmed = eagerlyTruncateOldToolResults(summarised)
-                return if (estimateChars(trimmed) <= budget) trimmed else truncateToBudget(trimmed, budget)
+                val final = if (estimateChars(trimmed) <= budget) trimmed else truncateToBudget(trimmed, budget)
+                val outputChars = estimateChars(final)
+                lastMetrics = CompressionMetrics(originalChars, outputChars, outputChars.toFloat() / originalChars, "summarize")
+                return final
             }
         }
         // Fallback: deterministic truncation with eager pre-pass.
-        return truncateToBudget(eagerlyTruncateOldToolResults(messages), budget)
+        val result = truncateToBudget(eagerlyTruncateOldToolResults(messages), budget)
+        val outputChars = estimateChars(result)
+        lastMetrics = CompressionMetrics(originalChars, outputChars, outputChars.toFloat() / originalChars, "truncate")
+        return result
     }
 
     /**
@@ -105,26 +127,34 @@ object ContextCompressor {
     }
 
     /**
-     * Replace messages[1 until tailStart] with a single recap, keeping the original task (index 0) and
-     * the most recent turns verbatim. The cut is moved off any TOOL message so no tool_result is left
-     * orphaned from its tool_use (which would make the transcript invalid).
+     * Replace messages[0 until tailStart] with a single recap, keeping only the most recent turns
+     * verbatim. The first message is NOT sacred — it is included in the summarizable segment so
+     * the model does not anchor on a stale initial query. The active task (injected separately by
+     * [AgentLoop]) is the sole task anchor. The cut is moved off any TOOL message so no tool_result
+     * is left orphaned from its tool_use (which would make the transcript invalid).
      */
-    private fun summarizeOldContext(messages: List<ChatMessage>, summarizer: Summarizer): List<ChatMessage> {
+    private fun summarizeOldContext(messages: List<ChatMessage>, summarizer: Summarizer, activeTask: String = ""): List<ChatMessage> {
         val n = messages.size
         var tailStart = (n - KEEP_RECENT).coerceAtLeast(1)
         while (tailStart in 1 until n && messages[tailStart].role == Role.TOOL) tailStart--
-        if (tailStart <= 1) return messages // nothing summarisable between the task and the recent tail
+        if (tailStart <= 1) return messages // nothing summarisable before the recent tail
 
-        val middle = messages.subList(1, tailStart)
-        val recap = summarizer.summarize(renderForSummary(middle)).trim()
-        if (recap.isBlank()) return messages
+        val middle = messages.subList(0, tailStart)
+        val digest = TranscriptAnalyzer.analyze(middle, activeTask)
+        val rendered = digest.renderForSummarizer()
+        // Fallback: if the digest is too sparse, use the flat render.
+        val inputForSummarizer = if (rendered.length > 50) rendered else renderForSummary(middle)
+        val rawRecap = summarizer.summarize(inputForSummarizer).trim()
+        if (rawRecap.isBlank()) return messages
+
+        // Post-process: try to parse as structured SemanticSummary; falls back to raw text.
+        val recap = SemanticCompressor.parseAndRender(rawRecap)
 
         val summaryMessage = ChatMessage(
             Role.USER,
-            listOf(ContentBlock.Text("[Summary of earlier steps — older detail compacted to save context]\n$recap")),
+            listOf(ContentBlock.Text("[Structured summary of earlier steps — older detail compacted to save context]\n$recap")),
         )
         return buildList {
-            add(messages[0])
             add(summaryMessage)
             addAll(messages.subList(tailStart, n))
         }
@@ -170,7 +200,8 @@ object ContextCompressor {
     ) {
         for (index in 0 until protectedFrom) {
             if (estimateChars(working) <= budget) return
-            if (index == 0) continue // preserve the original task verbatim
+            // No message is sacred — all old messages (including the original task) are eligible
+            // for truncation. The active task is injected separately by AgentLoop.
             val message = working[index]
             if (!eligible(message)) continue
             working[index] = message.copy(content = message.content.map(::truncateBlock))

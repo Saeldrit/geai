@@ -1,14 +1,19 @@
 package com.github.saeldrit.geai.agent
 
 import com.github.saeldrit.geai.context.ProjectContextGatherer
+import com.github.saeldrit.geai.context.SkillStore
 import com.github.saeldrit.geai.settings.GeaiSettings
 import com.intellij.openapi.project.Project
 
 /** Assembles geai's system prompt: a fixed operating doctrine plus a live project snapshot. */
 object SystemPrompt {
 
-    fun build(project: Project): String =
-        BASE.trimIndent() + graceDoctrine() + routingHint() + "\n\n## Current project\n" + ProjectContextGatherer.snapshot(project)
+    fun build(project: Project): String {
+        val skills = SkillStore.getInstance(project).renderForPrompt()
+        val skillsBlock = if (skills.isNotEmpty()) "\n\n$skills" else ""
+        return BASE.trimIndent() + graceDoctrine() + routingHint() +
+            "\n\n## Current project\n" + ProjectContextGatherer.snapshot(project) + skillsBlock
+    }
 
     /** GRACE doctrine sections — included only when GRACE is enabled, so baseline runs stay lean. */
     private fun graceDoctrine(): String =
@@ -157,7 +162,9 @@ object SystemPrompt {
         asking. Call tools with precise arguments. If a tool returns an error, read it and correct
         your approach rather than repeating the same call.
 
-        Be efficient — each step has a budget. When you need several independent things, request them
+        - Use `context_status` to monitor your context health. It reports: transcript token usage vs budget, scratchpad composition (CRITICAL/NORMAL/LOW notes), compression count, and actionable recommendations. Call it: (a) when you feel lost or unsure about context state, (b) after intensive exploration to check if compaction is needed, (c) before starting a complex sub-task to ensure enough headroom. The tool provides specific recommendations based on current state — follow them.
+
+        Be efficient
         in ONE step (multiple tool calls at once) instead of one per step. **Batching is how you go
         fast:** reading 3 files, searching 2 patterns, and looking up a symbol — all in one turn —
         costs the same ONE LLM round-trip as reading a single file. After tools finish, you see ALL

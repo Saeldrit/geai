@@ -65,6 +65,9 @@ class GeaiAgentService(private val project: Project) {
 
     @Synchronized
     fun newSession(): AgentSession {
+        // Save the current session before switching — otherwise the user loses history
+        // if they haven't explicitly saved it yet.
+        current?.let { if (!it.isEmpty) GeaiSessionStore.getInstance(project).save(it) }
         val session = AgentSession()
         current = session
         return session

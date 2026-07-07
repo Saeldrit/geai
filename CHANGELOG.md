@@ -15,6 +15,16 @@
   index-backed, and there is a single native agent engine (the Claude Code CLI mode is gone). Updated
   README, `docs/GRACE_ARCHITECTURE.md`, and the plugin-manifest description.
 
+## [0.0.58]
+
+### Changed
+- **Context management overhaul** — all major context components upgraded to production-grade quality:
+  - **SemanticSummary**: 11→28 regex preference patterns (architecture, async, naming, logging, testing, error handling); quality validation now checks `findingsWithLocation`; quality score 0-100 tracking; `lastQualityReport` metrics field.
+  - **Dynamic Bundle**: budget 4000→8000 chars; semantic refresh trigger (3+ new anchors in scratchpad); `msgGrowth` bug fixed (was always 0 in info message); bundle quality metrics (atoms included, dropped, fill rate) in context_status.
+  - **Sub-agent Context**: NORMAL notes passed (not just CRITICAL), cap 3000→12000; context bundle forwarded to sub-agents via `executeMetaTools`; structured output hint in prompt.
+  - **context_status**: trend tracking (↑ growing / → stable / ↓ shrinking); compression metrics (method, ratio, input→output chars); summary quality score; bundle quality (fill rate); actionable recommendations with thresholds (90% URGENT, 75% warning, 50% info).
+  - **Skills**: MAX_SKILLS=20 limit; Cyrillic→Latin transliteration for slug IDs; categorization (STYLE, LANGUAGE, TESTING, ARCHITECTURE, OTHER); active conflict detection with domain tracking (7 conflict pairs: indentation, language, style, verbosity, comments, async, error handling); `SaveResult` data class with conflict info; warning messages in SkillTool and AgentLoop.
+
 ## [0.0.57]
 
 ### Fixed
