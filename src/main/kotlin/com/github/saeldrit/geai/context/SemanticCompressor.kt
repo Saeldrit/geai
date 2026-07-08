@@ -27,7 +27,7 @@ object SemanticCompressor {
             "Your output must be a SINGLE JSON object (no markdown fences, no preamble, no commentary) " +
             "with exactly these fields:\n" +
             "{\n" +
-            "  \"taskDescription\": \"one-line description of the task\",\n" +
+            "  \"taskDescription\": \"one-line description of the CURRENT task (the one the agent is actively working on right now)\",\n" +
             "  \"findings\": [{\"location\": \"file:line\", \"summary\": \"what was found\"}],\n" +
             "  \"decisions\": [\"decision made\"],\n" +
             "  \"codeChanges\": [\"file modified: what changed\"],\n" +
@@ -35,9 +35,10 @@ object SemanticCompressor {
             "  \"nextSteps\": [\"planned action\"],\n" +
             "  \"userPreferences\": [\"durable user preference or skill to preserve\"]\n" +
             "}\n\n" +
-            "Rules:\n" +
+            "CRITICAL Rules:\n" +
+            "- taskDescription MUST be the CURRENT active task (what the agent is working on NOW), NOT earlier tasks.\n" +
+            "- If there is an ACTIVE_TASK field in the input, use it as taskDescription verbatim.\n" +
             "- Preserve ALL file:line locations — these are critical for the agent to keep working.\n" +
-            "- Preserve the ORIGINAL task description — what the user asked for.\n" +
             "- Keep findings CONCRETE: what was observed at each location, not vague summaries.\n" +
             "- Keep decisions ACTIONABLE: what was decided and why (one line each).\n" +
             "- Drop: raw file contents, tool call details, chatter, thinking, and filler.\n" +

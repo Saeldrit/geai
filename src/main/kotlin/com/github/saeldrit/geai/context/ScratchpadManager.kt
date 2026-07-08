@@ -18,7 +18,10 @@ object ScratchpadManager {
         scratchpad: MutableList<NoteEntry>,
         summarizer: ContextCompressor.Summarizer? = null,
     ): CleanupStats {
+        // Deduplicate CRITICAL notes by text — the read-only guard and stuck-loop guard
+        // can add identical CRITICAL notes when they fire multiple times across iterations.
         val critical = scratchpad.filter { it.priority == NotePriority.CRITICAL }
+            .distinctBy { it.text }
         val normal = scratchpad.filter { it.priority == NotePriority.NORMAL }
         val lowCount = scratchpad.count { it.priority == NotePriority.LOW }
 

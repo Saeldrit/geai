@@ -12,4 +12,5 @@ data class Skill(
     val description: String,
     val source: String,
     val createdAtEpochMs: Long,
+    val enabled: Boolean = true,
 )

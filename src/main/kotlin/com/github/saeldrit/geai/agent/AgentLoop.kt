@@ -173,6 +173,10 @@ class AgentLoop(
             var bundleRefreshIteration = 0
             var messagesAtBundleRefresh = 0
             var anchorsAtBundleRefresh = 0
+            // Read-without-progress detection: track iterations where only read-only tools were used
+            // without recording findings (note) or making edits (edit_file/write_file).
+            var readOnlyIterations = 0
+            val READ_ONLY_LIMIT = 7 // nudge after 7 read-only iterations, abort after 14
             var compressionCount = 0
             // Adaptive kill-switch
             var escalationUsedThisTurn = false
@@ -208,15 +212,16 @@ class AgentLoop(
                     return
                 }
 
-                // Bundle refresh: first refresh after 5 iterations, then adaptive (10+ new messages OR 8+ iterations OR 3+ new anchors).
+                // Bundle refresh: first refresh after 8 iterations, then adaptive (15+ new messages OR 12+ iterations OR 5+ new anchors).
+                // Increased intervals to reduce context loss from frequent refreshes.
                 if (settings.graceEnabled) {
                     val currentAnchors = session.scratchpad.count { it.anchor != null }
                     val shouldRefresh = if (bundleRefreshIteration == 0) {
-                        iteration >= 5
+                        iteration >= 8
                     } else {
                         val msgGrowth = session.messages.size - messagesAtBundleRefresh
                         val newAnchors = currentAnchors - anchorsAtBundleRefresh
-                        msgGrowth >= 10 || iteration - bundleRefreshIteration >= 8 || newAnchors >= 3
+                        msgGrowth >= 15 || iteration - bundleRefreshIteration >= 12 || newAnchors >= 5
                     }
                     if (shouldRefresh) {
                         val seeds = session.scratchpad.filter { it.anchor != null }.takeLast(5).mapNotNull { it.anchor }
@@ -352,6 +357,9 @@ class AgentLoop(
 
                 // 1. Meta tools: sequential, must finish before regular tools
                 val toolStart = System.currentTimeMillis()
+                // Track scratchpad size before meta tools run — used to verify that a `note` call
+                // actually added content (prevents garbage note calls from resetting the read-only counter).
+                val scratchpadSizeBeforeMeta = session.scratchpad.size
                 val metaResults = executeMetaTools(
                     metaCalls, session, activeGroups, indicator, listener,
                     delegationCount, turnUsage, interrupted, iteration,
@@ -450,20 +458,69 @@ class AgentLoop(
                             listener.onEvent(AgentEvent.Done(session.totalUsage))
                             return
                         }
-                        session.scratchpad.add(
-                            NoteEntry(
-                                "Loop guard: you repeated a step whose result you ALREADY have. Do NOT issue that call " +
-                                    "again — use the output you have and take a DIFFERENT next step (read specific NEW lines, " +
-                                    "or make an edit_file change). Re-listing or re-reading the same thing is not progress.",
-                                NotePriority.LOW,
-                            ),
-                        )
+                        // Deduplicate: don't add the same loop-guard note multiple times.
+                        if (session.scratchpad.none { it.text.startsWith("Loop guard:") }) {
+                            session.scratchpad.add(
+                                NoteEntry(
+                                    "Loop guard: you repeated a step whose result you ALREADY have. Do NOT issue that call " +
+                                        "again — use the output you have and take a DIFFERENT next step (read specific NEW lines, " +
+                                        "or make an edit_file change). Re-listing or re-reading the same thing is not progress.",
+                                    NotePriority.LOW,
+                                ),
+                            )
+                        }
                         listener.onEvent(AgentEvent.Info("↻ Repeated step with no new result — nudging the model to move on (aborts if it persists)."))
                     } else {
                         noProgressHits = 0
                     }
                     recentStepSignatures.addLast(stepSignature)
                     while (recentStepSignatures.size > STUCK_RING_SIZE) recentStepSignatures.removeFirst()
+                }
+
+                // Read-without-progress detection: track iterations where only read-only tools were used
+                // without recording findings (note) or making edits (edit_file/write_file).
+                // This catches the pattern where the agent reads many different files but never progresses.
+                val readOnlyTools = setOf("read_file", "search_text", "find_files", "list_files", "find_symbol", "find_usages", "resolve_ref", "context_bundle", "graph_query", "graph_neighbors", "diagnostics")
+                val mutatingTools = setOf("edit_file", "write_file", "run_command", "self_patch")
+                val hasNote = toolUses.any { it.name == GeaiToolset.NOTE }
+                val hasMutating = toolUses.any { it.name in mutatingTools }
+                val isReadOnlyTurn = toolUses.isNotEmpty() && toolUses.all { it.name in readOnlyTools }
+
+                if (isReadOnlyTurn && !hasNote && !hasMutating) {
+                    readOnlyIterations++
+                    if (readOnlyIterations == READ_ONLY_LIMIT) {
+                        // Deduplicate: don't add the same guard nudge if it already exists from a previous
+                        // guard trigger (e.g., across task switches where notes survive cleanup).
+                        // LOW priority so it gets evicted once the model starts behaving — a guard nudge
+                        // is a temporary prompt, not a permanent finding.
+                        if (session.scratchpad.none { it.text.contains("Consecutive read-only iterations", ignoreCase = true) }) {
+                            session.scratchpad.add(
+                                NoteEntry(
+                                    "You have made $READ_ONLY_LIMIT consecutive read-only iterations without recording findings or making changes. " +
+                                        "You MUST now either: (1) record your findings with `note`, (2) make an edit, or (3) state your conclusion and stop. " +
+                                        "Continuing to read without acting is not progress.",
+                                    NotePriority.LOW,
+                                ),
+                            )
+                        }
+                        listener.onEvent(AgentEvent.Info("⚠ $READ_ONLY_LIMIT read-only iterations without progress — recording findings or acting is now required."))
+                    } else if (readOnlyIterations >= READ_ONLY_LIMIT * 2) {
+                        listener.onEvent(AgentEvent.Error("Stopped: $readOnlyIterations consecutive read-only iterations without recording findings or making changes — likely stuck in exploration loop."))
+                        listener.onEvent(AgentEvent.Info(UsageFormat.summary(settings.loopModel(), turnUsage, session.totalUsage, settings.modelPrices)))
+                        listener.onEvent(AgentEvent.Done(session.totalUsage))
+                        return
+                    }
+                } else {
+                    // Reset on any non-read-only turn (note, edit, or mixed).
+                    // Exception: if `note` was called (without any mutating tools) but didn't actually
+                    // add new content (empty text, duplicate), treat it as a read-only turn — otherwise
+                    // the model can game the guard by calling note with garbage to reset the counter.
+                    val noteFailedToAdd = hasNote && !hasMutating && session.scratchpad.size == scratchpadSizeBeforeMeta
+                    if (readOnlyIterations > 0 && !noteFailedToAdd) {
+                        readOnlyIterations = 0
+                    } else if (noteFailedToAdd) {
+                        readOnlyIterations++
+                    }
                 }
             }
         } catch (_: ProcessCanceledException) {

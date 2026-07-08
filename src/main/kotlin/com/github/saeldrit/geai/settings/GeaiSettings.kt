@@ -38,8 +38,11 @@ class GeaiSettingsState : BaseState() {
      * rather than the full [maxContextTokens] window, and deliberately BELOW the model ceiling so
      * compaction runs during a normal session, not only at the limit. Raise for more retained context,
      * lower to spend less.
+     *
+     * Increased from 48K to 96K: the agent needs a larger working window to avoid re-read loops
+     * where compression loses file contents and the agent re-reads them, causing context bloat.
      */
-    var maxTranscriptTokens by property(48_000)
+    var maxTranscriptTokens by property(96_000)
 
     /** Master switch for the GRACE toolset + doctrine (anchors/specs/graph/bundle/routing). Off = lean baseline. */
     var graceEnabled by property(true)

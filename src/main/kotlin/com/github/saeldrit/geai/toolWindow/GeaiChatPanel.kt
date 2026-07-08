@@ -47,7 +47,18 @@ class GeaiChatPanel(private val project: Project) : JPanel(BorderLayout()) {
         editorKit = HTMLEditorKit()
         addHyperlinkListener(HyperlinkListener { e ->
             if (e.eventType == HyperlinkEvent.EventType.ACTIVATED) {
-                try { Desktop.getDesktop().browse(URI(e.url.toString())) } catch (_: Exception) {}
+                val url = e.url?.toString() ?: return@HyperlinkListener
+                if (url.startsWith("geai:skill:")) {
+                    val skillId = url.removePrefix("geai:skill:")
+                    val skill = GeaiSkills.all().find { it.id == skillId }
+                    if (skill != null) {
+                        input.text = skill.prompt
+                        input.caretPosition = input.text.length
+                        input.requestFocusInWindow()
+                    }
+                } else {
+                    try { Desktop.getDesktop().browse(URI(url)) } catch (_: Exception) {}
+                }
             }
         })
     }
@@ -96,6 +107,10 @@ class GeaiChatPanel(private val project: Project) : JPanel(BorderLayout()) {
             add(JButton("Settings").apply {
                 addActionListener { ShowSettingsUtil.getInstance().showSettingsDialog(project, GeaiSettingsConfigurable::class.java) }
             })
+            add(JButton("Skills").apply {
+                toolTipText = "Manage saved skills — toggle, edit, or delete"
+                addActionListener { SkillsDialog(project).isVisible = true }
+            })
         }
         add(left, BorderLayout.WEST)
         add(statusLabel, BorderLayout.EAST)
@@ -140,6 +155,51 @@ class GeaiChatPanel(private val project: Project) : JPanel(BorderLayout()) {
         input.actionMap.put("newline", object : AbstractAction() {
             override fun actionPerformed(e: ActionEvent?) { input.insert("\n", input.caretPosition) }
         })
+        // Slash-commands popup: type "/" to see available commands, "/" + text to filter
+        input.document.addDocumentListener(object : javax.swing.event.DocumentListener {
+            private fun check() {
+                ApplicationManager.getApplication().invokeLater({
+                    val text = input.text.trim()
+                    if (text.startsWith("/")) showSlashPopup(text)
+                }, ModalityState.nonModal())
+            }
+            override fun insertUpdate(e: javax.swing.event.DocumentEvent?) = check()
+            override fun removeUpdate(e: javax.swing.event.DocumentEvent?) = check()
+            override fun changedUpdate(e: javax.swing.event.DocumentEvent?) = Unit
+        })
+    }
+
+    private var activeSlashPopup: JPopupMenu? = null
+
+    private fun showSlashPopup(filter: String = "/") {
+        activeSlashPopup?.isVisible = false
+        activeSlashPopup = null
+
+        val query = filter.removePrefix("/").trim()
+        val cmds = GeaiSkills.all().filter {
+            query.isEmpty() ||
+                it.title.contains(query, ignoreCase = true) ||
+                it.prompt.contains(query, ignoreCase = true)
+        }
+        if (cmds.isEmpty()) return
+
+        val popup = JPopupMenu()
+        cmds.forEach { skill ->
+            popup.add(JMenuItem("${skill.icon}  ${skill.title}").apply {
+                toolTipText = skill.prompt
+                addActionListener {
+                    input.text = skill.prompt
+                    input.caretPosition = input.text.length
+                }
+            })
+        }
+        popup.addPopupMenuListener(object : javax.swing.event.PopupMenuListener {
+            override fun popupMenuWillBecomeVisible(e: javax.swing.event.PopupMenuEvent?) {}
+            override fun popupMenuWillBecomeInvisible(e: javax.swing.event.PopupMenuEvent?) { activeSlashPopup = null }
+            override fun popupMenuCanceled(e: javax.swing.event.PopupMenuEvent?) { activeSlashPopup = null }
+        })
+        activeSlashPopup = popup
+        popup.show(input, 0, -popup.preferredSize.height)
     }
 
     private fun openFileChooser() {
@@ -314,12 +374,31 @@ class GeaiChatPanel(private val project: Project) : JPanel(BorderLayout()) {
         if (scroll) SwingUtilities.invokeLater { editorPane.caretPosition = editorPane.document.length }
     }
 
-    private fun welcomeHtml() = """
+    private fun welcomeHtml(): String {
+        val modelName = try { GeaiSettings.getInstance().state.model?.takeIf { it.isNotBlank() } } catch (_: Exception) { null }
+        val modelLine = modelName?.let { """<p class="model-hint">Model: <code>$it</code></p>""" } ?: ""
+        val skillCards = GeaiSkills.all().joinToString("\n") { s ->
+            val badge = s.badge?.let { """<span class="badge">$it</span>""" } ?: ""
+            """<a class="skill-card" href="geai:skill:${s.id}">
+                 <span class="skill-icon">${s.icon}</span>
+                 <span class="skill-title">${s.title}</span>
+                 $badge
+               </a>"""
+        }
+        return """
         <div class="welcome">
           <div class="logo"><span class="mark">\u25C9</span> geai</div>
           <p class="tagline">Describe the bug to get started.</p>
+          $modelLine
+          <div class="skills-row">$skillCards</div>
+          <div class="tips">
+            <div class="tip"><code>/</code> — slash-commands (debug, explain, review\u2026)</div>
+            <div class="tip"><code>Enter</code> — send \u00B7 <code>Shift+Enter</code> — newline</div>
+            <div class="tip">\uD83D\uDCCE — attach files (up to 10)</div>
+          </div>
         </div>
     """.trimIndent()
+    }
 
     private fun buildPage(body: String): String = """
         <!DOCTYPE html>
@@ -342,6 +421,11 @@ class GeaiChatPanel(private val project: Project) : JPanel(BorderLayout()) {
             .welcome .logo { font-size:26px; font-weight:700; }
             .welcome .mark { color:#589df6; }
             .welcome .tagline { color:#8c8c8c; max-width:480px; margin:8px auto 0; }
+            .welcome .model-hint { color:#6c7086; font-size:12px; margin:6px auto 0; }
+            .welcome .model-hint code { color:#589df6; background:#2b2d30; border-radius:3px; padding:1px 5px; }
+            .welcome .tips { margin:18px auto 0; max-width:340px; text-align:left; }
+            .welcome .tip { color:#6c7086; font-size:12px; margin:4px 0; }
+            .welcome .tip code { color:#c8ccd4; background:#2b2d30; border-radius:3px; padding:1px 5px; font-size:11px; }
             .msg { margin:0 0 14px; }
             .msg .who { font-weight:600; margin-bottom:3px; }
             .msg.user .who { color:#589df6; }
@@ -370,8 +454,16 @@ class GeaiChatPanel(private val project: Project) : JPanel(BorderLayout()) {
             .msg.assistant table { border-collapse:collapse; margin:6px 0; font-size:0.92em; width:100%%; }
             .msg.assistant th, .msg.assistant td { border:1px solid #393b40; padding:3px 8px; text-align:left; }
             .msg.assistant th { background:#35373b; font-weight:600; }
-            a { color:#589df6; }
+            a { color:#589df6; text-decoration:none; }
+            a:hover { text-decoration:underline; }
             hr { border:none; border-top:1px solid #393b40; margin:8px 0; }
+            .skills-row { display:flex; flex-wrap:wrap; gap:10px; justify-content:center; margin:20px auto 0; max-width:480px; }
+            .skill-card { display:inline-flex; align-items:center; gap:6px; background:#2b2d30; border:1px solid #393b40;
+                          border-radius:10px; padding:10px 16px; cursor:pointer; transition:border-color .15s; }
+            .skill-card:hover { border-color:#589df6; }
+            .skill-icon { font-size:16px; }
+            .skill-title { font-size:13px; color:#dfe1e5; }
+            .badge { font-size:10px; color:#8c8c8c; background:#35373b; border-radius:4px; padding:1px 5px; }
         """
     }
 }

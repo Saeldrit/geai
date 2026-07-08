@@ -64,14 +64,11 @@ object ContextCompressor {
         val budget = charBudget(contextWindowTokens, outputReserveTokens, systemPromptChars)
         val originalChars = estimateChars(messages)
 
-        // Under budget: only apply eager truncation when approaching the limit (>70%).
-        // When context is small (early turns), this saves an O(n) pass over all messages.
+        // Under budget: no compression at all — let the context grow naturally.
+        // Eager truncation at 70% was causing a re-read loop: agent reads file → eager
+        // truncates it → agent loses detail → re-reads → context grows anyway.
+        // Only compress when actually over budget.
         if (originalChars <= budget) {
-            if (originalChars > budget * 0.7) {
-                val result = eagerlyTruncateOldToolResults(messages)
-                lastMetrics = CompressionMetrics(originalChars, estimateChars(result), 1.0f, "eager")
-                return result
-            }
             lastMetrics = CompressionMetrics(originalChars, originalChars, 1.0f, "none")
             return messages
         }
@@ -150,9 +147,14 @@ object ContextCompressor {
         // Post-process: try to parse as structured SemanticSummary; falls back to raw text.
         val recap = SemanticCompressor.parseAndRender(rawRecap)
 
+        // Prepend the active task prominently so the model never loses sight of it.
+        val taskPrefix = if (activeTask.isNotBlank()) {
+            "[CURRENT ACTIVE TASK — DO NOT LOSE THIS:]\n$activeTask\n\n"
+        } else ""
+
         val summaryMessage = ChatMessage(
             Role.USER,
-            listOf(ContentBlock.Text("[Structured summary of earlier steps — older detail compacted to save context]\n$recap")),
+            listOf(ContentBlock.Text("${taskPrefix}[Structured summary of earlier steps — older detail compacted to save context]\n$recap")),
         )
         return buildList {
             add(summaryMessage)

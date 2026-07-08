@@ -119,6 +119,34 @@ class SkillStore private constructor(private val project: Project) {
         SaveResult(skill, conflicts, domain)
     }
 
+    /** Toggle the [enabled] flag of a skill by [id]. Returns the updated skill or null. */
+    fun toggle(id: String): Skill? = synchronized(lock) {
+        val existing = loadAll().find { it.id == id } ?: return null
+        val updated = existing.copy(enabled = !existing.enabled)
+        val path = skillsDir().resolve("$id.json")
+        runCatching {
+            Files.writeString(path, GSON.toJson(updated, SKILL_TYPE))
+        }.onFailure {
+            thisLogger().warn("SkillStore: failed to toggle $id.json", it)
+        }
+        updated
+    }
+
+    /** Update a skill's description by [id]. Returns the updated skill or null. */
+    fun update(id: String, newDescription: String): Skill? = synchronized(lock) {
+        val trimmed = newDescription.trim()
+        if (trimmed.isBlank()) return null
+        val existing = loadAll().find { it.id == id } ?: return null
+        val updated = existing.copy(description = trimmed)
+        val path = skillsDir().resolve("$id.json")
+        runCatching {
+            Files.writeString(path, GSON.toJson(updated, SKILL_TYPE))
+        }.onFailure {
+            thisLogger().warn("SkillStore: failed to update $id.json", it)
+        }
+        updated
+    }
+
     /** Delete a skill by [id]. Returns `true` if a file was removed. */
     fun delete(id: String): Boolean = synchronized(lock) {
         val path = skillsDir().resolve("$id.json")
@@ -163,7 +191,7 @@ class SkillStore private constructor(private val project: Project) {
      * Skills are grouped by category for better readability.
      */
     fun renderForPrompt(): String {
-        val skills = loadAll()
+        val skills = loadAll().filter { it.enabled }
         if (skills.isEmpty()) return ""
         val categorized = skills.groupBy { categorize(it.description) }
         return buildString {
