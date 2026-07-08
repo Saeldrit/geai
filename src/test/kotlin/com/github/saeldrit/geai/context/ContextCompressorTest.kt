@@ -155,6 +155,44 @@ class ContextCompressorTest {
         assertTrue("middle was folded into the recap", result.any { it.text.contains("RECAP") })
     }
 
+    @Test
+    fun `full flow - compression triggers and status suffix reflects metrics`() {
+        // Simulate real scenario: agent reads many files, context grows past budget.
+        // Compression must fire, and the resulting metrics must be usable by buildStatusSuffix.
+        val task = ChatMessage.user("Investigate the UI structure of the app")
+        val fileReads = (1..15).flatMap { i ->
+            listOf(
+                ChatMessage.assistant(listOf(ContentBlock.ToolUse("t$i", "read_file", """{"path":"src/F$i.kt"}"""))),
+                ChatMessage.toolResults(listOf(ContentBlock.ToolResult("t$i", "package com.example\n" + "x".repeat(5_000)))),
+            )
+        }
+        val messages = listOf(task) + fileReads
+
+        // Small window forces compression
+        val result = ContextCompressor.compress(messages, 1_000, 100, 0,
+            summarizer = ContextCompressor.Summarizer { "DENSE-RECAP-OF-FINDINGS" })
+
+        val metrics = ContextCompressor.lastMetrics!!
+        // Metrics must be populated
+        assertTrue("compression happened", metrics.method != "none")
+        assertTrue("ratio < 1.0 (shrank)", metrics.ratio < 1.0f)
+        assertTrue("input > output", metrics.inputChars > metrics.outputChars)
+
+        // Now call buildStatusSuffix with these real metrics — the model would see this
+        val status = com.github.saeldrit.geai.agent.buildStatusSuffix(
+            iteration = 5, maxIterations = 50, delegationCount = 2, maxDelegations = 6,
+            readOnlyIterations = 3, readOnlyLimit = 7, compressionCount = 1,
+            turnUsage = com.github.saeldrit.geai.llm.TokenUsage(inputTokens = 8000, outputTokens = 2000),
+            lastCompression = metrics,
+        )
+        assertTrue("status contains compression method", status.contains(metrics.method))
+        assertTrue("status contains ratio", status.contains("${(metrics.ratio * 100).toInt()}%"))
+        assertTrue("status contains iteration", status.contains("Iteration 5/50"))
+
+        // Transcript must still be valid (no orphaned tool_results)
+        assertValidToolPairing(result)
+    }
+
     /** Every tool_result must be preceded by its tool_use, or the provider rejects the transcript. */
     private fun assertValidToolPairing(messages: List<ChatMessage>) {
         val seen = HashSet<String>()

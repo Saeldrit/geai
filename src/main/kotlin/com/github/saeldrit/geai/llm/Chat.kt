@@ -6,7 +6,7 @@ data class ChatRequest(
     val system: String,
     val messages: List<ChatMessage>,
     val tools: List<ToolSpec> = emptyList(),
-    val maxTokens: Int = 8192,
+    val maxTokens: Int = 65536,
     val temperature: Double = 0.0,
     /**
      * Volatile system content that changes every turn (e.g. the per-turn context bundle). Kept apart

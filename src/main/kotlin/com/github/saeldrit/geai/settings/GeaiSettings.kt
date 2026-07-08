@@ -27,7 +27,7 @@ class GeaiSettingsState : BaseState() {
     var model by string()
     var baseUrl by string()
     // Output cap per reply. Internal default — not surfaced in the UI; tunable via geai.xml if needed.
-    var maxTokens by property(8192)
+    var maxTokens by property(65536)
 
     /** Model context window (tokens) used to size transcript compaction. Default ~200k (Claude). */
     var maxContextTokens by property(200_000)

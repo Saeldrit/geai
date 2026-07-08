@@ -5,12 +5,30 @@ import com.github.saeldrit.geai.llm.ContentBlock
 import com.github.saeldrit.geai.llm.Role
 
 /**
- * Context compaction for the agent transcript. When the transcript outgrows the budget the preferred
- * strategy is SUMMARISATION: the old middle of the conversation is folded into one dense recap that
- * preserves what matters to keep working (the task, files/symbols examined with locations, findings,
- * decisions, open questions) while dropping raw file dumps and chatter — so a long multi-file task
- * (e.g. a review) keeps its evidence instead of having it chopped to a 400-char head. Truncation is
- * kept only as a dependency-free FALLBACK for when no summariser is supplied or summarisation fails.
+ * Context compaction for the agent transcript — aggressive marker-based compression.
+ *
+ * DESIGN PHILOSOPHY:
+ * Unlike traditional summarisation that tries to preserve "important details" through LLM calls
+ * (which inevitably lose specifics), this compressor deliberately FORGETS tool result details and
+ * only keeps structural metadata: which tool was called, whether it succeeded, and brief args preview.
+ * This creates a "false memory protection" — the agent knows WHAT tools it used but not the raw
+ * content, so it works from its notes instead of re-reading files.
+ *
+ * COMPRESSION MARKERS:
+ * Compressed messages are tagged with `[COMPRESSED: ...]` markers so the agent can recognize
+ * that it has already performed these actions and should work from notes rather than re-read.
+ * This is the key insight: aggressive compression + explicit markers prevent re-read loops.
+ *
+ * FLOW:
+ * 1. Transcript exceeds budget → aggressive compression kicks in
+ * 2. All old TOOL messages (except protected recent N) are reduced to:
+ *    `[COMPRESSED: tool_name(success: bool, args: preview)]`
+ * 3. ASSISTANT messages are reduced to their TEXT portion (reasoning) only
+ * 4. Recent messages stay verbatim — the agent is still actively working with them
+ * 5. Post-compression: a CRITICAL note is injected telling the agent to work from notes
+ *
+ * FALLBACK:
+ * If no budget calculation is possible or compression fails, falls back to simple truncation.
  *
  * The character budget is derived from the model's context window (~4 chars/token) minus the output
  * reservation, so the transcript is sized to the model actually in use.
@@ -19,21 +37,30 @@ object ContextCompressor {
 
     private const val CHARS_PER_TOKEN = 4
     private const val SAFETY = 0.5
-    private const val KEEP_RECENT = 6
+    private const val KEEP_RECENT = 8
     private const val TRUNCATED_HEAD = 400
     private const val MIN_BUDGET = 20_000
 
     /**
-     * Eager truncation: protect the N most recent TOOL messages verbatim (the model is still working
-     * with them), and aggressively shrink every older tool_result to a fixed head — regardless of
-     * budget. This stops the transcript from ballooning between compactions (file dumps, search
-     * tables) and keeps caching cheap: stable older content stays small and reusable.
+     * MARKER-BASED COMPRESSION:
+     * Tool results are compressed to ONLY their metadata: tool name, success status, brief args.
+     * This creates explicit "I did this already" markers that prevent re-read loops.
+     *
+     * Example: a 5000-char read_file output becomes:
+     *   [COMPRESSED: read_file(success: true, args: target_file=Foo.kt:1-100)]
+     *
+     * This is INTENTIONALLY minimal — the agent must work from notes, not from re-reading.
+     */
+    private const val COMPRESSED_MARKER_PREFIX = "[COMPRESSED: "
+    private const val COMPRESSED_MARKER_SUFFIX = "]"
+    private const val MAX_ARGS_PREVIEW = 80  // characters for args preview in marker
+
+    /**
+     * Legacy eager truncation: still used as intermediate step before aggressive compression,
+     * and as fallback when aggressive compression isn't applicable.
      */
     private const val EAGER_KEEP_RECENT_TOOLS = 8
     private const val EAGER_TOOL_HEAD = 2_000
-
-    /** Suffix marking an eagerly-truncated tool result, so re-compaction is idempotent (no re-trim) —
-     *  the loop persists compaction back into the transcript, so this must be a fixed point. */
     private const val EAGER_TRUNC_MARKER = "…[truncated to save context]"
 
     /** Summarises a rendered transcript segment into a dense recap. Returns null/blank to decline. */
@@ -64,24 +91,28 @@ object ContextCompressor {
         val budget = charBudget(contextWindowTokens, outputReserveTokens, systemPromptChars)
         val originalChars = estimateChars(messages)
 
-        // Under budget: no compression at all — let the context grow naturally.
-        // Eager truncation at 70% was causing a re-read loop: agent reads file → eager
-        // truncates it → agent loses detail → re-reads → context grows anyway.
-        // Only compress when actually over budget.
         if (originalChars <= budget) {
             lastMetrics = CompressionMetrics(originalChars, originalChars, 1.0f, "none")
             return messages
         }
 
-        // Over budget: preferred path is summarisation — fold the old middle into a dense recap.
-        // Use the ORIGINAL (untrimmed) messages so findings past the eager head survive into the recap;
-        // if the full render is too large for the summariser it throws — retry on the eager-trimmed copy.
+        val aggressiveResult = aggressiveCompress(messages, budget)
+        if (estimateChars(aggressiveResult) <= budget) {
+            val outputChars = estimateChars(aggressiveResult)
+            lastMetrics = CompressionMetrics(
+                inputChars = originalChars,
+                outputChars = outputChars,
+                ratio = outputChars.toFloat() / originalChars,
+                method = "aggressive"
+            )
+            return aggressiveResult
+        }
+
         if (summarizer != null) {
             val eagerlyTrimmed = eagerlyTruncateOldToolResults(messages)
             val summarised = runCatching { summarizeOldContext(messages, summarizer, activeTask) }.getOrNull()
                 ?: runCatching { summarizeOldContext(eagerlyTrimmed, summarizer, activeTask) }.getOrNull()
             if (summarised != null && summarised !== messages) {
-                // The recap shrank the middle; the kept recent tail is still verbatim — eager-trim it too.
                 val trimmed = eagerlyTruncateOldToolResults(summarised)
                 val final = if (estimateChars(trimmed) <= budget) trimmed else truncateToBudget(trimmed, budget)
                 val outputChars = estimateChars(final)
@@ -89,7 +120,7 @@ object ContextCompressor {
                 return final
             }
         }
-        // Fallback: deterministic truncation with eager pre-pass.
+
         val result = truncateToBudget(eagerlyTruncateOldToolResults(messages), budget)
         val outputChars = estimateChars(result)
         lastMetrics = CompressionMetrics(originalChars, outputChars, outputChars.toFloat() / originalChars, "truncate")
@@ -97,9 +128,173 @@ object ContextCompressor {
     }
 
     /**
+     * AGGRESSIVE MARKER-BASED COMPRESSION:
+     *
+     * Compresses old messages (outside protected recent window) to markers:
+     * - TOOL messages → `[COMPRESSED: tool_name(success: bool, args: preview)]`
+     * - ASSISTANT messages → keep TEXT blocks only (reasoning), drop tool_use details
+     * - USER messages → keep as-is (they're small)
+     *
+     * The protected window (KEEP_RECENT messages) stays verbatim — the agent is actively
+     * working with these and needs full details.
+     *
+     * This creates explicit "I did this already" markers that prevent re-read loops:
+     * the agent sees it called read_file but NOT the file content, so it must work
+     * from notes rather than re-reading.
+     */
+    private fun aggressiveCompress(messages: List<ChatMessage>, budget: Int): List<ChatMessage> {
+        if (messages.size <= KEEP_RECENT) {
+            return messages  // Nothing to compress
+        }
+
+        val toCompress = messages.dropLast(KEEP_RECENT)
+        val recent = messages.takeLast(KEEP_RECENT)
+
+        val compressed = toCompress.map { msg ->
+            when (msg.role) {
+                Role.TOOL -> compressToolMessage(msg)
+                Role.ASSISTANT -> compressAssistantMessage(msg)
+                Role.USER, Role.SYSTEM -> msg  // Keep as-is
+            }
+        }
+
+        return compressed + recent
+    }
+
+    /**
+     * Compress a TOOL message to markers.
+     * Each ToolResult block becomes: `[COMPRESSED: tool_name(success: status, args: preview)]`
+     *
+     * The tool name and success status are extracted from the result text:
+     * - Success pattern: look for typical success indicators (file content shown, operation succeeded)
+     * - Error indicator: explicit "Tool error:" or "Error:" prefix
+     *
+     * Args preview: try to extract file path or key parameter from result text.
+     */
+    private fun compressToolMessage(msg: ChatMessage): ChatMessage {
+        val compressed = msg.content.map { block ->
+            when (block) {
+                is ContentBlock.ToolResult -> {
+                    // Already compressed? Don't re-compress.
+                    if (block.content.startsWith(COMPRESSED_MARKER_PREFIX)) {
+                        block
+                    } else {
+                        val toolName = extractToolName(block.content)
+                        val success = !block.isError && !block.content.startsWith("Tool error:")
+                        val argsPreview = extractArgsPreview(block.content)
+                        val marker = buildCompressedMarker(toolName, success, argsPreview)
+                        block.copy(content = marker)
+                    }
+                }
+                else -> block
+            }
+        }
+        return msg.copy(content = compressed)
+    }
+
+    /**
+     * Compress an ASSISTANT message: keep TEXT blocks (reasoning), truncate tool_use blocks.
+     *
+     * Tool_use blocks become markers: `[COMPRESSED: tool_call(name, args_preview)]`
+     * Text blocks are kept (but capped at 500 chars each for very long reasoning).
+     */
+    private fun compressAssistantMessage(msg: ChatMessage): ChatMessage {
+        val compressed = msg.content.map { block ->
+            when (block) {
+                is ContentBlock.Text -> {
+                    // Keep reasoning but cap very long text
+                    if (block.text.length > 500) {
+                        block.copy(text = block.text.take(500) + "\n[…reasoning truncated]")
+                    } else {
+                        block
+                    }
+                }
+                is ContentBlock.ToolUse -> {
+                    // Convert tool_use to marker
+                    val argsPreview = extractJsonArgsPreview(block.inputJson)
+                    val marker = "[COMPRESSED: tool_call(${block.name}, args: $argsPreview)]"
+                    ContentBlock.Text(marker)
+                }
+                else -> block
+            }
+        }
+        return msg.copy(content = compressed)
+    }
+
+    /** Extract tool name from tool result content. */
+    private fun extractToolName(content: String): String {
+        // Try common patterns: "read_file returned:", "Tool: search_text", etc.
+        val patterns = listOf(
+            Regex("""^(\w+)(?:\s+returned|:)"""),
+            Regex("""Tool:\s*(\w+)"""),
+            Regex("""^(\w+)\s*[\(\[]""")
+        )
+        for (pattern in patterns) {
+            pattern.find(content.take(50))?.let { return it.groupValues[1] }
+        }
+        return "unknown_tool"
+    }
+
+    /** Extract args preview from tool result content (file path, line numbers, etc.). */
+    private fun extractArgsPreview(content: String): String {
+        // Try to extract file path
+        val filePattern = Regex("""(?:file|path|target)[:\s]+([^\s,\]]+)""", RegexOption.IGNORE_CASE)
+        filePattern.find(content)?.let {
+            return "target_file=${it.groupValues[1].take(MAX_ARGS_PREVIEW - 15)}"
+        }
+
+        // Try to extract search term
+        val searchPattern = Regex("""(?:search|query|snippet)[:\s]+([^\s,\]]+)""", RegexOption.IGNORE_CASE)
+        searchPattern.find(content)?.let {
+            return "search=${it.groupValues[1].take(MAX_ARGS_PREVIEW - 10)}"
+        }
+
+        // Fallback: first few words
+        return content.take(MAX_ARGS_PREVIEW).replace("\n", " ").trim()
+    }
+
+    /** Extract args preview from JSON input string. */
+    private fun extractJsonArgsPreview(json: String): String {
+        if (json.isBlank() || json == "{}") return "(no args)"
+
+        // Try to extract key parameters
+        val preview = mutableListOf<String>()
+
+        // File path
+        Regex(""""(?:target_file|path|file|directory_path)":\s*"([^"]+)"""").find(json)
+            ?.let { preview.add("target=${it.groupValues[1]}") }
+
+        // Line range
+        val start = Regex(""""start_line":\s*(\d+)""").find(json)?.groupValues?.get(1)
+        val end = Regex(""""end_line":\s*(\d+)""").find(json)?.groupValues?.get(1)
+        if (start != null && end != null) {
+            preview.add("lines=$start-$end")
+        }
+
+        // Search term
+        Regex(""""(?:text_snippet|query|search)":\s*"([^"]{1,30})""").find(json)
+            ?.let { preview.add("search=${it.groupValues[1]}") }
+
+        return if (preview.isNotEmpty()) {
+            preview.joinToString(", ").take(MAX_ARGS_PREVIEW)
+        } else {
+            json.take(MAX_ARGS_PREVIEW).replace("\n", " ")
+        }
+    }
+
+    /** Build the compressed marker string. */
+    private fun buildCompressedMarker(toolName: String, success: Boolean, argsPreview: String): String {
+        val status = if (success) "success" else "error"
+        return "$COMPRESSED_MARKER_PREFIX$toolName($status: $status, args: $argsPreview)$COMPRESSED_MARKER_SUFFIX"
+    }
+
+    /**
      * Replace every tool_result older than the last [EAGER_KEEP_RECENT_TOOLS] TOOL messages with its
      * head ([EAGER_TOOL_HEAD] chars). Operates on a shallow copy; returns the original list when no
      * trimming applies, so identity-equality short-circuits work upstream.
+     *
+     * This is used as an intermediate step before summarisation fallback, but aggressive compression
+     * (above) completely replaces this in the primary path.
      */
     private fun eagerlyTruncateOldToolResults(messages: List<ChatMessage>): List<ChatMessage> {
         val toolIndices = messages.withIndex().filter { it.value.role == Role.TOOL }.map { it.index }
@@ -110,7 +305,8 @@ object ContextCompressor {
             if (message.role != Role.TOOL || index in protectedIndices) return@mapIndexed message
             val shrunk = message.content.map { block ->
                 if (block is ContentBlock.ToolResult && block.content.length > EAGER_TOOL_HEAD &&
-                    !block.content.endsWith(EAGER_TRUNC_MARKER)
+                    !block.content.endsWith(EAGER_TRUNC_MARKER) &&
+                    !block.content.startsWith(COMPRESSED_MARKER_PREFIX)  // Don't re-truncate already compressed
                 ) {
                     modified = true
                     block.copy(content = block.content.take(EAGER_TOOL_HEAD) + "\n" + EAGER_TRUNC_MARKER)

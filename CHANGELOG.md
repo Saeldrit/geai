@@ -15,6 +15,17 @@
   index-backed, and there is a single native agent engine (the Claude Code CLI mode is gone). Updated
   README, `docs/GRACE_ARCHITECTURE.md`, and the plugin-manifest description.
 
+## [0.0.67]
+
+### Added
+- **Aggressive marker-based context compression** — Veai-inspired redesign of the compression
+  system. Tool results are now compressed to lightweight markers `[COMPRESSED: tool_name(status, args)]`
+  instead of LLM-generated summaries, preventing the classic re-read loop: agent reads file → details
+  lost in summary → agent re-reads → context bloats again. Read-tracking (via `readFileTracker`) and
+  post-compression critical nudges keep the agent working from notes rather than re-reading files.
+  New system prompt section "Working with compressed context" teaches the model to recognise markers
+  and use its notes. Expected: ~60–80% context reduction, significantly fewer re-read loops.
+
 ## [0.0.58]
 
 ### Changed

@@ -92,6 +92,13 @@ class AgentLoop(
     private var lastBundleAtoms: Int = 0
     private var lastBundleDropped: Int = 0
 
+    /**
+     * READ TRACKER: tracks which files were read and when, to prevent re-read loops after compression.
+     * Maps file path → iteration when last read.
+     * When the agent tries to re-read a file it already read, inject a nudge to work from notes.
+     */
+    private val readFileTracker = mutableMapOf<String, Int>()
+
     fun run(session: AgentSession, userText: String, listener: AgentListener, indicator: ProgressIndicator, attachments: List<Attachment> = emptyList()) {
         val settings = GeaiSettings.getInstance().state
         val modelSupportsVision = LlmProvider.modelSupportsVision(settings.model ?: "")
@@ -163,6 +170,7 @@ class AgentLoop(
             val recentStepSignatures = ArrayDeque<Long>()
             var noProgressHits = 0
             var visionRetries = 0
+            var maxTokensAutoContinues = 0
             // On-demand tool groups (progressive disclosure). Pre-seeded with the mode's group and,
             // while a debug session is live, the debug group — saving a load_tools round-trip.
             val activeGroups = linkedSetOf<String>()
@@ -178,6 +186,7 @@ class AgentLoop(
             var readOnlyIterations = 0
             val READ_ONLY_LIMIT = 7 // nudge after 7 read-only iterations, abort after 14
             var compressionCount = 0
+            var lastCompressionIteration = -1  // Track when compression happened
             // Adaptive kill-switch
             var escalationUsedThisTurn = false
             var iterationsWithoutEscalation = 0
@@ -259,13 +268,26 @@ class AgentLoop(
                 if (!skipCompression && compacted !== session.messages) {
                     val foldedAway = session.messages.size - compacted.size
                     compressionUsed = foldedAway > 0
-                    if (compressionUsed) compressionCount++
+                    if (compressionUsed) {
+                        compressionCount++
+                        lastCompressionIteration = iteration
+                    }
                     session.messages.clear()
                     session.messages.addAll(compacted)
                     if (foldedAway > 0) {
                         val compMetrics = ContextCompressor.lastMetrics
                         val metricsStr = if (compMetrics != null) " [${compMetrics.method}, ${(compMetrics.ratio * 100).toInt()}% retained, ${compMetrics.inputChars}→${compMetrics.outputChars} chars]" else ""
                         listener.onEvent(AgentEvent.Info("🗜 Folded $foldedAway earlier step(s) into a recap to keep the context lean — continuing.$metricsStr"))
+
+                        // POST-COMPRESSION NUDGE: tell the agent to work from notes, not re-read
+                        if (compMetrics?.method == "aggressive" || compressionCount >= 2) {
+                            val nudgeText = buildPostCompressionNudge(session, readFileTracker)
+                            if (nudgeText.isNotBlank()) {
+                                session.scratchpad.add(
+                                    NoteEntry(nudgeText, NotePriority.CRITICAL)
+                                )
+                            }
+                        }
                     }
                     // Extract user preferences detected during compression and persist as skills
                     val extractedPrefs = com.github.saeldrit.geai.context.SemanticCompressor.lastExtractedPreferences
@@ -294,11 +316,22 @@ class AgentLoop(
                 } else {
                     outgoing
                 }
+                // System status: inject runtime metrics into the volatile suffix so the model
+                // sees its own budget and can self-regulate instead of blindly hitting limits.
+                val statusSuffix = buildStatusSuffix(
+                    iteration, maxIterations, delegationCount, MAX_DELEGATIONS,
+                    readOnlyIterations, READ_ONLY_LIMIT, compressionCount,
+                    turnUsage, ContextCompressor.lastMetrics,
+                )
+                val volatileSuffix = if (statusSuffix.isNotBlank()) {
+                    if (bundleSuffix.isNotBlank()) "$bundleSuffix\n$statusSuffix" else statusSuffix
+                } else bundleSuffix
+
                 val request = ChatRequest(
                     model = settings.loopModel(),
                     system = systemPrompt,
                     // Bundle is per-turn stable — lives after the doctrine cache breakpoint.
-                    systemVolatileSuffix = bundleSuffix,
+                    systemVolatileSuffix = volatileSuffix,
                     messages = withTask,
                     tools = advertisedSpecs(settings, activeGroups),
                     maxTokens = settings.maxTokens,
@@ -335,6 +368,16 @@ class AgentLoop(
 
                 val toolUses = result.message.toolUses
                 if (toolUses.isEmpty()) {
+                    if (result.stopReason == StopReason.MAX_TOKENS && maxTokensAutoContinues < 5) {
+                        // Output was truncated mid-generation — inject a nudge and let the model
+                        // continue from where it left off instead of dying silently.
+                        maxTokensAutoContinues++
+                        listener.onEvent(AgentEvent.Info(
+                            "⚠ Response was truncated (${maxTokensAutoContinues}/5 auto-continues) — asking the model to continue..."
+                        ))
+                        session.messages.add(ChatMessage.user("Continue exactly where you left off. Do not repeat anything."))
+                        continue
+                    }
                     if (result.stopReason == StopReason.MAX_TOKENS) {
                         listener.onEvent(AgentEvent.Info("Response was truncated by the token limit; raise Max tokens in Settings | Tools | Geai."))
                     }
@@ -381,6 +424,31 @@ class AgentLoop(
                     }
                     toolResults.addAll(executeToolsParallel(parallelCalls, settings, indicator, listener))
                     toolResults.addAll(executeToolsSequential(serialCalls, settings, indicator, listener))
+                }
+
+                // TRACK READ FILE ACCESSES — for re-read prevention after compression
+                // Also detect re-reads and inject a nudge into scratchpad
+                for (call in toolUses) {
+                    if (call.name in READ_FILE_TOOLS) {
+                        val filePath = extractFilePathFromArgs(call.inputJson)
+                        if (filePath != null) {
+                            val previousIteration = readFileTracker[filePath]
+                            // Re-read detection: file was read before, AND compression happened in between
+                            if (previousIteration != null &&
+                                previousIteration < iteration - 1 &&
+                                lastCompressionIteration > previousIteration
+                            ) {
+                                // This is a re-read after compression — inject warning note
+                                val reReadNudge = "Re-read detected: $filePath was read on iteration $previousIteration, " +
+                                    "then context was compressed on iteration $lastCompressionIteration. " +
+                                    "Check your notes for information from this file instead of re-reading."
+                                if (session.scratchpad.none { it.text.contains("Re-read detected") && it.text.contains(filePath) }) {
+                                    session.scratchpad.add(NoteEntry(reReadNudge, NotePriority.LOW))
+                                }
+                            }
+                            readFileTracker[filePath] = iteration
+                        }
+                    }
                 }
 
                 session.messages.add(ChatMessage.toolResults(toolResults))
@@ -997,8 +1065,37 @@ class AgentLoop(
                 idx to SHARED_POOL.submit(Callable { runDelegateTimed(calls[idx], indicator, listener, session, bundleSuffix) })
             }
             for ((idx, future) in futures) {
+                // Check cancellation between delegates so the STOP button stays responsive.
+                // Once cancelled, cancel remaining futures and fill them with an error result.
+                if (indicator.isCanceled) {
+                    future.cancel(true)
+                    results[idx] = ContentBlock.ToolResult(calls[idx].id, "Skipped: turn was interrupted.", isError = true)
+                    continue
+                }
                 try {
-                    val outcome = future.get()
+                    // Use a timeout so the main thread can periodically check isCanceled
+                    // instead of blocking forever on a stuck delegate.
+                    val outcome = try {
+                        future.get(30, java.util.concurrent.TimeUnit.SECONDS)
+                    } catch (_: java.util.concurrent.TimeoutException) {
+                        // Still running after 30 s — check cancellation and wait again.
+                        // Loop until done or cancelled; each iteration re-checks the flag.
+                        while (true) {
+                            if (indicator.isCanceled) {
+                                future.cancel(true)
+                                break
+                            }
+                            try {
+                                future.get(10, java.util.concurrent.TimeUnit.SECONDS)
+                                break
+                            } catch (_: java.util.concurrent.TimeoutException) { /* keep waiting */ }
+                        }
+                        if (indicator.isCanceled) {
+                            results[idx] = ContentBlock.ToolResult(calls[idx].id, "Skipped: turn was interrupted.", isError = true)
+                            continue
+                        }
+                        future.get() // should be done by now
+                    }
                     metaTurnUsage += outcome.usage
                     session.totalUsage += outcome.usage
                     results[idx] = ContentBlock.ToolResult(calls[idx].id, outcome.result.content, outcome.result.isError)
@@ -1115,7 +1212,7 @@ class AgentLoop(
     )
 
     private companion object {
-        const val MAX_DELEGATIONS = 16
+        const val MAX_DELEGATIONS = 6
 
         /** Stuck-loop guard: how many recent step fingerprints to remember (enough to catch short cycles). */
         const val STUCK_RING_SIZE = 10
@@ -1124,8 +1221,56 @@ class AgentLoop(
         const val MAX_NOTES_RETAINED = 50
 
         /** Sub-agent budget: tight iteration cap and token limit keep each unit cheap. */
-        const val SUB_MAX_ITERATIONS = 8
-        const val SUB_MAX_TURN_TOKENS = 25_000
+        const val SUB_MAX_ITERATIONS = 4
+        const val SUB_MAX_TURN_TOKENS = 15_000
+
+        /** Tools that read files — tracked for re-read prevention. */
+        val READ_FILE_TOOLS = setOf("read_file", "file_structure", "resolve_ref")
+
+        /** Extract file path from tool arguments JSON. */
+        fun extractFilePathFromArgs(json: String): String? {
+            if (json.isBlank()) return null
+            // Try common path keys
+            val patterns = listOf(
+                Regex(""""(?:target_file|path|file|file_path|directory_path)":\s*"([^"]+)""""),
+                Regex(""""(?:anchor|ref)":\s*"(?:psi:|file:)?([^"]+)"""")
+            )
+            for (pattern in patterns) {
+                pattern.find(json)?.let {
+                    val filePath = it.groupValues[1].trim()
+                    // Clean up the path — remove line numbers, anchors, etc.
+                    return filePath.split("#", ":").firstOrNull()?.trim()
+                }
+            }
+            return null
+        }
+
+        /**
+         * Build a post-compression nudge telling the agent to work from notes, not re-read files.
+         * This is the KEY to preventing re-read loops after aggressive compression.
+         */
+        fun buildPostCompressionNudge(
+            session: AgentSession,
+            readFileTracker: Map<String, Int>
+        ): String {
+            val recentReads = readFileTracker.entries
+                .sortedByDescending { it.value }
+                .take(5)
+                .joinToString("\n") { "  - ${it.key} (iteration ${it.value})" }
+
+            return buildString {
+                appendLine("CONTEXT WAS COMPRESSED — work from your notes, NOT from re-reading files.")
+                appendLine("The following files were already read (do NOT re-read them):")
+                appendLine(recentReads)
+                appendLine()
+                appendLine("RULES:")
+                appendLine("1. Build your answer FROM your existing notes and CRITICAL findings.")
+                appendLine("2. If you need a detail you don't have, check your notes FIRST.")
+                appendLine("3. Only re-read a file if you ABSOLUTELY need new information not in your notes.")
+                appendLine("4. Compressed messages show [COMPRESSED: tool_name(status, args)] — this means you already called this tool.")
+                appendLine("5. Prefer making progress (edits, conclusions) over exploration.")
+            }.trim()
+        }
 
         private const val SUMMARY_MAX_TOKENS = 2000
         private val SUMMARY_DOCTRINE = com.github.saeldrit.geai.context.SemanticCompressor.DOCTRINE
@@ -1164,5 +1309,39 @@ class AgentLoop(
         private val SHARED_POOL: ExecutorService = Executors.newFixedThreadPool(
             Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
         )
+    }
+}
+
+/**
+ * Build a compact status block injected into the system prompt so the model sees its own
+ * budget and can self-regulate instead of blindly hitting limits. Only emitted for the
+ * main loop (sub-agents have a fixed, tiny budget and don't need this).
+ */
+fun buildStatusSuffix(
+    iteration: Int,
+    maxIterations: Int,
+    delegationCount: Int,
+    maxDelegations: Int,
+    readOnlyIterations: Int,
+    readOnlyLimit: Int,
+    compressionCount: Int,
+    turnUsage: TokenUsage,
+    lastCompression: ContextCompressor.CompressionMetrics?,
+): String {
+    // Only start showing status after a few iterations — the model doesn't need it on turn 1.
+    if (iteration < 2) return ""
+    return buildString {
+        append("<system_status>")
+        append("Iteration $iteration/$maxIterations")
+        append(" | Delegates: $delegationCount/$maxDelegations used")
+        append(" | Read-only streak: $readOnlyIterations/$readOnlyLimit")
+        if (compressionCount > 0) append(" | Compressions: $compressionCount")
+        if (turnUsage.inputTokens > 0 || turnUsage.outputTokens > 0) {
+            append(" | Turn tokens: ${turnUsage.inputTokens}in/${turnUsage.outputTokens}out")
+        }
+        if (lastCompression != null && lastCompression.method != "none") {
+            append(" | Last compression: ${lastCompression.method} ${(lastCompression.ratio * 100).toInt()}%")
+        }
+        append("</system_status>")
     }
 }
