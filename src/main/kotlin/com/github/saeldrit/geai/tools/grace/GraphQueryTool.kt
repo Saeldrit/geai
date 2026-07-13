@@ -31,7 +31,6 @@ object GraphQueryTool : AgentTool {
         val query = args.stringOrNull("query")
         val max = args.int("max_results", 40).coerceIn(1, 200)
 
-        // Live from IntelliJ's class index + the spec store — fresh and works with no graph build.
         val nodes = PsiStructure.findNodes(context.project, kind, query, max)
         if (nodes.isEmpty()) {
             return ToolResult.ok(

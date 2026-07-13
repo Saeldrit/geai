@@ -6,7 +6,6 @@ import com.github.saeldrit.geai.tools.ToolContext
 import com.github.saeldrit.geai.tools.ToolResult
 import com.github.saeldrit.geai.tools.fs.FsPaths
 
-/** Removes a line breakpoint at a specific line, or all breakpoints in a file. */
 object RemoveBreakpointTool : AgentTool {
     override val name = "remove_breakpoint"
     override val description =

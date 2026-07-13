@@ -7,7 +7,6 @@ import com.github.saeldrit.geai.tools.ToolResult
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.fileEditor.FileDocumentManager
 
-/** Reads a text file and returns its content with 1-based line numbers. */
 object ReadFileTool : AgentTool {
     override val name = "read_file"
     override val description =
@@ -22,10 +21,7 @@ object ReadFileTool : AgentTool {
     """.trimIndent()
 
     private const val MAX_BYTES = 2_000_000L
-    // Whole-file read cap — kept tight because the dump lives in the transcript forever. The agent
-    // is instructed to pass start_line/end_line for anything longer; a 150-line head is enough to
-    // orient and decide what range to actually fetch.
-    private const val MAX_LINES_WITHOUT_RANGE = 150
+    private const val MAX_LINES_WITHOUT_RANGE = 400
 
     override fun execute(args: ToolArgs, context: ToolContext): ToolResult {
         val path = args.string("path")
@@ -46,8 +42,6 @@ object ReadFileTool : AgentTool {
             var to = (endLine ?: lines.size).coerceAtMost(lines.size)
             if (from > to) return@compute ToolResult.error("Invalid range: start_line ($from) > end_line ($to)")
 
-            // A whole-file request on a long file is capped to a head so one read can't flood the
-            // context; an explicit [start_line, end_line] range is always honoured verbatim.
             val capped = noRange && lines.size > MAX_LINES_WITHOUT_RANGE
             if (capped) to = MAX_LINES_WITHOUT_RANGE
 

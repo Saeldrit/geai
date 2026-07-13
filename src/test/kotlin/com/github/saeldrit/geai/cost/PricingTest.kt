@@ -28,8 +28,8 @@ class PricingTest {
         val usage = TokenUsage(inputTokens = 1_000_000, outputTokens = 1_000_000)
         val claude = Pricing.costUsd(usage, Pricing.rateFor(rates, "claude-opus-4-8")!!)
         val deepseek = Pricing.costUsd(usage, Pricing.rateFor(rates, "deepseek-chat")!!)
-        assertEquals(90.0, claude, 1e-9)      // 15 + 75
-        assertEquals(1.37, deepseek, 1e-9)    // 0.27 + 1.10
+        assertEquals(90.0, claude, 1e-9)
+        assertEquals(1.37, deepseek, 1e-9)
         assertTrue("deepseek must be far cheaper than claude", deepseek < claude)
     }
 

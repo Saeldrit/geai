@@ -7,7 +7,6 @@ import com.github.saeldrit.geai.settings.GeaiSettings
 import com.github.saeldrit.geai.settings.LlmProvider
 import com.github.saeldrit.geai.settings.effectiveBaseUrl
 
-/** Resolves the configured provider/key/URL into a concrete [LlmClient]. */
 object LlmClientFactory {
 
     fun create(): LlmClient {
@@ -20,7 +19,6 @@ object LlmClientFactory {
         val baseUrl = state.effectiveBaseUrl()
         return when (provider) {
             LlmProvider.ANTHROPIC -> AnthropicClient(baseUrl, apiKey)
-            // OpenRouter speaks the OpenAI Chat-Completions dialect — same client, different base URL.
             LlmProvider.OPENAI_COMPATIBLE, LlmProvider.OPENROUTER, LlmProvider.XIAOMI -> OpenAiCompatibleClient(baseUrl, apiKey, provider)
         }
     }

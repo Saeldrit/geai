@@ -5,7 +5,6 @@ import com.github.saeldrit.geai.tools.ToolArgs
 import com.github.saeldrit.geai.tools.ToolContext
 import com.github.saeldrit.geai.tools.ToolResult
 
-/** Lists all line breakpoints with their enabled state and condition. */
 object ListBreakpointsTool : AgentTool {
     override val name = "list_breakpoints"
     override val description = "List all line breakpoints currently set in the project."

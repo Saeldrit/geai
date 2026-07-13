@@ -2,11 +2,6 @@ package com.github.saeldrit.geai.benchmark
 
 import java.util.Locale
 
-/**
- * Result of one (task × config) agent run. Pure data — the runner fills it from agent events; the
- * report renders it. [toolCounts] is keyed by tool name so we can see whether the agent navigated
- * via GRACE (context_bundle/resolve_ref/graph_*) or fell back to raw file reads.
- */
 data class RunResult(
     val taskId: String,
     val config: String,
@@ -22,7 +17,6 @@ data class RunResult(
     val answerChars: Int,
     val error: String?,
 ) {
-    /** Tokens we pay full/most for: fresh input + output + cache writes (cache reads are ~10% input). */
     val billedFootprint: Int get() = inputTokens + outputTokens + cacheWriteTokens
 
     private val graceTools = setOf("context_bundle", "resolve_ref", "graph_query", "graph_neighbors", "spec_lookup", "spec_list")
@@ -32,7 +26,6 @@ data class RunResult(
     val fileToolCalls: Int get() = toolCounts.filterKeys { it in fileTools }.values.sum()
 }
 
-/** A full benchmark: many runs, rendered to Markdown grouped by task for side-by-side comparison. */
 data class BenchmarkReport(val results: List<RunResult>, val stampMs: Long) {
 
     fun toMarkdown(): String = buildString {
@@ -58,7 +51,6 @@ data class BenchmarkReport(val results: List<RunResult>, val stampMs: Long) {
         }
     }
 
-    /** If both baseline and a grace config ran, show the billed-token delta — the headline number. */
     private fun deltaLine(runs: List<RunResult>): String? {
         val base = runs.firstOrNull { it.config.equals("baseline", true) } ?: return null
         val grace = runs.firstOrNull { it.config.contains("grace", true) } ?: return null

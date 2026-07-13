@@ -108,13 +108,47 @@
   .iconbtn.active{color:var(--accent);background:var(--card-hover);opacity:1}
   /* context usage bar */
   #ctxbar{display:flex;align-items:center;gap:8px;margin-top:6px;padding:4px 0}
-  #ctxbar .bar{flex:1;height:4px;border-radius:2px;background:var(--border);overflow:hidden;position:relative}
+  #ctxbar .bar{flex:1;height:4px;border-radius:2px;background:var(--border);position:relative}
   #ctxbar .bar .fill{height:100%;border-radius:2px;transition:width .3s ease}
   #ctxbar .bar .fill.ok{background:#4ec98b}
   #ctxbar .bar .fill.warn{background:#d4a037}
   #ctxbar .bar .fill.danger{background:#e06c75}
+  /* auto-compaction threshold tick: history folds into a summary here, not at 100% */
+  #ctxbar .bar .mark{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--muted);opacity:.85;border-radius:1px}
   #ctxbar .pct{font-size:11px;color:var(--muted);min-width:36px;text-align:right}
+  #ctxbar .cache{font-size:11px;color:#4ec98b}
   #ctxbar .cost{font-size:11px;color:var(--muted);margin-left:auto}
+
+  /* thinking indicator — visible feedback between submit and the first model output */
+  .thinkrow{display:flex;align-items:center;gap:8px;margin:0 0 12px;color:var(--muted);font-size:12px}
+  .thinkrow .dots{display:inline-flex;gap:3px}
+  .thinkrow .dots i{width:6px;height:6px;border-radius:50%;background:var(--accent);opacity:.25;
+    animation:thinkpulse 1.2s infinite}
+  .thinkrow .dots i:nth-child(2){animation-delay:.2s}
+  .thinkrow .dots i:nth-child(3){animation-delay:.4s}
+  @keyframes thinkpulse{0%,100%{opacity:.25;transform:translateY(0)}30%{opacity:1;transform:translateY(-2px)}}
+
+  /* command chips — one-click access to slash commands */
+  #cmdchips{display:flex;gap:6px;overflow-x:auto;padding:0 0 6px;scrollbar-width:none}
+  #cmdchips::-webkit-scrollbar{display:none}
+  .chip{flex-shrink:0;font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:999px;
+    background:var(--card);color:var(--muted);cursor:pointer;user-select:none;transition:border-color .12s,color .12s}
+  .chip:hover{border-color:var(--accent);color:var(--fg)}
+  .chip .cs{color:var(--accent);font-family:ui-monospace,Consolas,monospace;margin-right:2px}
+  .chip.act{color:var(--fg)}
+  .chip.act:hover{border-color:#4ec98b}
+
+  /* agent memory (notes) overlay */
+  .notetask{padding:7px 10px;margin:0 0 8px;border:1px solid var(--border);border-radius:8px;background:var(--bg);
+    font-size:12px;color:var(--fg);overflow-wrap:anywhere}
+  .notetask .nlab{color:var(--accent);font-weight:700;font-size:10px;letter-spacing:.4px;text-transform:uppercase;margin-right:6px}
+  .noteitem{display:flex;gap:8px;align-items:baseline;padding:6px 10px;border-radius:8px;font-size:12px;overflow-wrap:anywhere}
+  .noteitem:hover{background:var(--card-hover)}
+  .noteitem .nmark{flex-shrink:0;font-family:ui-monospace,Consolas,monospace;color:var(--muted)}
+  .noteitem.critical .nmark{color:#e06c75;font-weight:700}
+  .noteitem.low{opacity:.6}
+  .noteitem .ntext{flex:1}
+  .noteitem .nanchor{color:var(--muted);font-size:11px;font-family:ui-monospace,Consolas,monospace;margin-left:6px}
   .codeblock{position:relative}
   .codeblock .copybtn{position:absolute;top:6px;right:6px;font-size:11px;padding:2px 8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--muted);cursor:pointer;opacity:0;transition:opacity .12s}
   .codeblock:hover .copybtn{opacity:.85}
@@ -180,6 +214,9 @@
     <span class="spacer"></span>
     <span id="status">Ready</span>
     <button class="iconbtn" id="btnNew" aria-label="New session" data-tip="New session"><svg class="ico" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+    <button class="iconbtn" id="btnRevert" aria-label="Revert last turn" data-tip="Revert last turn's file changes (Local History)"><svg class="ico" viewBox="0 0 24 24"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6.7L3 13"/></svg></button>
+    <button class="iconbtn" id="btnNotes" aria-label="Agent memory" data-tip="Agent memory (notes)"><svg class="ico" viewBox="0 0 24 24"><path d="M5 3h14a1 1 0 0 1 1 1v13l-4 4H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><polyline points="16 21 16 17 20 17"/><line x1="8" y1="9" x2="16" y2="9"/><line x1="8" y1="13" x2="13" y2="13"/></svg></button>
+    <button class="iconbtn" id="btnExport" aria-label="Export session" data-tip="Export session to Markdown"><svg class="ico" viewBox="0 0 24 24"><path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><path d="M4 21h16"/></svg></button>
     <button class="iconbtn" id="btnHistory" aria-label="History" data-tip="Session history"><svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 16 14"/></svg></button>
     <button class="iconbtn" id="btnSettings" aria-label="Settings" data-tip="Settings"><svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
   </div>
@@ -196,11 +233,12 @@
 
   <div id="composer">
     <div id="cmdmenu" class="hidden"></div>
+    <div id="cmdchips" class="hidden"></div>
     <div id="inputwrap">
       <div id="attbar" class="hidden"></div>
       <textarea id="input" placeholder="Describe the bug, e.g. “invalid data reaches the UI, I can’t find where we lose it”. Enter to send, Shift+Enter for a new line. Type / for commands."></textarea>
     </div>
-    <div id="ctxbar"><div class="bar"><div class="fill ok" id="ctxfill" style="width:0%"></div></div><span class="pct" id="ctxpct"></span><span class="cost" id="ctxcost"></span></div>
+    <div id="ctxbar"><div class="bar" id="ctxbarTrack"><div class="fill ok" id="ctxfill" style="width:0%"></div><div class="mark hidden" id="ctxmark"></div></div><span class="pct" id="ctxpct"></span><span class="cache" id="ctxcache"></span><span class="cost" id="ctxcost"></span></div>
     <div id="footer">
       <button class="iconbtn" id="btnAttach" aria-label="Attach file" data-tip="Attach file"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg></button>
       <input type="file" id="fileInput" multiple style="display:none"/>
@@ -216,11 +254,8 @@
   var el=function(id){return document.getElementById(id)};
   var scroll=el('scroll'), chat=el('chat'), welcome=el('welcome'), input=el('input'),
       send=el('send'), statusEl=el('status'), tokensEl=el('tokens'), cmdMenu=el('cmdmenu');
-  // slash-command discoverability ("/" menu): catalog from Kotlin, current matches, highlighted row
   var cmds=[], cmdMatches=[], cmdActive=-1;
-  // tool-group state (reset each agent turn)
   var tGroup=null, tEntries=null, tCount=0, tPending={};
-  // streaming: the live assistant bubble body + accumulated raw text, and the live reasoning block body
   var streamBody=null, streamRaw='', reasonBody=null;
 
   function send2k(obj){ if(window.geaiSend) window.geaiSend(JSON.stringify(obj)); }
@@ -228,7 +263,6 @@
   function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
   function b64(s){ try{ return btoa(unescape(encodeURIComponent(s))); }catch(e){ return ''; } }
   function unb64(s){ try{ return decodeURIComponent(escape(atob(s))); }catch(e){ return ''; } }
-  // turn `path.ext[:line]` references into clickable links that open the file in the editor
   function linkify(html){
     return html.replace(/((?:[\w.$-]+[\/\\])*[\w.$-]+\.(?:java|kt|kts|xml|py|js|jsx|ts|tsx|json|ya?ml|gradle|properties|sql|html|css|cpp|hpp|go|rs|rb|php|cs|swift|scala|groovy))(?::(\d+))?(?::\d+)?/g, function(m, path, ln){
       return '<a class="srcref" data-path="'+path.replace(/"/g,'&quot;')+'"'+(ln?(' data-line="'+ln+'"'):'')+'>'+m+'</a>';
@@ -247,10 +281,8 @@
     var body=data.slice(1).map(function(r){return '<tr>'+parseRow(r).map(function(c){return '<td>'+inlineMd(c)+'</td>';}).join('')+'</tr>';}).join('');
     return '<table><thead><tr>'+head+'</tr></thead>'+(body?'<tbody>'+body+'</tbody>':'')+'</table>';
   }
-  // markdown: fenced code, tables, headings, lists, bold, inline-code, paragraphs
   function md(text){
     var FENCE='\x00', blocks=[], out=[];
-    // 1. extract fenced code blocks
     text=(text||'').replace(/```[\s\S]*?```/g,function(m){
       var seg=m.slice(3,-3).replace(/^[a-zA-Z0-9_+-]*\n?/,'');
       blocks.push('<div class="codeblock"><button class="copybtn" data-code="'+b64(seg)+'">Copy</button><pre><code>'+esc(seg)+'</code></pre></div>');
@@ -260,33 +292,26 @@
     function flushPara(){if(para.length){out.push('<p>'+para.join('<br>')+'</p>');para=[];}}
     while(i<lines.length){
       var l=lines[i];
-      // fenced code placeholder
       var fm=l.trim().match(/^\x00(\d+)\x00$/);
       if(fm){flushPara();out.push(blocks[+fm[1]]);i++;continue;}
-      // table
       if(/^\s*\|/.test(l)){
         flushPara();
         var tbl=[];
         while(i<lines.length&&/^\s*\|/.test(lines[i])){tbl.push(lines[i]);i++;}
         out.push(renderTable(tbl));continue;
       }
-      // h1–h6
       var h=l.match(/^(#{1,6})\s+(.+)/);if(h){flushPara();var lv=h[1].length;out.push('<h'+lv+'>'+inlineMd(h[2])+'</h'+lv+'>');i++;continue;}
-      // unordered list
       if(/^[-*]\s+/.test(l)){
         flushPara();var items=[];
         while(i<lines.length&&/^[-*]\s+/.test(lines[i])){items.push('<li>'+inlineMd(lines[i].replace(/^[-*]\s+/,''))+'</li>');i++;}
         out.push('<ul>'+items.join('')+'</ul>');continue;
       }
-      // ordered list
       if(/^\d+\.\s+/.test(l)){
         flushPara();var items=[];
         while(i<lines.length&&/^\d+\.\s+/.test(lines[i])){items.push('<li>'+inlineMd(lines[i].replace(/^\d+\.\s+/,''))+'</li>');i++;}
         out.push('<ol>'+items.join('')+'</ol>');continue;
       }
-      // blank line → paragraph break
       if(l.trim()===''){flushPara();i++;continue;}
-      // normal text
       para.push(inlineMd(l));i++;
     }
     flushPara();
@@ -297,6 +322,16 @@
   function atBottom(){ return scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight < 60; }
   function append(node){ var stick=atBottom(); chat.appendChild(node); if(stick) scroll.scrollTop=scroll.scrollHeight; }
 
+  var thinkEl=null, localEcho=false;
+  function showThinking(){
+    if(thinkEl){ if(thinkEl!==chat.lastChild) chat.appendChild(thinkEl); return; }
+    var d=document.createElement('div'); d.className='thinkrow';
+    d.innerHTML='<span class="dots"><i></i><i></i><i></i></span><span>geai is thinking…</span>';
+    thinkEl=d; append(d);
+  }
+  function hideThinking(){ if(thinkEl&&thinkEl.parentNode) thinkEl.parentNode.removeChild(thinkEl); thinkEl=null; }
+  function keepThinkingLast(){ if(thinkEl&&thinkEl!==chat.lastChild){ chat.appendChild(thinkEl); } }
+
   function bubble(cls,who,text){ var d=document.createElement('div'); d.className='msg '+cls;
     d.innerHTML='<div class="who">'+esc(who)+'</div><div class="body">'+md(text)+'</div>'; append(d); }
   function line(cls,text){ var d=document.createElement('div'); d.className=cls; d.innerHTML=linkify(esc(text)); append(d); }
@@ -304,7 +339,6 @@
     d.innerHTML='<summary>Reasoning</summary><div class="rbody"></div>';
     d.querySelector('.rbody').textContent=text; append(d); }
 
-  // ---- streaming: append deltas to ONE bubble, then re-render as markdown on completion ----
   function streamDelta(text){
     if(!streamBody){
       closeToolGroup(stepsLabel(tCount,'✓')); tCount=0; tPending={};
@@ -324,8 +358,6 @@
     reasonBody.textContent=(reasonBody.textContent||'')+text;
     if(atBottom()) scroll.scrollTop=scroll.scrollHeight;
   }
-  // Finalize the live bubble: re-render the streamed text as markdown. Returns true if it consumed a
-  // streaming bubble, so the caller skips creating a fresh one. Also closes any open reasoning stream.
   function finalizeStream(full){
     reasonBody=null;
     if(!streamBody) return false;
@@ -350,20 +382,23 @@
       case 'userMessage':
         showChat(); finalizeStream();
         closeToolGroup(stepsLabel(tCount,'✓')); tCount=0; tPending={};
-        bubble('user','You',ev.text); break;
-      case 'thinking': statusEl.textContent='Thinking…'; break;
-      case 'reasoning': showChat(); reasoning(ev.text); break;
-      case 'reasoningDelta': showChat(); reasonDelta(ev.text); break;
-      case 'assistantTextDelta': showChat(); streamDelta(ev.text); break;
+        if(localEcho){ localEcho=false; break; }
+        bubble('user','You',ev.text);
+        if(running) showThinking();
+        break;
+      case 'thinking': statusEl.textContent='Thinking…'; showChat(); showThinking(); break;
+      case 'reasoning': hideThinking(); showChat(); reasoning(ev.text); break;
+      case 'reasoningDelta': hideThinking(); showChat(); reasonDelta(ev.text); break;
+      case 'assistantTextDelta': hideThinking(); showChat(); streamDelta(ev.text); break;
       case 'assistantText':
-        showChat();
+        hideThinking(); showChat();
         if(!finalizeStream(ev.text)){
           closeToolGroup(stepsLabel(tCount,'✓')); tCount=0; tPending={};
           bubble('assistant','geai',ev.text);
         }
         break;
       case 'toolStarted': {
-        showChat(); finalizeStream();
+        hideThinking(); showChat();
         if(!tGroup){
           tGroup=document.createElement('details');
           tGroup.className='tools-group'; tGroup.setAttribute('open','');
@@ -389,7 +424,6 @@
           var ts=ent.querySelector('.ts');
           ts.textContent=ev.error?'✗':'✓';
           ts.className='ts '+(ev.error?'err':'ok');
-          // Surface WHY a tool failed (the reason already crosses the bridge) instead of a bare ✗.
           if(ev.error&&ev.content){
             var sub=document.createElement('div'); sub.className='tool-result err';
             sub.textContent=ev.content.replace(/\s+/g,' ').trim().slice(0,300);
@@ -400,18 +434,18 @@
         if(atBottom()) scroll.scrollTop=scroll.scrollHeight;
         break;
       }
-      case 'info': showChat(); line('info',ev.text); break;
+      case 'info': showChat(); line('info',ev.text); keepThinkingLast(); break;
       case 'error':
-        showChat(); finalizeStream();
+        hideThinking(); showChat(); finalizeStream();
         closeToolGroup(stepsLabel(tCount,'✗')); tCount=0; tPending={};
         var e=document.createElement('div'); e.className='errline'; e.textContent='⚠ '+ev.text; append(e);
         setRunning(false); break;
       case 'cancelled':
-        showChat(); finalizeStream();
+        hideThinking(); showChat(); finalizeStream();
         closeToolGroup(stepsLabel(tCount,'✗')); tCount=0; tPending={};
         line('info',ev.text||'Stopped.'); setRunning(false); break;
       case 'done':
-        finalizeStream();
+        hideThinking(); finalizeStream();
         closeToolGroup(stepsLabel(tCount,'✓')); tCount=0; tPending={};
         statusEl.textContent='Done';
         if(ev.tokensIn!=null) setTokens(ev.tokensIn,ev.tokensOut);
@@ -423,16 +457,48 @@
   function fmt(n){ n=n||0; return n>=1000?(n/1000).toFixed(1)+'k':(''+n); }
   function setUsage(u){
     if(!u){ return; }
-    var ctx=u.contextTokens||0, win=u.contextWindow||0;
+    var ctx=u.contextTokens||0, win=u.contextWindow||0, cAt=u.compactAt||0;
     var pct=win>0?Math.round(100*ctx/win):0;
-    var fill=el('ctxfill'), pctEl=el('ctxpct'), costEl=el('ctxcost');
-    if(fill){ fill.style.width=pct+'%'; fill.className='fill '+(pct>=80?'danger':pct>=60?'warn':'ok'); }
+    var fill=el('ctxfill'), pctEl=el('ctxpct'), costEl=el('ctxcost'),
+        markEl=el('ctxmark'), cacheEl=el('ctxcache'), track=el('ctxbarTrack');
+    var compactPct=(win>0&&cAt>0)?Math.min(100,Math.round(100*cAt/win)):0;
+    if(markEl){
+      if(compactPct>0&&compactPct<100){ markEl.style.left=compactPct+'%'; markEl.classList.remove('hidden'); }
+      else markEl.classList.add('hidden');
+    }
+    if(track&&cAt>0) track.title='auto-compaction folds history at ~'+fmt(cAt)+' tokens';
+    var cls='ok';
+    if(cAt>0){ cls=ctx>=cAt?'danger':ctx>=cAt*0.8?'warn':'ok'; }
+    else { cls=pct>=80?'danger':pct>=60?'warn':'ok'; }
+    if(fill){ fill.style.width=pct+'%'; fill.className='fill '+cls; }
     if(pctEl){ pctEl.textContent=win?pct+'%':''; }
+    var cr=u.cacheRead||0, ti=u.tokensIn||0, cacheStr='';
+    if(cr>0){ cacheStr='cache '+Math.round(100*cr/(cr+ti))+'%'; }
+    if(cacheEl) cacheEl.textContent=cacheStr;
     var cs='';
     if(u.costUsd!=null) cs='~$'+u.costUsd.toFixed(4);
-    else if((u.tokensIn||0)+(u.tokensOut||0)>0) cs='↑'+fmt(u.tokensIn)+' ↓'+fmt(u.tokensOut);
+    else if(ti+(u.tokensOut||0)>0) cs='↑'+fmt(ti)+' ↓'+fmt(u.tokensOut);
     if(costEl) costEl.textContent=cs;
     tokensEl.textContent='context '+fmt(ctx)+(win?' / '+fmt(win):'');
+  }
+
+  function renderChips(commands){
+    var host=el('cmdchips'); if(!host) return;
+    host.innerHTML='';
+    (commands||[]).forEach(function(c){
+      var d=document.createElement('div'); d.className='chip'; d.title=c.desc||'';
+      d.innerHTML='<span class="cs">/</span>'+esc(c.name);
+      d.onclick=function(){ if(running) return;
+        input.value='/'+c.name+' '; hideCmdMenu(); autoGrow(); input.focus();
+        input.setSelectionRange(input.value.length,input.value.length); };
+      host.appendChild(d);
+    });
+    var compact=document.createElement('div'); compact.className='chip act';
+    compact.title='Fold older context into a dense summary to free budget';
+    compact.textContent='🗜 Compact';
+    compact.onclick=function(){ if(!running) send2k({action:'compact'}); };
+    host.appendChild(compact);
+    host.classList.toggle('hidden', host.children.length===0);
   }
 
   function renderSkills(skills){
@@ -448,7 +514,6 @@
   }
 
   function autoGrow(){ input.style.height='auto'; input.style.height=Math.min(input.scrollHeight, Math.floor(window.innerHeight*0.5))+'px'; }
-  // ---- attachments ----
   var pendingAttachments = [];
   var attbar = document.getElementById('attbar');
   var fileInput = document.getElementById('fileInput');
@@ -532,7 +597,6 @@
     send2k({action:'submit', text:t, attachments:atts});
   }
 
-  // ---- slash-command menu ----
   function hideCmdMenu(){ cmdMenu.classList.add('hidden'); cmdMenu.innerHTML=''; cmdActive=-1; cmdMatches=[]; }
   function setCmdActive(i){ cmdActive=i; var rows=cmdMenu.children;
     for(var k=0;k<rows.length;k++) rows[k].classList.toggle('active',k===i); }
@@ -566,6 +630,7 @@
   el('btnNew').onclick=function(){ send2k({action:'newSession'}); };
   el('btnSettings').onclick=function(){ send2k({action:'openSettings'}); };
   el('btnHistory').onclick=function(){ send2k({action:'history'}); };
+  if(el('btnNotes')) el('btnNotes').onclick=function(){ send2k({action:'notes'}); };
 
   chat.addEventListener('click', function(e){
     var ref = e.target.closest ? e.target.closest('.srcref') : null;
@@ -580,7 +645,6 @@
     setTimeout(function(){ btn.textContent=prev; btn.classList.remove('done'); }, 1200);
   });
 
-  // ---- Kotlin -> JS API ----
   window.geaiBoot=function(){ send2k({action:'ready'}); };
   window.geaiInit=function(state){
     if(state.theme){ var r=document.documentElement.style;
@@ -601,7 +665,7 @@
   function fmtDate(ts){ try{ var d=new Date(ts);
     return d.toLocaleDateString()+' '+('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2); }catch(e){ return ''; } }
   window.geaiHistory=function(list){
-    var prev=el('overlay'); if(prev) prev.remove(); // replace, never stack (delete re-sends the list)
+    var prev=el('overlay'); if(prev) prev.remove();
     var ov=document.createElement('div'); ov.id='overlay';
     var box=document.createElement('div'); box.id='histbox'; box.innerHTML='<h3>Session history</h3>';
     if(!list||!list.length){ box.innerHTML+='<div class="info" style="padding:8px">No saved sessions yet.</div>'; }
@@ -613,6 +677,24 @@
       del.onclick=function(e){ e.stopPropagation(); send2k({action:'deleteSession',id:s.id}); };
       it.appendChild(del);
       it.onclick=function(){ ov.remove(); send2k({action:'loadSession',id:s.id}); };
+      box.appendChild(it);
+    });
+    ov.appendChild(box); ov.onclick=function(e){ if(e.target===ov) ov.remove(); };
+    document.body.appendChild(ov);
+  };
+  window.geaiNotes=function(data){
+    var prev=el('overlay'); if(prev) prev.remove();
+    var ov=document.createElement('div'); ov.id='overlay';
+    var box=document.createElement('div'); box.id='histbox';
+    var task=(data&&data.activeTask)?data.activeTask:'';
+    box.innerHTML='<h3>Agent memory</h3>'+(task?'<div class="m" style="padding:0 8px 8px">Active task: '+esc(task)+'</div>':'');
+    var notes=(data&&data.notes)||[];
+    if(!notes.length){ box.innerHTML+='<div class="info" style="padding:8px">No notes yet.</div>'; }
+    notes.forEach(function(n){
+      var it=document.createElement('div'); it.className='histitem';
+      var pr=n.priority?'<span class="m"> · '+esc(n.priority)+'</span>':'';
+      var an=n.anchor?'<div class="m">'+esc(n.anchor)+'</div>':'';
+      it.innerHTML='<div class="t">'+esc(n.text)+pr+'</div>'+an;
       box.appendChild(it);
     });
     ov.appendChild(box); ov.onclick=function(e){ if(e.target===ov) ov.remove(); };

@@ -5,17 +5,6 @@ import com.github.saeldrit.geai.tools.ToolArgs
 import com.github.saeldrit.geai.tools.ToolContext
 import com.github.saeldrit.geai.tools.ToolResult
 
-/**
- * Trace an expression across MULTIPLE debug steps in ONE tool call — the single most important
- * optimisation for debugging speed. Instead of the model calling `debug_step` + `debug_evaluate`
- * repeatedly (one LLM round-trip per step), this tool:
- * 1. Evaluates the expression at the current pause (step 0)
- * 2. Steps N times (over/into/out)
- * 3. After each step: records file:line, re-evaluates the expression, snapshots local variables
- * 4. Returns the full trace as structured text
- *
- * Result: 1 LLM call instead of 2×N.
- */
 object DebugTraceTool : AgentTool {
     override val name = "debug_trace"
     override val description =
@@ -68,14 +57,13 @@ object DebugTraceTool : AgentTool {
             val loc = DebuggerSupport.pausedSessionDescription(project)
             if (loc == null) {
                 builder.appendLine("[$i] ${stepResult.content}")
-                break // session ended
+                break
             }
 
             val value = FrameInspection.evaluateSingle(project, expression, perStepTimeoutMs)
             builder.appendLine("[$i] $loc")
             builder.appendLine("    $expression = $value")
 
-            // Show variables only for first 3 and last step to keep output compact
             if (i <= 3 || i == maxSteps) {
                 val vars = FrameInspection.locals(project, perStepTimeoutMs)
                 if (!vars.isError) {

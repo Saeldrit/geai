@@ -5,11 +5,6 @@ import com.github.saeldrit.geai.anchor.resolvers.OpenApiAnchorResolver
 import com.github.saeldrit.geai.anchor.resolvers.PsiAnchorResolver
 import com.intellij.openapi.project.Project
 
-/**
- * Central anchor dispatch. Parses `scheme:locator` and routes to the matching [AnchorResolver].
- * The registered set is the only place that knows about the host environment; add a resolver here
- * to teach geai a new source of truth.
- */
 object AnchorResolvers {
 
     private val resolvers: List<AnchorResolver> = listOf(

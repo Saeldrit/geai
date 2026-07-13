@@ -5,7 +5,6 @@ import com.github.saeldrit.geai.tools.ToolArgs
 import com.github.saeldrit.geai.tools.ToolContext
 import com.github.saeldrit.geai.tools.ToolResult
 
-/** Reads local variables and their values from the currently paused stack frame. */
 object DebugVariablesTool : AgentTool {
     override val name = "debug_variables"
     override val description =

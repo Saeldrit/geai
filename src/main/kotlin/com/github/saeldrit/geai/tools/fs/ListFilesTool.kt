@@ -8,7 +8,6 @@ import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.vfs.VirtualFile
 import java.util.ArrayDeque
 
-/** Lists directory entries, optionally recursively, skipping build/VCS noise. */
 object ListFilesTool : AgentTool {
     override val name = "list_files"
     override val description =

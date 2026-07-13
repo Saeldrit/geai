@@ -9,11 +9,6 @@ import com.github.saeldrit.geai.llm.Role
 import com.github.saeldrit.geai.llm.TokenUsage
 import java.util.UUID
 
-/**
- * Flat, Gson-friendly mirror of a session. The domain uses a sealed [ContentBlock] hierarchy that
- * Gson cannot serialize polymorphically, so we round-trip through these DTOs with an explicit
- * `type` discriminator.
- */
 internal data class SessionDto(
     var id: String = "",
     var title: String = "",
@@ -49,7 +44,6 @@ internal data class BlockDto(
     var isError: Boolean = false,
 )
 
-/** Bidirectional mapping between [AgentSession] and its persisted [SessionDto]. */
 internal object SessionCodec {
 
     fun toDto(session: AgentSession): SessionDto = SessionDto(
@@ -61,7 +55,7 @@ internal object SessionCodec {
         messages = session.messages.map { message ->
             MessageDto(message.role.name, message.content.map(::blockToDto))
         },
-        scratchpad = emptyList(), // legacy field kept for schema compat; new data in 'notes'
+        scratchpad = emptyList(),
         notes = session.scratchpad.map { note ->
             NoteEntryDto(note.text, note.priority.name, note.anchor, note.turn)
         },
@@ -89,7 +83,6 @@ internal object SessionCodec {
                 )
             })
         } else if (dto.scratchpad.isNotEmpty()) {
-            // Backward compat: old sessions stored scratchpad as List<String>
             session.scratchpad.addAll(dto.scratchpad.map { NoteEntry(text = it, priority = NotePriority.NORMAL) })
         }
         session.activeTask = dto.activeTask
@@ -112,7 +105,6 @@ internal object SessionCodec {
     }
 }
 
-/** Lightweight session descriptor for listing without loading full transcripts. */
 data class SessionMeta(
     val id: String,
     val title: String,

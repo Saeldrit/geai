@@ -9,10 +9,6 @@ import com.github.saeldrit.geai.llm.StopReason
 import com.github.saeldrit.geai.llm.TokenUsage
 import com.intellij.openapi.progress.ProgressIndicator
 
-/**
- * A scripted [LlmClient] for loop tests: each call returns the next scripted result, then end_turn.
- * The loop calls [chatStream], whose default delegates to [chat], so overriding [chat] is enough.
- */
 class FakeLlmClient(private val scripted: List<ChatResult>) : LlmClient {
     private var index = 0
     val callCount: Int get() = index

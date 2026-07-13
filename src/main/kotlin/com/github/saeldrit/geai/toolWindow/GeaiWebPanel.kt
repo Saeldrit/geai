@@ -16,6 +16,7 @@ import com.github.saeldrit.geai.tools.fs.FsPaths
 import com.github.saeldrit.geai.settings.GeaiSettings
 import com.github.saeldrit.geai.settings.GeaiSettingsConfigurable
 import com.github.saeldrit.geai.settings.effectiveModel
+import com.github.saeldrit.geai.settings.effectiveOutputReserve
 import com.github.saeldrit.geai.settings.loopModel
 import com.github.saeldrit.geai.settings.transcriptWindow
 import com.google.gson.JsonArray
@@ -75,7 +76,9 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
         Disposer.register(this, query)
     }
 
-    override fun dispose() = Unit // children disposed via Disposer registration
+    override fun dispose() {
+        deltaFlushTimer.stop()
+    }
 
     private fun loadHtml(): String =
         javaClass.getResource("/webview/index.html")?.readText()
@@ -86,7 +89,6 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
     }
 
     private fun exec(js: String) {
-        // U+2028/U+2029 are valid in JSON but terminate JS string literals; escape them.
         val safe = js.replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
         browser.cefBrowser.executeJavaScript(safe, browser.cefBrowser.url, 0)
     }
@@ -131,6 +133,9 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
                 exec("window.geaiHistory(${JsonSupport.gson.toJson(historyList())});")
             }
 
+            "notes" -> exec("window.geaiNotes(${JsonSupport.gson.toJson(notesJson())});")
+            "revertTurn" -> service.revertLastTurn(webListener(service.currentSession().id))
+            "exportSession" -> exportSession()
             "copy" -> obj.get("text")?.asString?.let { CopyPasteManager.getInstance().setContents(StringSelection(it)) }
             "openFile" -> openInEditor(
                 obj.get("path")?.takeUnless { it.isJsonNull }?.asString,
@@ -139,12 +144,6 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
         }
     }
 
-    /**
-     * Open a source reference cited in the chat (path[:line]) in the editor — powers click-to-navigate
-     * and "jump to where a breakpoint was set". Resolves a project-relative/absolute path directly, and
-     * falls back to a project-wide filename lookup for the bare `Foo.java:42` the agent usually writes.
-     * Runs on the EDT (dispatch already marshals here).
-     */
     private fun openInEditor(rawPath: String?, line: Int?) {
         val path = rawPath?.trim()?.takeIf { it.isNotEmpty() } ?: return
         val file = (FsPaths.resolve(project, path) ?: findByName(path))?.takeIf { !it.isDirectory } ?: return
@@ -177,20 +176,46 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
         exec("window.geaiInit(${JsonSupport.gson.toJson(initState())});")
     }
 
-    private fun webListener(sessionId: String): AgentListener = AgentListener { event ->
-        // Guard: silently drop events from a session that is no longer active.
-        // Without this, a still-running turn from the old session would push events into
-        // the new session's chat after the user switches.
-        if (service.currentSession()?.id != sessionId) return@AgentListener
-        val json = JsonSupport.gson.toJson(eventToJson(event))
-        ApplicationManager.getApplication().invokeLater({
+    private val textDeltaBuf = StringBuilder()
+    private val reasonDeltaBuf = StringBuilder()
+    private val deltaFlushTimer = javax.swing.Timer(33) { flushDeltas() }.apply { isRepeats = false }
+
+    private fun flushDeltas() {
+        if (reasonDeltaBuf.isNotEmpty()) {
+            val json = JsonSupport.gson.toJson(event("reasoningDelta").apply { addProperty("text", reasonDeltaBuf.toString()) })
+            reasonDeltaBuf.setLength(0)
             exec("window.geaiEvent($json);")
-            // Refresh the token panel (context fill / window / cost) once the turn or /compact settles.
-            if (event is AgentEvent.Done) exec("window.geaiUsage(${JsonSupport.gson.toJson(usageJson())});")
+        }
+        if (textDeltaBuf.isNotEmpty()) {
+            val json = JsonSupport.gson.toJson(event("assistantTextDelta").apply { addProperty("text", textDeltaBuf.toString()) })
+            textDeltaBuf.setLength(0)
+            exec("window.geaiEvent($json);")
+        }
+    }
+
+    private fun webListener(sessionId: String): AgentListener = AgentListener { event ->
+        if (service.currentSession()?.id != sessionId) return@AgentListener
+        ApplicationManager.getApplication().invokeLater({
+            when (event) {
+                is AgentEvent.AssistantTextDelta -> {
+                    textDeltaBuf.append(event.text)
+                    if (!deltaFlushTimer.isRunning) deltaFlushTimer.start()
+                }
+                is AgentEvent.ReasoningDelta -> {
+                    reasonDeltaBuf.append(event.text)
+                    if (!deltaFlushTimer.isRunning) deltaFlushTimer.start()
+                }
+                else -> {
+                    flushDeltas()
+                    exec("window.geaiEvent(${JsonSupport.gson.toJson(eventToJson(event))});")
+                    if (event is AgentEvent.Done || event is AgentEvent.ToolFinished) {
+                        exec("window.geaiUsage(${JsonSupport.gson.toJson(usageJson())});")
+                    }
+                }
+            }
         }, ModalityState.any())
     }
 
-    /** Live usage for the token panel: current context fill, the active window, totals, and cost if priced. */
     private fun usageJson(): JsonObject {
         val settings = GeaiSettings.getInstance().state
         val session = service.currentSession()
@@ -199,9 +224,101 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
         return JsonObject().apply {
             addProperty("contextTokens", ContextCompressor.estimatedTokens(session.messages))
             addProperty("contextWindow", settings.transcriptWindow())
+            addProperty(
+                "compactAt",
+                ContextCompressor.compactionThresholdTokens(settings.transcriptWindow(), settings.effectiveOutputReserve()),
+            )
             addProperty("tokensIn", session.totalUsage.inputTokens)
             addProperty("tokensOut", session.totalUsage.outputTokens)
+            addProperty("cacheRead", session.totalUsage.cacheReadTokens)
             cost?.let { addProperty("costUsd", it) }
+        }
+    }
+
+    private fun exportSession() {
+        val session = service.currentSession()
+        val listener = webListener(session.id)
+        if (session.isEmpty) {
+            listener.onEvent(AgentEvent.Info("Nothing to export — the session is empty."))
+            return
+        }
+        ApplicationManager.getApplication().executeOnPooledThread {
+            runCatching {
+                val markdown = buildSessionMarkdown(session)
+                val base = project.basePath ?: error("Project base path is unavailable")
+                val dir = java.nio.file.Paths.get(base, ".geai", "exports")
+                java.nio.file.Files.createDirectories(dir)
+                val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss").format(java.util.Date())
+                val slug = session.title.lowercase().replace(Regex("[^\\p{L}\\d]+"), "-").trim('-').take(40).ifBlank { "session" }
+                val file = dir.resolve("$stamp-$slug.md")
+                java.nio.file.Files.writeString(file, markdown, java.nio.charset.StandardCharsets.UTF_8)
+                file
+            }.onSuccess { path ->
+                listener.onEvent(AgentEvent.Info("📄 Session exported: ${path.fileName} (.geai/exports/)"))
+                ApplicationManager.getApplication().invokeLater({
+                    com.intellij.openapi.vfs.LocalFileSystem.getInstance().refreshAndFindFileByNioFile(path)
+                        ?.let { vf -> OpenFileDescriptor(project, vf).navigate(true) }
+                }, ModalityState.any())
+            }.onFailure { e ->
+                listener.onEvent(AgentEvent.Error("Export failed: ${e.message}"))
+            }
+        }
+    }
+
+    private fun buildSessionMarkdown(session: AgentSession): String = buildString {
+        appendLine("# geai session — ${session.title}")
+        appendLine()
+        appendLine(
+            "_Exported ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm").format(java.util.Date())} · " +
+                "${session.messages.size} messages · ↑${session.totalUsage.inputTokens} ↓${session.totalUsage.outputTokens} tokens_",
+        )
+        appendLine()
+        val toolNames = HashMap<String, String>()
+        session.messages.forEach { message ->
+            when (message.role) {
+                Role.USER -> message.text.takeIf { it.isNotBlank() && !isSyntheticUserText(it) }?.let {
+                    appendLine("## 👤 You")
+                    appendLine()
+                    appendLine(it)
+                    appendLine()
+                }
+
+                Role.ASSISTANT -> {
+                    message.toolUses.forEach { use ->
+                        toolNames[use.id] = use.name
+                        appendLine("- 🔧 `${use.name}` ${preview(use.inputJson)}")
+                    }
+                    message.text.takeIf { it.isNotBlank() }?.let {
+                        appendLine("## 🤖 geai")
+                        appendLine()
+                        appendLine(it)
+                        appendLine()
+                    }
+                }
+
+                Role.TOOL -> message.content.filterIsInstance<ContentBlock.ToolResult>().forEach { r ->
+                    val status = if (r.isError) "✗" else "✓"
+                    appendLine("  - $status ${toolNames[r.toolUseId] ?: "tool"}: ${r.content.replace(Regex("\\s+"), " ").take(200)}")
+                }
+
+                Role.SYSTEM -> Unit
+            }
+        }
+    }
+
+    private fun notesJson(): JsonObject {
+        val session = service.currentSession()
+        return JsonObject().apply {
+            addProperty("activeTask", session.activeTask)
+            add("notes", JsonArray().apply {
+                session.scratchpad.forEach { note ->
+                    add(JsonObject().apply {
+                        addProperty("text", note.text)
+                        addProperty("priority", note.priority.name)
+                        note.anchor?.let { addProperty("anchor", it) }
+                    })
+                }
+            })
         }
     }
 
@@ -245,13 +362,20 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
         }
     }
 
+    private fun isSyntheticUserText(text: String): Boolean =
+        text.startsWith("[CURRENT ACTIVE TASK") ||
+            text.startsWith("[Structured summary") ||
+            text.startsWith("[SESSION MEMORY") ||
+            text.startsWith("You repeated a step whose result you already have") ||
+            text.startsWith("Continue exactly where you left off")
+
     private fun transcriptJson(session: AgentSession): JsonArray = JsonArray().apply {
-        // Map tool_use id -> name so a replayed tool_result can show the real tool, not a "tool" stub.
         val toolNames = HashMap<String, String>()
         session.messages.forEach { message ->
             when (message.role) {
-                Role.USER -> message.text.takeIf { it.isNotBlank() }
-                    ?.let { add(event("userMessage").apply { addProperty("text", it) }) }
+                Role.USER -> message.text.takeIf {
+                    it.isNotBlank() && !isSyntheticUserText(it)
+                }?.let { add(event("userMessage").apply { addProperty("text", it) }) }
 
                 Role.ASSISTANT -> {
                     message.text.takeIf { it.isNotBlank() }
@@ -337,7 +461,6 @@ class GeaiWebPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
         }
     }
 
-    /** Derive a slightly raised surface: lighten on dark themes, darken on light. */
     private fun shift(color: Color, delta: Int): Color {
         val isDark = (color.red + color.green + color.blue) / 3 < 128
         val k = if (isDark) delta else -delta

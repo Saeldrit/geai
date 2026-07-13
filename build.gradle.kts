@@ -4,12 +4,14 @@ import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 
 plugins {
     id("org.jetbrains.kotlin.jvm") version "2.1.0"
+    kotlin("plugin.serialization") version "2.1.0"
     id("org.jetbrains.intellij.platform")
     id("org.jetbrains.changelog") version "2.2.1"
 }
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
     // Gson ships inside the IDE at runtime; compileOnly guarantees compilation without
     // bundling a second copy that could clash with the platform's.

@@ -13,11 +13,6 @@ import java.nio.file.Path
 import java.nio.file.Paths
 import kotlin.streams.toList
 
-/**
- * Reads and writes GRACE specs under `<project>/spec/<id>.spec.xml`. One file per spec id. Reference
- * items (Category B) are stamped with the resolved content hash at write time so drift detection
- * has a baseline. All access is synchronized and best-effort: parse/write failures are logged.
- */
 @Service(Service.Level.PROJECT)
 class SpecStore(private val project: Project) {
 
@@ -29,8 +24,6 @@ class SpecStore(private val project: Project) {
 
     private val lock = Any()
 
-    /** Parsed-spec cache, keyed by a cheap (name+mtime) dir signature. The context bundle calls
-     *  list() on every turn; without this it re-parsed every spec file from disk each time. */
     @Volatile
     private var listCache: Pair<String, List<Spec>>? = null
 
@@ -42,9 +35,6 @@ class SpecStore(private val project: Project) {
     }
 
     private fun fileFor(specId: String): Path {
-        // spec_id comes straight from model output, so reject anything that could escape the spec dir
-        // (path separators, traversal): allow only a flat id of safe characters, then verify the
-        // resolved path still sits directly under spec/.
         require(specId.isNotBlank() && SAFE_ID.matches(specId)) {
             "Invalid spec id (allowed: letters, digits, '.', '_', '-'): '$specId'"
         }
@@ -66,7 +56,6 @@ class SpecStore(private val project: Project) {
         specs
     }
 
-    /** Cheap fingerprint of the spec dir (file names + mtimes) — re-parse only when a spec changed. */
     private fun listSignature(): String = runCatching {
         Files.list(specDir()).use { stream ->
             stream.filter { it.toString().endsWith(SUFFIX) }
@@ -78,7 +67,6 @@ class SpecStore(private val project: Project) {
     }.getOrDefault("")
 
     fun find(specId: String): Spec? = synchronized(lock) {
-        // Read path: a malformed id is simply "no such spec", not an error to surface to the model.
         if (!SAFE_ID.matches(specId)) return@synchronized null
         parse(fileFor(specId))
     }

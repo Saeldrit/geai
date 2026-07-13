@@ -11,10 +11,8 @@ interface AgentTool {
     val name: String
     val description: String
 
-    /** JSON Schema *object* (as a string) describing the arguments. */
     val parametersJsonSchema: String
 
-    /** Read-only tools may be auto-approved; mutating tools require user opt-in. */
     val mutating: Boolean
         get() = false
 
@@ -35,5 +33,4 @@ interface AgentTool {
     fun spec(): ToolSpec = SpecCache.getOrPut(name) { ToolSpec(name, description, parametersJsonSchema) }
 }
 
-/** Per-tool cache of [ToolSpec] (Kotlin interfaces can't hold mutable state, so this lives here). */
 private val SpecCache = java.util.concurrent.ConcurrentHashMap<String, ToolSpec>()

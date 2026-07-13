@@ -15,12 +15,6 @@ import java.nio.file.Paths
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 
-/**
- * Dev-only observability for context assembly: appends one JSON line per bundle to
- * `<project>/.geai/telemetry/bundles.jsonl` — which atoms were pulled, their sizes, which were
- * dropped under budget. Lets the author see "where it wastes / what shape fits". Gated by
- * [GeaiSettings.graceTelemetry] (off by default → prod stays lean); the file is gitignored.
- */
 @Service(Service.Level.PROJECT)
 class GraceTelemetry(private val project: Project) {
 
@@ -55,7 +49,6 @@ class GraceTelemetry(private val project: Project) {
                 })
             }
             val target = file()
-            // Cap this dev log: roll over to a single .1 backup once it grows past the limit.
             if (Files.exists(target) && Files.size(target) > MAX_BYTES) {
                 Files.move(target, target.resolveSibling("bundles.jsonl.1"), StandardCopyOption.REPLACE_EXISTING)
             }

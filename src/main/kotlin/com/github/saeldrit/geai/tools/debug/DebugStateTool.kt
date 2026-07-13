@@ -5,7 +5,6 @@ import com.github.saeldrit.geai.tools.ToolArgs
 import com.github.saeldrit.geai.tools.ToolContext
 import com.github.saeldrit.geai.tools.ToolResult
 
-/** Reports active debug sessions and, when paused, the current source position. */
 object DebugStateTool : AgentTool {
     override val name = "debug_state"
     override val idempotentPoll = true

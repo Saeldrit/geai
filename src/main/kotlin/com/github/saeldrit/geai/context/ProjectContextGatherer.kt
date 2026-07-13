@@ -5,7 +5,6 @@ import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.module.ModuleManager
 import com.intellij.openapi.project.Project
 
-/** Builds a compact, cheap project snapshot to seed the system prompt. */
 object ProjectContextGatherer {
 
     private val IGNORED = setOf(".git", ".idea", ".gradle", "build", "out", "target", "node_modules", ".geai")

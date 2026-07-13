@@ -40,7 +40,6 @@ class GeaiChatPanel(private val project: Project) : JPanel(BorderLayout()) {
 
     private val service = GeaiAgentService.getInstance(project)
 
-    // --- HTML rendering ---
     private val editorPane = JEditorPane().apply {
         isEditable = false
         contentType = "text/html"
@@ -63,11 +62,9 @@ class GeaiChatPanel(private val project: Project) : JPanel(BorderLayout()) {
         })
     }
 
-    // --- accumulated HTML fragments per message ---
     private val messages = mutableListOf<String>()
     private var streamingIdx = -1
 
-    // --- input / controls ---
     private val input = JBTextArea(3, 0).apply {
         lineWrap = true; wrapStyleWord = true
         toolTipText = "Describe the bug. Enter to send, Shift+Enter for newline."
@@ -88,9 +85,12 @@ class GeaiChatPanel(private val project: Project) : JPanel(BorderLayout()) {
 
     private var lastTurnUsage: TokenUsage = TokenUsage.ZERO
 
-    // ── init ──────────────────────────────────────────────────────────────
     init {
-        add(buildToolbar(), BorderLayout.NORTH)
+        val north = JPanel(BorderLayout()).apply {
+            add(buildJcefBanner(), BorderLayout.NORTH)
+            add(buildToolbar(), BorderLayout.SOUTH)
+        }
+        add(north, BorderLayout.NORTH)
         add(JBScrollPane(editorPane), BorderLayout.CENTER)
         add(buildInputArea(), BorderLayout.SOUTH)
         wireActions()
@@ -100,10 +100,59 @@ class GeaiChatPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
     }
 
+    private fun buildJcefBanner(): JComponent {
+        val flagOn = runCatching {
+            com.intellij.openapi.util.registry.Registry.`is`("ide.browser.jcef.enabled")
+        }.getOrDefault(true)
+        val panel = JPanel(BorderLayout(8, 0)).apply {
+            border = JBUI.Borders.empty(6, 8)
+            background = JBColor(Color(0xFFF4D5), Color(0x4A4232))
+        }
+        val text = if (flagOn) {
+            "Simplified UI: this IDE's boot runtime has no JCEF (embedded browser). For the full geai UI " +
+                "run the action \"Choose Boot Java Runtime for the IDE\" and pick a JetBrains Runtime with JCEF."
+        } else {
+            "Simplified UI: JCEF is disabled by the ide.browser.jcef.enabled registry key. Enable it and " +
+                "restart to get the full geai UI."
+        }
+        panel.add(
+            JBLabel("<html>$text</html>").apply { foreground = JBColor(Color(0x6B5D1F), Color(0xD6C588)) },
+            BorderLayout.CENTER,
+        )
+        if (!flagOn) {
+            panel.add(
+                JButton("Enable JCEF…").apply {
+                    addActionListener {
+                        runCatching {
+                            com.intellij.openapi.util.registry.Registry.get("ide.browser.jcef.enabled").setValue(true)
+                        }
+                        val restart = com.intellij.openapi.ui.Messages.showYesNoDialog(
+                            project,
+                            "JCEF is enabled. The IDE must restart for the full geai UI to load. Restart now?",
+                            "Geai",
+                            "Restart",
+                            "Later",
+                            com.intellij.openapi.ui.Messages.getQuestionIcon(),
+                        )
+                        if (restart == com.intellij.openapi.ui.Messages.YES) {
+                            com.intellij.openapi.application.ex.ApplicationManagerEx.getApplicationEx().restart(true)
+                        }
+                    }
+                },
+                BorderLayout.EAST,
+            )
+        }
+        return panel
+    }
+
     private fun buildToolbar(): JComponent = JPanel(BorderLayout()).apply {
         border = JBUI.Borders.empty(4)
         val left = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0)).apply {
             add(newSessionButton)
+            add(JButton("Compact").apply {
+                toolTipText = "Fold older context into a dense summary to free budget"
+                addActionListener { service.compact(myListener) }
+            })
             add(JButton("Settings").apply {
                 addActionListener { ShowSettingsUtil.getInstance().showSettingsDialog(project, GeaiSettingsConfigurable::class.java) }
             })
@@ -135,7 +184,6 @@ class GeaiChatPanel(private val project: Project) : JPanel(BorderLayout()) {
         add(bottom, BorderLayout.SOUTH)
     }
 
-    // ── actions ───────────────────────────────────────────────────────────
     private fun wireActions() {
         sendButton.addActionListener { submit() }
         stopButton.addActionListener { service.stop() }
@@ -155,7 +203,6 @@ class GeaiChatPanel(private val project: Project) : JPanel(BorderLayout()) {
         input.actionMap.put("newline", object : AbstractAction() {
             override fun actionPerformed(e: ActionEvent?) { input.insert("\n", input.caretPosition) }
         })
-        // Slash-commands popup: type "/" to see available commands, "/" + text to filter
         input.document.addDocumentListener(object : javax.swing.event.DocumentListener {
             private fun check() {
                 ApplicationManager.getApplication().invokeLater({
@@ -246,10 +293,18 @@ class GeaiChatPanel(private val project: Project) : JPanel(BorderLayout()) {
         val atts = pendingAttachments.toList()
         pendingAttachments.clear(); updateAttachLabel()
         streamingIdx = -1
+        sendButton.isEnabled = false
+        stopButton.isEnabled = true
+        statusLabel.text = "Thinking…"
         service.submit(text, myListener, atts)
     }
 
-    // ── Agent listener ────────────────────────────────────────────────────
+    private fun setIdle(status: String) {
+        sendButton.isEnabled = true
+        stopButton.isEnabled = false
+        statusLabel.text = status
+    }
+
     private val myListener = AgentListener { event ->
         ApplicationManager.getApplication().invokeLater({
             when (event) {
@@ -291,14 +346,16 @@ class GeaiChatPanel(private val project: Project) : JPanel(BorderLayout()) {
                     if (event.result.isError) addError(event.result.content)
                 }
                 is AgentEvent.Info -> addInfo(event.text)
-                is AgentEvent.Error -> addError(event.text)
-                is AgentEvent.Cancelled -> statusLabel.text = "Stopped."
+                is AgentEvent.Error -> {
+                    addError(event.text)
+                    setIdle("Ready")
+                }
+                is AgentEvent.Cancelled -> setIdle("Stopped.")
                 is AgentEvent.Done -> {
-                    statusLabel.text = "Ready"
+                    setIdle("Ready")
                     lastTurnUsage = event.usage
                 }
             }
-            // stream-status (non-persistent, except Done handled above)
             when (event) {
                 is AgentEvent.Done -> Unit
                 is AgentEvent.Thinking -> statusLabel.text = "Thinking\u2026"
@@ -309,7 +366,6 @@ class GeaiChatPanel(private val project: Project) : JPanel(BorderLayout()) {
         }, ModalityState.nonModal())
     }
 
-    // ── message helpers ───────────────────────────────────────────────────
     private fun addMessage(who: String, bodyHtml: String, css: String) {
         messages.add("""<div class="msg $css"><div class="who">$who</div><div class="body">$bodyHtml</div></div>""")
         renderHtml()
@@ -325,15 +381,13 @@ class GeaiChatPanel(private val project: Project) : JPanel(BorderLayout()) {
         renderHtml()
     }
 
-    // --- streaming helpers ---
-    // We accumulate raw markdown text alongside the rendered HTML so deltas can re-render.
     private val rawTextBuf = StringBuilder()
 
     private fun appendStreamingDelta(delta: String) {
         if (streamingIdx < 0) {
             streamingIdx = messages.size
             rawTextBuf.clear()
-            messages.add("") // placeholder
+            messages.add("")
         }
         rawTextBuf.append(delta)
         val rendered = Markdown.toHtml(rawTextBuf.toString())
@@ -362,7 +416,6 @@ class GeaiChatPanel(private val project: Project) : JPanel(BorderLayout()) {
         renderHtml()
     }
 
-    // ── full HTML rebuild ─────────────────────────────────────────────────
     private fun renderWelcome() {
         editorPane.text = buildPage(welcomeHtml())
         editorPane.caretPosition = 0
@@ -468,7 +521,6 @@ class GeaiChatPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 }
 
-// ── Lightweight markdown → HTML ───────────────────────────────────────────
 private object Markdown {
     fun toHtml(md: String): String {
         val sb = StringBuilder()

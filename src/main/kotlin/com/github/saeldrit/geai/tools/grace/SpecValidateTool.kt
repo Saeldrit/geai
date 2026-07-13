@@ -47,8 +47,6 @@ object SpecValidateTool : AgentTool {
                 } catch (e: ProcessCanceledException) {
                     throw e
                 } catch (e: Exception) {
-                    // Any resolver failure (not just AnchorException) degrades THIS ref to BROKEN — it must
-                    // never abort drift-checking of the other refs.
                     "BROKEN: ${e.message}"
                 }
                 if (status == "OK") ok++ else problems++

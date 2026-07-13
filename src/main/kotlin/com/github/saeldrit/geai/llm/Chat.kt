@@ -1,6 +1,5 @@
 package com.github.saeldrit.geai.llm
 
-/** A complete request to the model. Immutable. */
 data class ChatRequest(
     val model: String,
     val system: String,
@@ -18,13 +17,10 @@ data class ChatRequest(
 )
 
 enum class StopReason {
-    /** Model finished its turn with a final answer. */
     END_TURN,
 
-    /** Model wants one or more tools executed before continuing. */
     TOOL_USE,
 
-    /** Output truncated by the token cap. */
     MAX_TOKENS,
 
     OTHER,
@@ -55,7 +51,6 @@ data class TokenUsage(
     }
 }
 
-/** The model's reply for one [ChatRequest]. */
 data class ChatResult(
     val message: ChatMessage,
     val stopReason: StopReason,

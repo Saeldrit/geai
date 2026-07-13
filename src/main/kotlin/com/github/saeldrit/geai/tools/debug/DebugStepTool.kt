@@ -5,13 +5,6 @@ import com.github.saeldrit.geai.tools.ToolArgs
 import com.github.saeldrit.geai.tools.ToolContext
 import com.github.saeldrit.geai.tools.ToolResult
 
-/**
- * Advances the paused debugger yourself — the agent drives execution instead of asking the user to
- * step. Issues the step/resume and WAITS for the next pause, returning the new `file:line`, so one
- * call both moves and reports where you landed. Walk the suspect path with repeated calls.
- *
- * Use `repeat` to take MULTIPLE steps in ONE tool call — this saves LLM round-trips.
- */
 object DebugStepTool : AgentTool {
     override val name = "debug_step"
     override val idempotentPoll = true

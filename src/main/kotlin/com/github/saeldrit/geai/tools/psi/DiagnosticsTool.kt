@@ -47,12 +47,10 @@ object DiagnosticsTool : AgentTool {
             val document = FileDocumentManager.getInstance().getDocument(file)
 
             val rows = ArrayList<String>()
-            // Syntax/parse errors — always reliable, no analysis pass needed.
             PsiTreeUtil.collectElementsOfType(psiFile, PsiErrorElement::class.java).forEach { err ->
                 val line = document?.getLineNumber(err.textOffset)?.plus(1) ?: 0
                 rows.add("error    line $line  syntax: ${err.errorDescription}")
             }
-            // Analyzer errors/warnings — present only for files the IDE has already analyzed.
             if (document != null) {
                 runCatching {
                     DaemonCodeAnalyzerImpl.getHighlights(document, HighlightSeverity.WARNING, project).forEach { info ->

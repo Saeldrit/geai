@@ -5,9 +5,7 @@ import com.github.saeldrit.geai.context.ContextCompressor
 import com.github.saeldrit.geai.context.NoteEntry
 import com.github.saeldrit.geai.context.NotePriority
 import com.github.saeldrit.geai.context.ScratchpadManager
-import com.github.saeldrit.geai.context.Skill
 import com.github.saeldrit.geai.context.SkillStore
-import com.github.saeldrit.geai.context.SemanticCompressor
 import com.github.saeldrit.geai.cost.UsageFormat
 import com.github.saeldrit.geai.llm.ChatMessage
 import com.github.saeldrit.geai.llm.ChatRequest
@@ -22,6 +20,7 @@ import com.github.saeldrit.geai.llm.TokenUsage
 import com.github.saeldrit.geai.llm.ToolSpec
 import com.github.saeldrit.geai.settings.GeaiSettingsState
 import com.github.saeldrit.geai.settings.GeaiSettings
+import com.github.saeldrit.geai.settings.effectiveOutputReserve
 import com.github.saeldrit.geai.settings.loopModel
 import com.github.saeldrit.geai.settings.transcriptWindow
 import com.github.saeldrit.geai.tools.GeaiToolset
@@ -79,25 +78,14 @@ class AgentLoop(
     private val project: Project,
     private val registry: ToolRegistry,
     private val profile: LoopProfile = LoopProfile.MAIN,
-    /** Test seam: inject a scripted client. Production leaves this null → the real provider client. */
     private val clientOverride: LlmClient? = null,
 ) {
 
-    // [PERF] Cache advertised tool specs — rebuilt only when activeGroups/grace/tiered change.
     private var cachedSpecs: List<ToolSpec>? = null
     private var cachedSpecsKey: Int = 0
-    // Trend tracking for context_status
     private var previousTokenEst: Int = 0
-    // Bundle quality tracking
     private var lastBundleAtoms: Int = 0
     private var lastBundleDropped: Int = 0
-
-    /**
-     * READ TRACKER: tracks which files were read and when, to prevent re-read loops after compression.
-     * Maps file path → iteration when last read.
-     * When the agent tries to re-read a file it already read, inject a nudge to work from notes.
-     */
-    private val readFileTracker = mutableMapOf<String, Int>()
 
     fun run(session: AgentSession, userText: String, listener: AgentListener, indicator: ProgressIndicator, attachments: List<Attachment> = emptyList()) {
         val settings = GeaiSettings.getInstance().state
@@ -120,23 +108,16 @@ class AgentLoop(
         session.messages.add(ChatMessage(Role.USER, userContent))
         listener.onEvent(AgentEvent.UserMessage(userText, attachments))
 
-        // Mark the current task so the model always sees it as the last message, even after
-        // aggressive compaction of old context.  The first message is no longer a sacred anchor
-        // — it is summarized like any other old message.  activeTask (injected as the LAST
-        // user message in the outgoing context) is the sole task anchor.
         session.activeTask = userText
 
-        // Detect task switch: if the session already has significant context and the user
-        // sends a different message, clean up stale scratchpad entries so old notes don't
-        // conflict with the new task.
-        if (session.messages.size > 10 && session.scratchpad.isNotEmpty()) {
+        val looksLikeNewTask = userText.trim().length >= 40
+        if (looksLikeNewTask && session.messages.size > 10 && session.scratchpad.isNotEmpty()) {
             val stats = ScratchpadManager.cleanForNewTask(session.scratchpad)
             if (stats.totalCleaned > 0) {
                 listener.onEvent(
                     AgentEvent.Info(
-                        "🧹 Task switch: dropped ${stats.lowDropped} stale notes, " +
-                            "summarized ${stats.normalSummarized} findings, " +
-                            "kept ${stats.criticalKept} critical notes.",
+                        "🧹 Task switch: dropped ${stats.lowDropped} stale + ${stats.normalDropped} old notes, " +
+                            "kept ${stats.criticalKept} critical and ${stats.normalKept} recent findings.",
                     ),
                 )
             }
@@ -149,14 +130,17 @@ class AgentLoop(
             return
         }
 
-        val systemPrompt = SystemPrompt.build(project)
-        // A leading /<cmd> selects a MODE: pre-load its tool group and steer via a focused directive.
+        val systemPrompt = SystemPrompt.build(project, lean = profile.isSubAgent)
         val command = SlashCommands.parse(userText)
-        // Per-turn volatile suffix (bundle + mode directive) — kept after the cache breakpoint so the
-        // doctrine stays cacheable across turns.
-        val rawBundleSuffix = buildBundle(project, userText, emptyList(), settings, command)
+        val pastHint = if (!profile.isSubAgent && session.messages.size <= 1) {
+            runCatching { com.github.saeldrit.geai.context.PastSessions.hint(project, userText, session.id) }.getOrDefault("")
+        } else {
+            ""
+        }
+        val rawBundleSuffix = listOf(buildBundle(project, userText, emptyList(), settings, command), pastHint)
+            .filter { it.isNotBlank() }
+            .joinToString("\n\n")
         val maxIterations = profile.maxIterations.coerceAtLeast(1)
-        // Sub-agents have a cumulative-cost terminal; the main loop compacts context and runs until done.
         val subTokenBudget = if (profile.isSubAgent) profile.maxTurnTokens else 0
 
         val metrics = AgentMetrics()
@@ -164,37 +148,18 @@ class AgentLoop(
             var iteration = 0
 
 
-            // Stuck-loop detection: fingerprint each step (calls + their FULL results) and keep a small
-            // ring of recent fingerprints. A recurring fingerprint = no progress (a consecutive repeat OR
-            // an A/B/A/B cycle) → nudge once, then abort if it persists.
             val recentStepSignatures = ArrayDeque<Long>()
             var noProgressHits = 0
             var visionRetries = 0
+            var contextOverflowRetries = 0
             var maxTokensAutoContinues = 0
-            // On-demand tool groups (progressive disclosure). Pre-seeded with the mode's group and,
-            // while a debug session is live, the debug group — saving a load_tools round-trip.
             val activeGroups = linkedSetOf<String>()
             activeGroups.addAll(command.preloadGroups)
             if (!profile.isSubAgent && DebuggerSupport.hasActiveSession(project)) activeGroups.add("debug")
             var delegationCount = 0
             var turnUsage = TokenUsage.ZERO
-            var bundleRefreshIteration = 0
-            var messagesAtBundleRefresh = 0
-            var anchorsAtBundleRefresh = 0
-            // Read-without-progress detection: track iterations where only read-only tools were used
-            // without recording findings (note) or making edits (edit_file/write_file).
-            var readOnlyIterations = 0
-            val READ_ONLY_LIMIT = 7 // nudge after 7 read-only iterations, abort after 14
             var compressionCount = 0
-            var lastCompressionIteration = -1  // Track when compression happened
-            // Adaptive kill-switch
-            var escalationUsedThisTurn = false
-            var iterationsWithoutEscalation = 0
-            // Adaptive kill-switch: suppress kb_lookup after 3 empty results.
-            var emptyKbLookups = 0
-            var kbSuppressed = false
             var bundleSuffix = rawBundleSuffix
-            // LLM summariser for context compaction — bills tokens to the turn.
             val summarizer = summarizerFor(client, settings, indicator) { used ->
                 turnUsage += used
                 session.totalUsage += used
@@ -212,7 +177,6 @@ class AgentLoop(
                     )
                     return
                 }
-                // A sub-agent is a bounded, fanned-out unit: it MUST stop at its token budget.
                 if (subTokenBudget > 0 && turnUsage.inputTokens + turnUsage.outputTokens >= subTokenBudget) {
                     summarizeAndFinish(
                         "Sub-agent reached its token budget ($subTokenBudget) — returning findings.",
@@ -221,34 +185,6 @@ class AgentLoop(
                     return
                 }
 
-                // Bundle refresh: first refresh after 8 iterations, then adaptive (15+ new messages OR 12+ iterations OR 5+ new anchors).
-                // Increased intervals to reduce context loss from frequent refreshes.
-                if (settings.graceEnabled) {
-                    val currentAnchors = session.scratchpad.count { it.anchor != null }
-                    val shouldRefresh = if (bundleRefreshIteration == 0) {
-                        iteration >= 8
-                    } else {
-                        val msgGrowth = session.messages.size - messagesAtBundleRefresh
-                        val newAnchors = currentAnchors - anchorsAtBundleRefresh
-                        msgGrowth >= 15 || iteration - bundleRefreshIteration >= 12 || newAnchors >= 5
-                    }
-                    if (shouldRefresh) {
-                        val seeds = session.scratchpad.filter { it.anchor != null }.takeLast(5).mapNotNull { it.anchor }
-                        runCatching {
-                            val newBundle = buildBundle(project, session.activeTask.ifBlank { userText }, seeds, settings, command)
-                            if (newBundle.isNotBlank()) {
-                                val msgGrowth = session.messages.size - messagesAtBundleRefresh
-                                bundleSuffix = newBundle
-                                bundleRefreshIteration = iteration
-                                messagesAtBundleRefresh = session.messages.size
-                                anchorsAtBundleRefresh = currentAnchors
-                                listener.onEvent(AgentEvent.Info("🔄 Context bundle refreshed (${seeds.size} anchors, $msgGrowth new messages, iteration $iteration)."))
-                            }
-                        } // silently ignore bundle refresh failures
-                    }
-                }
-
-                // Skip LLM-based context compression during debugging: the transcript stays short.
                 val skipCompression = activeGroups.contains("debug")
                 val compStart = System.currentTimeMillis()
                 val messagesBeforeComp = session.messages.size
@@ -258,7 +194,7 @@ class AgentLoop(
                     ContextCompressor.compress(
                         session.messages,
                         settings.transcriptWindow(),
-                        settings.maxTokens,
+                        settings.effectiveOutputReserve(),
                         systemPrompt.length + bundleSuffix.length,
                         summarizer,
                         activeTask = session.activeTask,
@@ -267,29 +203,15 @@ class AgentLoop(
                 var compressionUsed = false
                 if (!skipCompression && compacted !== session.messages) {
                     val foldedAway = session.messages.size - compacted.size
-                    compressionUsed = foldedAway > 0
-                    if (compressionUsed) {
-                        compressionCount++
-                        lastCompressionIteration = iteration
-                    }
+                    val compMetrics = ContextCompressor.lastMetrics
+                    compressionUsed = compMetrics != null && compMetrics.method != "none"
+                    if (compressionUsed) compressionCount++
                     session.messages.clear()
                     session.messages.addAll(compacted)
-                    if (foldedAway > 0) {
-                        val compMetrics = ContextCompressor.lastMetrics
+                    if (compressionUsed) {
                         val metricsStr = if (compMetrics != null) " [${compMetrics.method}, ${(compMetrics.ratio * 100).toInt()}% retained, ${compMetrics.inputChars}→${compMetrics.outputChars} chars]" else ""
-                        listener.onEvent(AgentEvent.Info("🗜 Folded $foldedAway earlier step(s) into a recap to keep the context lean — continuing.$metricsStr"))
-
-                        // POST-COMPRESSION NUDGE: tell the agent to work from notes, not re-read
-                        if (compMetrics?.method == "aggressive" || compressionCount >= 2) {
-                            val nudgeText = buildPostCompressionNudge(session, readFileTracker)
-                            if (nudgeText.isNotBlank()) {
-                                session.scratchpad.add(
-                                    NoteEntry(nudgeText, NotePriority.CRITICAL)
-                                )
-                            }
-                        }
+                        listener.onEvent(AgentEvent.Info("🗜 Folded $foldedAway earlier step(s) into a summary — continuing.$metricsStr"))
                     }
-                    // Extract user preferences detected during compression and persist as skills
                     val extractedPrefs = com.github.saeldrit.geai.context.SemanticCompressor.lastExtractedPreferences
                     if (extractedPrefs.isNotEmpty()) {
                         for (pref in extractedPrefs) {
@@ -306,40 +228,30 @@ class AgentLoop(
                 }
                 val compressionMs = System.currentTimeMillis() - compStart
                 val outgoing = appendNotesAsTrailingUser(session.messages, session.scratchpad)
-                // Inject activeTask as the VERY LAST message — after notes, after compression.
-                // The model must never lose sight of the current task, especially after
-                // aggressive compaction folded older context into a summary.
-                val withTask = if (session.activeTask.isNotBlank()) {
-                    outgoing + ChatMessage.user(
-                        "[Current task — do NOT revisit any earlier request:]\n${session.activeTask}"
-                    )
-                } else {
-                    outgoing
-                }
-                // System status: inject runtime metrics into the volatile suffix so the model
-                // sees its own budget and can self-regulate instead of blindly hitting limits.
-                val statusSuffix = buildStatusSuffix(
-                    iteration, maxIterations, delegationCount, MAX_DELEGATIONS,
-                    readOnlyIterations, READ_ONLY_LIMIT, compressionCount,
-                    turnUsage, ContextCompressor.lastMetrics,
-                )
-                val volatileSuffix = if (statusSuffix.isNotBlank()) {
-                    if (bundleSuffix.isNotBlank()) "$bundleSuffix\n$statusSuffix" else statusSuffix
-                } else bundleSuffix
 
                 val request = ChatRequest(
                     model = settings.loopModel(),
                     system = systemPrompt,
-                    // Bundle is per-turn stable — lives after the doctrine cache breakpoint.
-                    systemVolatileSuffix = volatileSuffix,
-                    messages = withTask,
+                    systemVolatileSuffix = bundleSuffix,
+                    messages = outgoing,
                     tools = advertisedSpecs(settings, activeGroups),
                     maxTokens = settings.maxTokens,
                 )
 
                 listener.onEvent(AgentEvent.Thinking)
                 val llmStart = System.currentTimeMillis()
-                val contextChars = outgoing.sumOf { m: ChatMessage -> m.text.length + m.content.sumOf { b -> b.toString().length } }
+                val contextChars = outgoing.sumOf { m: ChatMessage ->
+                    m.content.sumOf { b ->
+                        when (b) {
+                            is ContentBlock.Text -> b.text.length
+                            is ContentBlock.ToolUse -> b.name.length + b.inputJson.length
+                            is ContentBlock.ToolResult -> b.content.length
+                            is ContentBlock.Image -> 0
+                        }
+                    }
+                }
+                val streamedFutures = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.Future<ContentBlock.ToolResult>>()
+                val announcedToolIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
                 val result: com.github.saeldrit.geai.llm.ChatResult = try {
                     client.chatStream(request, indicator) { event ->
                         when (event) {
@@ -347,30 +259,59 @@ class AgentLoop(
                                 listener.onEvent(AgentEvent.AssistantTextDelta(event.text))
                             is com.github.saeldrit.geai.llm.StreamEvent.ThinkingDelta ->
                                 listener.onEvent(AgentEvent.ReasoningDelta(event.text))
+                            is com.github.saeldrit.geai.llm.StreamEvent.ToolUseCompleted -> {
+                                val tool = registry.find(event.name)
+                                if (settings.streamToolExecution &&
+                                    event.name !in META_TOOL_NAMES &&
+                                    tool != null && !tool.mutating && !tool.interactive
+                                ) {
+                                    val call = ContentBlock.ToolUse(event.id, event.name, event.inputJson)
+                                    if (announcedToolIds.add(call.id)) {
+                                        listener.onEvent(AgentEvent.ToolStarted(call.name, call.inputJson, call.id))
+                                    }
+                                    streamedFutures[call.id] =
+                                        SHARED_POOL.submit(Callable { runRegularTimed(call, settings, indicator, listener) })
+                                }
+                            }
                             is com.github.saeldrit.geai.llm.StreamEvent.ToolUseStarted,
                             is com.github.saeldrit.geai.llm.StreamEvent.ToolUseInputDelta,
                             is com.github.saeldrit.geai.llm.StreamEvent.Done -> Unit
                         }
                     }
                 } catch (e: LlmException) {
+                    streamedFutures.values.forEach { it.cancel(true) }
                     if (isVisionError(e.message ?: "") && stripImagesFromSession(session) && visionRetries++ < 1) {
                         listener.onEvent(AgentEvent.Info("⚠ Изображения удалены из сессии — повторяю запрос без них..."))
-                        continue // retry the loop iteration with stripped session — at most once
+                        continue
                     }
-                    throw e // not a vision error, nothing to strip, or already retried — propagate
+                    if (isContextOverflowError(e.message ?: "") && contextOverflowRetries++ < 1) {
+                        val forced = ContextCompressor.compress(
+                            session.messages,
+                            settings.transcriptWindow() / 2,
+                            settings.effectiveOutputReserve(),
+                            systemPrompt.length + bundleSuffix.length,
+                            summarizer,
+                            activeTask = session.activeTask,
+                        )
+                        if (forced !== session.messages) {
+                            compressionCount++
+                            session.messages.clear()
+                            session.messages.addAll(forced)
+                            listener.onEvent(AgentEvent.Info("⚠ Provider rejected the request as too long — context force-compacted, retrying. Consider lowering maxContextTokens in Settings | Tools | Geai for this model."))
+                            continue
+                        }
+                    }
+                    throw e
                 }
                 val llmMs = System.currentTimeMillis() - llmStart
                 session.totalUsage += result.usage
                 turnUsage += result.usage
                 session.messages.add(result.message)
-                // Finalise the streamed message: emit complete text so the UI re-renders as markdown.
                 result.message.text.takeIf { it.isNotBlank() }?.let { listener.onEvent(AgentEvent.AssistantText(it)) }
 
                 val toolUses = result.message.toolUses
                 if (toolUses.isEmpty()) {
                     if (result.stopReason == StopReason.MAX_TOKENS && maxTokensAutoContinues < 5) {
-                        // Output was truncated mid-generation — inject a nudge and let the model
-                        // continue from where it left off instead of dying silently.
                         maxTokensAutoContinues++
                         listener.onEvent(AgentEvent.Info(
                             "⚠ Response was truncated (${maxTokensAutoContinues}/5 auto-continues) — asking the model to continue..."
@@ -386,27 +327,20 @@ class AgentLoop(
                     return
                 }
 
-                // Every tool_use MUST get a matching tool_result — otherwise transcripts break on resume.
                 val toolResults = ArrayList<ContentBlock.ToolResult>(toolUses.size)
                 var interrupted = false
-                // Parallel tool execution
-                // note/load_tools mutate loop state and run sequentially; delegate fans out in parallel
-                // (handled inside executeMetaTools). Regular tools are independent and run in parallel.
                 val metaCalls = toolUses.filter { it.name in META_TOOL_NAMES }
                 val regularCalls = toolUses.filter { it.name !in META_TOOL_NAMES }
 
-                // Emit ToolStarted for all calls upfront so the UI shows everything
-                toolUses.forEach { listener.onEvent(AgentEvent.ToolStarted(it.name, it.inputJson, it.id)) }
+                toolUses.forEach {
+                    if (announcedToolIds.add(it.id)) listener.onEvent(AgentEvent.ToolStarted(it.name, it.inputJson, it.id))
+                }
 
-                // 1. Meta tools: sequential, must finish before regular tools
                 val toolStart = System.currentTimeMillis()
-                // Track scratchpad size before meta tools run — used to verify that a `note` call
-                // actually added content (prevents garbage note calls from resetting the read-only counter).
-                val scratchpadSizeBeforeMeta = session.scratchpad.size
                 val metaResults = executeMetaTools(
                     metaCalls, session, activeGroups, indicator, listener,
                     delegationCount, turnUsage, interrupted, iteration,
-                    project, settings, command, compressionCount, bundleRefreshIteration,
+                    project, settings, command, compressionCount,
                     bundleSuffix,
                 )
                 interrupted = metaResults.interrupted
@@ -415,45 +349,28 @@ class AgentLoop(
                 toolResults.addAll(metaResults.results)
                 if (metaResults.bundleOverride != null) bundleSuffix = metaResults.bundleOverride!!
 
-                // 2. Regular tools. Independent read-only tools run in PARALLEL. Mutating tools (one
-                // approval at a time, deterministic write order, no same-file clobber) AND interactive
-                // tools (ask_user — two at once would stack modal dialogs) run SEQUENTIALLY.
-                if (regularCalls.isNotEmpty() && !interrupted) {
-                    val (serialCalls, parallelCalls) = regularCalls.partition {
+                val streamedCalls = regularCalls.filter { streamedFutures.containsKey(it.id) }
+                streamedCalls.forEach { call ->
+                    val res = try {
+                        streamedFutures[call.id]!!.get()
+                    } catch (e: Exception) {
+                        thisLogger().warn("Streamed tool '${call.name}' execution failed: ${e.message}", e)
+                        ContentBlock.ToolResult(call.id, "Tool execution failed: ${e.message}", isError = true)
+                    }
+                    toolResults.add(res)
+                }
+
+                val freshCalls = regularCalls.filterNot { streamedFutures.containsKey(it.id) }
+                if (freshCalls.isNotEmpty() && !interrupted) {
+                    val (serialCalls, parallelCalls) = freshCalls.partition {
                         val t = registry.find(it.name); t?.mutating == true || t?.interactive == true
                     }
                     toolResults.addAll(executeToolsParallel(parallelCalls, settings, indicator, listener))
                     toolResults.addAll(executeToolsSequential(serialCalls, settings, indicator, listener))
                 }
 
-                // TRACK READ FILE ACCESSES — for re-read prevention after compression
-                // Also detect re-reads and inject a nudge into scratchpad
-                for (call in toolUses) {
-                    if (call.name in READ_FILE_TOOLS) {
-                        val filePath = extractFilePathFromArgs(call.inputJson)
-                        if (filePath != null) {
-                            val previousIteration = readFileTracker[filePath]
-                            // Re-read detection: file was read before, AND compression happened in between
-                            if (previousIteration != null &&
-                                previousIteration < iteration - 1 &&
-                                lastCompressionIteration > previousIteration
-                            ) {
-                                // This is a re-read after compression — inject warning note
-                                val reReadNudge = "Re-read detected: $filePath was read on iteration $previousIteration, " +
-                                    "then context was compressed on iteration $lastCompressionIteration. " +
-                                    "Check your notes for information from this file instead of re-reading."
-                                if (session.scratchpad.none { it.text.contains("Re-read detected") && it.text.contains(filePath) }) {
-                                    session.scratchpad.add(NoteEntry(reReadNudge, NotePriority.LOW))
-                                }
-                            }
-                            readFileTracker[filePath] = iteration
-                        }
-                    }
-                }
-
                 session.messages.add(ChatMessage.toolResults(toolResults))
                 val toolMs = System.currentTimeMillis() - toolStart
-                // Record per-turn metrics
                 metrics.record(AgentMetrics.TurnMetrics(
                     turnIndex = iteration,
                     llmCallMs = llmMs,
@@ -478,65 +395,23 @@ class AgentLoop(
                     return
                 }
 
-                // Adaptive kill-switch: drop the escalate_author routing hint if unused after 3 iterations.
-                for (call in toolUses) {
-                    if (call.name == GeaiToolset.ESCALATE) escalationUsedThisTurn = true
-                }
-                if (!escalationUsedThisTurn && settings.tieredRoutingEnabled) {
-                    iterationsWithoutEscalation++
-                    // Only fire when there is actually a <mode> directive to drop — otherwise the no-op
-                    // replace leaves bundleSuffix == rawBundleSuffix and this would re-fire every iteration.
-                    if (iterationsWithoutEscalation >= 3 && bundleSuffix == rawBundleSuffix && rawBundleSuffix.contains("<mode>")) {
-                        bundleSuffix = rawBundleSuffix.replace(Regex("<mode>.*?</mode>"), "").trim()
-                        listener.onEvent(AgentEvent.Info("🛣 Dropped the mode directive (model isn't escalating) to save context."))
-                    }
-                } else if (escalationUsedThisTurn) {
-                    iterationsWithoutEscalation = 0
-                }
-                // Track kb_lookup: after 3 empty returns, suppress it. Look up the result by tool_use id —
-                // NOT by positional index: toolResults is [meta]+[regular] while toolUses is interleaved,
-                // so indexing by position reads the wrong block once any meta tool shares the turn.
-                val resultById = toolResults.associateBy { it.toolUseId }
-                for (call in toolUses) {
-                    if (call.name == "kb_lookup") {
-                        val result = resultById[call.id]
-                        if (result != null && result.content.contains("No matching knowledge yet", ignoreCase = true)) {
-                            emptyKbLookups++
-                        }
-                    }
-                }
-                if (emptyKbLookups >= 3 && !kbSuppressed) {
-                    kbSuppressed = true
-                    session.scratchpad.add(NoteEntry("kb_lookup consistently returns nothing (empty knowledge store). Skip kb_lookup this session — just use find_files/search_text/resolve_ref directly.", NotePriority.LOW))
-                }
-
-                // Stuck-loop guard: a step whose fingerprint already appears in the recent ring produced
-                // nothing the model didn't already have (a consecutive repeat OR an A/B/A/B cycle). Hash the
-                // FULL result — a 400-char head misses thrashing that differs only deep in a big result.
-                // EXEMPT all-poll steps: debugger wait/step/state legitimately return the SAME result while
-                // runtime state advances, so the doctrine-ordered debug loop must not self-abort as "stuck".
                 val pollOnly = toolUses.isNotEmpty() && toolUses.all { registry.find(it.name)?.idempotentPoll == true }
                 if (!pollOnly) {
                     val stepSignature = stepSignature(toolUses, toolResults)
                     if (recentStepSignatures.contains(stepSignature)) {
                         noProgressHits++
-                        if (noProgressHits >= 2) {
-                            listener.onEvent(AgentEvent.Error("Stopped: the model kept repeating tool call(s) with no new result even after a nudge — likely stuck. Aborted to avoid wasting tokens."))
+                        if (noProgressHits >= STUCK_ABORT_HITS) {
+                            listener.onEvent(AgentEvent.Error("Stopped: the model kept repeating tool call(s) with no new result even after nudges — likely stuck. Aborted to avoid wasting tokens."))
                             listener.onEvent(AgentEvent.Info(UsageFormat.summary(settings.loopModel(), turnUsage, session.totalUsage, settings.modelPrices)))
                             listener.onEvent(AgentEvent.Done(session.totalUsage))
                             return
                         }
-                        // Deduplicate: don't add the same loop-guard note multiple times.
-                        if (session.scratchpad.none { it.text.startsWith("Loop guard:") }) {
-                            session.scratchpad.add(
-                                NoteEntry(
-                                    "Loop guard: you repeated a step whose result you ALREADY have. Do NOT issue that call " +
-                                        "again — use the output you have and take a DIFFERENT next step (read specific NEW lines, " +
-                                        "or make an edit_file change). Re-listing or re-reading the same thing is not progress.",
-                                    NotePriority.LOW,
-                                ),
-                            )
-                        }
+                        session.messages.add(
+                            ChatMessage.user(
+                                "You repeated a step whose result you already have (identical call, identical result). " +
+                                    "Use the output you already received and take a DIFFERENT next step.",
+                            ),
+                        )
                         listener.onEvent(AgentEvent.Info("↻ Repeated step with no new result — nudging the model to move on (aborts if it persists)."))
                     } else {
                         noProgressHits = 0
@@ -544,59 +419,10 @@ class AgentLoop(
                     recentStepSignatures.addLast(stepSignature)
                     while (recentStepSignatures.size > STUCK_RING_SIZE) recentStepSignatures.removeFirst()
                 }
-
-                // Read-without-progress detection: track iterations where only read-only tools were used
-                // without recording findings (note) or making edits (edit_file/write_file).
-                // This catches the pattern where the agent reads many different files but never progresses.
-                val readOnlyTools = setOf("read_file", "search_text", "find_files", "list_files", "find_symbol", "find_usages", "resolve_ref", "context_bundle", "graph_query", "graph_neighbors", "diagnostics")
-                val mutatingTools = setOf("edit_file", "write_file", "run_command", "self_patch")
-                val hasNote = toolUses.any { it.name == GeaiToolset.NOTE }
-                val hasMutating = toolUses.any { it.name in mutatingTools }
-                val isReadOnlyTurn = toolUses.isNotEmpty() && toolUses.all { it.name in readOnlyTools }
-
-                if (isReadOnlyTurn && !hasNote && !hasMutating) {
-                    readOnlyIterations++
-                    if (readOnlyIterations == READ_ONLY_LIMIT) {
-                        // Deduplicate: don't add the same guard nudge if it already exists from a previous
-                        // guard trigger (e.g., across task switches where notes survive cleanup).
-                        // LOW priority so it gets evicted once the model starts behaving — a guard nudge
-                        // is a temporary prompt, not a permanent finding.
-                        if (session.scratchpad.none { it.text.contains("Consecutive read-only iterations", ignoreCase = true) }) {
-                            session.scratchpad.add(
-                                NoteEntry(
-                                    "You have made $READ_ONLY_LIMIT consecutive read-only iterations without recording findings or making changes. " +
-                                        "You MUST now either: (1) record your findings with `note`, (2) make an edit, or (3) state your conclusion and stop. " +
-                                        "Continuing to read without acting is not progress.",
-                                    NotePriority.LOW,
-                                ),
-                            )
-                        }
-                        listener.onEvent(AgentEvent.Info("⚠ $READ_ONLY_LIMIT read-only iterations without progress — recording findings or acting is now required."))
-                    } else if (readOnlyIterations >= READ_ONLY_LIMIT * 2) {
-                        listener.onEvent(AgentEvent.Error("Stopped: $readOnlyIterations consecutive read-only iterations without recording findings or making changes — likely stuck in exploration loop."))
-                        listener.onEvent(AgentEvent.Info(UsageFormat.summary(settings.loopModel(), turnUsage, session.totalUsage, settings.modelPrices)))
-                        listener.onEvent(AgentEvent.Done(session.totalUsage))
-                        return
-                    }
-                } else {
-                    // Reset on any non-read-only turn (note, edit, or mixed).
-                    // Exception: if `note` was called (without any mutating tools) but didn't actually
-                    // add new content (empty text, duplicate), treat it as a read-only turn — otherwise
-                    // the model can game the guard by calling note with garbage to reset the counter.
-                    val noteFailedToAdd = hasNote && !hasMutating && session.scratchpad.size == scratchpadSizeBeforeMeta
-                    if (readOnlyIterations > 0 && !noteFailedToAdd) {
-                        readOnlyIterations = 0
-                    } else if (noteFailedToAdd) {
-                        readOnlyIterations++
-                    }
-                }
             }
         } catch (_: ProcessCanceledException) {
             listener.onEvent(AgentEvent.Cancelled())
         } catch (e: LlmException) {
-            // If the provider rejected the request because the model doesn't support images,
-            // strip all image blocks from the session transcript so the user can retry without
-            // the same error repeating forever.
             val msg = e.message ?: ""
             if (session.messages.any { it.content.any { c -> c is ContentBlock.Image } }
                 && isVisionError(msg)) {
@@ -616,12 +442,6 @@ class AgentLoop(
         }
     }
 
-    /**
-     * A [ContextCompressor.Summarizer] backed by one cheap, tool-less LLM call — used to fold the old
-     * transcript into a dense recap during compaction. [bill] records the call's token spend so it
-     * counts toward the turn. Best-effort: on any failure it returns blank and compaction falls back
-     * to truncation.
-     */
     private fun summarizerFor(
         client: LlmClient,
         settings: GeaiSettingsState,
@@ -642,10 +462,6 @@ class AgentLoop(
         }.getOrDefault("")
     }
 
-    /**
-     * Turn a forced stop (iteration or token budget) into a usable result: one final tool-LESS call
-     * asks the model to summarize findings and next steps. Best-effort.
-     */
     private fun summarizeAndFinish(
         reason: String,
         session: AgentSession,
@@ -670,7 +486,11 @@ class AgentLoop(
                     "exact next steps still needed to finish.",
             )
             val outgoing = ContextCompressor.compress(
-                session.messages, settings.transcriptWindow(), settings.maxTokens, systemPrompt.length + bundleSuffix.length, summarizer,
+                session.messages,
+                settings.transcriptWindow(),
+                settings.effectiveOutputReserve(),
+                systemPrompt.length + bundleSuffix.length,
+                summarizer,
                 activeTask = session.activeTask,
             ) + nudge
             val request = ChatRequest(
@@ -691,7 +511,6 @@ class AgentLoop(
         listener.onEvent(AgentEvent.Done(session.totalUsage))
     }
 
-    /** [PERF] Cached tool specs — rebuilt only when activeGroups/grace/tiered change. */
     private fun advertisedSpecs(settings: GeaiSettingsState, activeGroups: Set<String>): List<ToolSpec> {
         val key = activeGroups.hashCode() xor (if (settings.graceEnabled) 1 else 0) xor (if (settings.tieredRoutingEnabled) 2 else 0)
         if (cachedSpecs != null && key == cachedSpecsKey) return cachedSpecs!!
@@ -734,23 +553,13 @@ class AgentLoop(
         return ToolResult.ok("Noted (${scratchpad.size} total). Build your final answer from your notes.")
     }
 
-    /**
-     * A fast fingerprint of one step: the tool calls (name + args) plus their FULL results. The stuck-loop
-     * guard treats a recurring fingerprint as "no progress" — the step gave back something already seen.
-     * Long (not Int) to keep collisions negligible across a turn.
-     */
     private fun stepSignature(calls: List<ContentBlock.ToolUse>, results: List<ContentBlock.ToolResult>): Long {
         var h = 1125899906842597L
         for (c in calls) {
             h = h * 31 + c.name.hashCode()
-            // Normalize read_file: strip start_line/end_line so that reading the same file with
-            // different ranges produces the same fingerprint — otherwise the stuck-loop guard
-            // never fires for an agent that varies its read ranges each iteration.
             h = h * 31 + normalizeForSignature(c.name, c.inputJson).hashCode()
         }
         for (r in results) {
-            // Exclude note results — they contain "Noted (N total)" where N grows each call,
-            // masking repeated tool patterns behind a changing scratchpad size.
             if (r.toolUseId.isNotBlank()) {
                 val callerName = calls.firstOrNull { it.id == r.toolUseId }?.name
                 if (callerName == GeaiToolset.NOTE) continue
@@ -761,7 +570,6 @@ class AgentLoop(
         return h
     }
 
-    /** Strip volatile parameters from tool input JSON for stable fingerprinting. */
     private fun normalizeForSignature(toolName: String, inputJson: String): String {
         if (toolName != "read_file") return inputJson
         return inputJson
@@ -769,15 +577,11 @@ class AgentLoop(
             .replace(Regex("""\s*,?\s*"end_line"\s*:\s*\d+"""), "")
     }
 
-    /**
-     * Render running notes as a trailing user message, kept outside the cached system prefix so
-     * note growth doesn't invalidate the prompt cache. Soft-caps at [MAX_NOTES_RETAINED].
-     */
     private fun appendNotesAsTrailingUser(outgoing: List<ChatMessage>, scratchpad: List<NoteEntry>): List<ChatMessage> {
         if (scratchpad.isEmpty()) return outgoing
         val visible = retainNotes(scratchpad, MAX_NOTES_RETAINED)
         val dropped = scratchpad.size - visible.size
-        val sorted = visible.sortedBy { it.priority.ordinal } // CRITICAL(0), NORMAL(1), LOW(2)
+        val sorted = visible.sortedBy { it.priority.ordinal }
         val header = if (dropped > 0) "<your_notes> (showing ${visible.size} of ${scratchpad.size}; $dropped lower-priority/older notes folded)\n" else "<your_notes>\n"
         val notesText = header + sorted.joinToString("\n") { formatNote(it) } + "\n</your_notes>"
         return outgoing + ChatMessage.user(notesText)
@@ -793,18 +597,13 @@ class AgentLoop(
         return "$prefix$anchorPart ${note.text}"
     }
 
-    /**
-     * Retain up to [limit] notes, preferring CRITICAL > NORMAL > LOW.
-     * Within the same priority, older notes are dropped first.
-     * CRITICAL notes are never dropped.
-     */
     private fun retainNotes(notes: List<NoteEntry>, limit: Int): List<NoteEntry> {
         if (notes.size <= limit) return notes
         val critical = notes.filter { it.priority == NotePriority.CRITICAL }
         val normal = notes.filter { it.priority == NotePriority.NORMAL }
         val low = notes.filter { it.priority == NotePriority.LOW }
         val result = mutableListOf<NoteEntry>()
-        result.addAll(critical) // always keep all CRITICAL
+        result.addAll(critical)
         val remaining = limit - result.size
         if (remaining <= 0) return result
         if (normal.size <= remaining) {
@@ -819,20 +618,13 @@ class AgentLoop(
 
     private data class SubOutcome(val result: ToolResult, val usage: TokenUsage)
 
-    /** Compact one-line label for streamed sub-agent narration. */
     private fun oneLine(s: String): String = s.replace(Regex("\\s+"), " ").trim().take(140)
 
-    /**
-     * Run a delegated sub-task in a fresh, isolated [AgentLoop] with a read-only toolset and a
-     * tight budget. Only the final text comes back as the tool result, keeping the orchestrator's
-     * transcript compact. Token spend is returned so the caller can bill it to the turn.
-     */
     private fun runDelegate(call: ContentBlock.ToolUse, indicator: ProgressIndicator, parentListener: AgentListener, session: AgentSession, bundleSuffix: String = ""): SubOutcome {
         val args = ToolArgs.parse(call.inputJson)
         val task = args.stringOrNull("task")?.takeIf { it.isNotBlank() }
             ?: return SubOutcome(ToolResult.error("delegate needs a non-empty 'task'."), TokenUsage.ZERO)
         val hint = args.stringOrNull("hint")?.takeIf { it.isNotBlank() }
-        // Pass parent's notes sorted by priority (CRITICAL first, then NORMAL, skip LOW)
         val parentNotes = session.scratchpad
             .filter { it.priority != NotePriority.LOW }
             .sortedByDescending { it.priority.ordinal }
@@ -840,15 +632,12 @@ class AgentLoop(
         val prompt = buildString {
             append(task)
             if (hint != null) append("\n\nLeads/anchors to start from: $hint")
-            // Pass parent's active task for context
             if (session.activeTask.isNotBlank() && session.activeTask != task) {
                 append("\n\n<parent_task>\n${session.activeTask}\n</parent_task>")
             }
-            // Pass context bundle if available — sub-agent can start from pre-gathered context
             if (bundleSuffix.isNotBlank()) {
                 append("\n\n$bundleSuffix")
             }
-            // Pass parent's findings with priority markers
             if (parentNotes.isNotEmpty()) {
                 append("\n\n<parent_findings>\n")
                 parentNotes.forEach { note ->
@@ -862,15 +651,11 @@ class AgentLoop(
                 }
                 append("</parent_findings>")
             }
-            // Structured output hint
             append("\n\nReturn your findings as a structured list: for each finding, include the file:line location, what you observed, and its significance.")
             if (length > 12000) setLength(12000)
         }
 
         val subSession = AgentSession()
-        // The sub-agent's final answer is its last assistant text; keep only that for the RETURN — its
-        // intermediate narration and tool churn never enter the orchestrator's context (session.messages).
-        // Its progress IS streamed to the UI (parentListener) as info lines — UI-only, not context.
         val captured = StringBuilder()
         val subListener = AgentListener { event ->
             when (event) {
@@ -883,7 +668,7 @@ class AgentLoop(
                 is AgentEvent.ToolStarted ->
                     parentListener.onEvent(AgentEvent.Info("↳ [sub-agent] ${event.tool} ${oneLine(event.argsJson)}"))
 
-                else -> Unit // suppress sub lifecycle (Done/UserMessage/Thinking/Cancelled/Error/…)
+                else -> Unit
             }
         }
         runCatching {
@@ -894,7 +679,6 @@ class AgentLoop(
         return SubOutcome(ToolResult.ok(text), subSession.totalUsage)
     }
 
-    /** Handle `load_tools`: activate an on-demand tool group. Idempotent. */
     private fun loadTools(call: ContentBlock.ToolUse, activeGroups: MutableSet<String>): ToolResult {
         val group = ToolArgs.parse(call.inputJson).stringOrNull("group")
             ?: return ToolResult.error("load_tools needs a 'group' argument. Valid groups: ${GeaiToolset.groupNames().joinToString(", ")}.")
@@ -934,20 +718,8 @@ class AgentLoop(
         }
     }
 
-    /**
-     * Meta-tools mutate loop state, so `note`/`load_tools` run sequentially. `delegate` is the
-     * exception: each spawns an isolated, read-only sub-agent and is the slowest meta-tool by far, so
-     * delegates run in PARALLEL (see [executeMetaTools]).
-     */
     private val META_TOOL_NAMES = setOf(GeaiToolset.NOTE, GeaiToolset.LOAD_TOOLS, GeaiToolset.DELEGATE, GeaiToolset.REQUEST_CONTEXT, GeaiToolset.CONTEXT_STATUS)
 
-    /**
-     * `note`/`load_tools`/`context_status` run in PARALLEL: they mutate independent state (scratchpad vs activeGroups)
-     * or are read-only (context_status), so there is no race. Events are emitted in original call order to keep the UI
-     * sequence correct. `delegate` calls are deferred and run CONCURRENTLY — each is an isolated read-only sub-agent
-     * that can't touch loop state or the others, so fanning N audits out costs the slowest sub-agent,
-     * not the sum. Usage is summed after the join, single-threaded — no locks needed.
-     */
     private fun executeMetaTools(
         calls: List<ContentBlock.ToolUse>,
         session: AgentSession,
@@ -962,7 +734,6 @@ class AgentLoop(
         settings: GeaiSettingsState,
         command: SlashCommands.Parsed,
         compressionCount: Int = 0,
-        bundleRefreshIteration: Int = 0,
         bundleSuffix: String = "",
     ): MetaResult {
         var metaInterrupted = interrupted
@@ -971,10 +742,6 @@ class AgentLoop(
         var metaBundleOverride: String? = null
         val results = arrayOfNulls<ContentBlock.ToolResult>(calls.size)
 
-        // Pass 1 (sequential): run note/load_tools inline. They mutate the SHARED scratchpad / activeGroups
-        // (two note calls in one turn both append to the same list), so they must not race — and they are
-        // instant, so there is nothing to gain from parallelism. Only RESERVE delegate slots here
-        // (honouring MAX_DELEGATIONS in call order); the reserved delegates run together in pass 2.
         val delegateIndices = mutableListOf<Int>()
         for ((i, call) in calls.withIndex()) {
             if (metaInterrupted || indicator.isCanceled) {
@@ -1025,7 +792,6 @@ class AgentLoop(
                         appendLine("Messages: ${session.messages.size}")
                         appendLine("Scratchpad: ${session.scratchpad.size} notes ($critical CRITICAL, $normal NORMAL, $low LOW)")
                         if (session.activeTask.isNotBlank()) appendLine("Active task: \"${session.activeTask.take(100)}\"")
-                        appendLine("Bundle refreshes: ${iteration - bundleRefreshIteration} iterations since last")
                         if (lastBundleAtoms > 0) {
                             val fillRate = if (lastBundleAtoms + lastBundleDropped > 0) (lastBundleAtoms * 100 / (lastBundleAtoms + lastBundleDropped)) else 0
                             appendLine("Bundle quality: $lastBundleAtoms atoms included, $lastBundleDropped dropped ($fillRate% fill rate)")
@@ -1038,19 +804,16 @@ class AgentLoop(
                         if (qualityReport != null) {
                             appendLine("Last summary quality: ${qualityReport.score}/100 (${qualityReport.findingsWithLocation}/${qualityReport.findingCount} findings with location)")
                         }
-                        // Actionable recommendations
                         appendLine()
                         appendLine("Recommendations:")
                         when {
-                            pct >= 90 -> appendLine("- URGENT: Context nearly full. Run /compact or start a new session to avoid losing context.")
-                            pct >= 75 -> appendLine("- Context is getting large. Consider /compact to free space for more work.")
-                            pct >= 50 && compressionCount == 0 -> appendLine("- Context growing. First compression will trigger automatically at ~70% budget.")
+                            pct >= 90 -> appendLine("- URGENT: Context nearly full. Compaction will fold history into a summary very soon — record anything precious with `note` now.")
+                            pct >= 70 -> appendLine("- Context is large; automatic compaction is imminent. Findings recorded with `note` survive it verbatim.")
+                            else -> appendLine("- Context is healthy. No action needed.")
                         }
                         if (critical > 10) appendLine("- Many CRITICAL notes ($critical). Review if all are still relevant to the current task.")
                         if (session.scratchpad.size > 30) appendLine("- Scratchpad has ${session.scratchpad.size} notes. Old LOW notes will be evicted automatically.")
-                        if (iteration - bundleRefreshIteration > 15) appendLine("- Bundle is stale (${iteration - bundleRefreshIteration} iterations since refresh). Consider request_context to refresh it.")
                         if (qualityReport != null && qualityReport.score < 50) appendLine("- Last summary was low quality (${qualityReport.score}/100). Context may be losing important details.")
-                        if (pct < 50 && compressionCount == 0) appendLine("- Context is healthy. No action needed.")
                     }
                     results[i] = emitMeta(call, ToolResult.ok(report), listener)
                 }
@@ -1058,28 +821,20 @@ class AgentLoop(
             }
         }
 
-        // Pass 2 (parallel): run the reserved delegates concurrently. Cap threads so a big fan-out does
-        // not slam the LLM endpoint with too many simultaneous requests.
         if (delegateIndices.isNotEmpty()) {
             val futures = delegateIndices.map { idx ->
                 idx to SHARED_POOL.submit(Callable { runDelegateTimed(calls[idx], indicator, listener, session, bundleSuffix) })
             }
             for ((idx, future) in futures) {
-                // Check cancellation between delegates so the STOP button stays responsive.
-                // Once cancelled, cancel remaining futures and fill them with an error result.
                 if (indicator.isCanceled) {
                     future.cancel(true)
                     results[idx] = ContentBlock.ToolResult(calls[idx].id, "Skipped: turn was interrupted.", isError = true)
                     continue
                 }
                 try {
-                    // Use a timeout so the main thread can periodically check isCanceled
-                    // instead of blocking forever on a stuck delegate.
                     val outcome = try {
                         future.get(30, java.util.concurrent.TimeUnit.SECONDS)
                     } catch (_: java.util.concurrent.TimeoutException) {
-                        // Still running after 30 s — check cancellation and wait again.
-                        // Loop until done or cancelled; each iteration re-checks the flag.
                         while (true) {
                             if (indicator.isCanceled) {
                                 future.cancel(true)
@@ -1094,14 +849,12 @@ class AgentLoop(
                             results[idx] = ContentBlock.ToolResult(calls[idx].id, "Skipped: turn was interrupted.", isError = true)
                             continue
                         }
-                        future.get() // should be done by now
+                        future.get()
                     }
                     metaTurnUsage += outcome.usage
                     session.totalUsage += outcome.usage
                     results[idx] = ContentBlock.ToolResult(calls[idx].id, outcome.result.content, outcome.result.isError)
                 } catch (e: Exception) {
-                    // Each delegate is independent — a failure in one must not break the others or
-                    // leave a missing tool_result (which would corrupt the transcript on resume).
                     val msg = if (e is java.util.concurrent.ExecutionException) {
                         e.cause?.message ?: e.message
                     } else e.message
@@ -1113,13 +866,11 @@ class AgentLoop(
         return MetaResult(metaInterrupted, metaDelegationCount, metaTurnUsage, results.filterNotNull(), metaBundleOverride)
     }
 
-    /** Emit ToolFinished for an instant meta-tool (note/load_tools) and wrap its result for the transcript. */
     private fun emitMeta(call: ContentBlock.ToolUse, result: ToolResult, listener: AgentListener): ContentBlock.ToolResult {
         listener.onEvent(AgentEvent.ToolFinished(call.name, result, call.id))
         return ContentBlock.ToolResult(call.id, result.content, result.isError)
     }
 
-    /** Run one delegate on a worker thread, timing it and emitting ToolFinished (+ slow-call note). */
     private fun runDelegateTimed(call: ContentBlock.ToolUse, indicator: ProgressIndicator, listener: AgentListener, session: AgentSession, bundleSuffix: String = ""): SubOutcome {
         val t0 = System.nanoTime()
         val outcome = if (indicator.isCanceled) {
@@ -1133,33 +884,39 @@ class AgentLoop(
         return outcome
     }
 
-    /** Execute mutating tools one at a time — serializes approvals and writes; no race, no stacked dialogs. */
+    private fun runRegularTimed(
+        call: ContentBlock.ToolUse,
+        settings: GeaiSettingsState,
+        indicator: ProgressIndicator,
+        listener: AgentListener,
+    ): ContentBlock.ToolResult {
+        if (indicator.isCanceled) {
+            val result = ContentBlock.ToolResult(call.id, "Skipped: turn was interrupted.", isError = true)
+            listener.onEvent(AgentEvent.ToolFinished(call.name, ToolResult.error(result.content), call.id))
+            return result
+        }
+        val t0 = System.nanoTime()
+        val toolResult = try {
+            executeTool(call, settings, indicator)
+        } catch (_: ProcessCanceledException) {
+            ToolResult.error("Interrupted during '${call.name}'.")
+        } catch (e: Exception) {
+            thisLogger().warn("Tool '${call.name}' threw unexpectedly: ${e.message}", e)
+            ToolResult.error("Tool '${call.name}' failed: ${e.message}")
+        }
+        val elapsedMs = (System.nanoTime() - t0) / 1_000_000
+        listener.onEvent(AgentEvent.ToolFinished(call.name, toolResult, call.id))
+        if (elapsedMs > 500) listener.onEvent(AgentEvent.Info("⚡ ${call.name} completed in ${elapsedMs}ms"))
+        return ContentBlock.ToolResult(call.id, toolResult.content, toolResult.isError)
+    }
+
     private fun executeToolsSequential(
         calls: List<ContentBlock.ToolUse>,
         settings: GeaiSettingsState,
         indicator: ProgressIndicator,
         listener: AgentListener,
-    ): List<ContentBlock.ToolResult> = calls.map { call ->
-        if (indicator.isCanceled) {
-            ContentBlock.ToolResult(call.id, "Skipped: turn was interrupted.", isError = true)
-        } else {
-            val t0 = System.nanoTime()
-            val toolResult = try {
-                executeTool(call, settings, indicator)
-            } catch (_: ProcessCanceledException) {
-                ToolResult.error("Interrupted during '${call.name}'.")
-            } catch (e: Exception) {
-                thisLogger().warn("Tool '${call.name}' threw unexpectedly: ${e.message}", e)
-                ToolResult.error("Tool '${call.name}' failed: ${e.message}")
-            }
-            val elapsedMs = (System.nanoTime() - t0) / 1_000_000
-            listener.onEvent(AgentEvent.ToolFinished(call.name, toolResult, call.id))
-            if (elapsedMs > 500) listener.onEvent(AgentEvent.Info("⚡ ${call.name} completed in ${elapsedMs}ms"))
-            ContentBlock.ToolResult(call.id, toolResult.content, toolResult.isError)
-        }
-    }
+    ): List<ContentBlock.ToolResult> = calls.map { call -> runRegularTimed(call, settings, indicator, listener) }
 
-    /** Execute regular tools in parallel using a shared fork-join pool. */
     private fun executeToolsParallel(
         calls: List<ContentBlock.ToolUse>,
         settings: GeaiSettingsState,
@@ -1169,30 +926,8 @@ class AgentLoop(
         if (calls.isEmpty()) return emptyList()
         val futures: List<Pair<ContentBlock.ToolUse, java.util.concurrent.Future<ContentBlock.ToolResult>>> =
             calls.map { call ->
-                call to SHARED_POOL.submit(Callable {
-                    if (indicator.isCanceled) {
-                        ContentBlock.ToolResult(call.id, "Skipped: turn was interrupted.", isError = true)
-                    } else {
-                        val t0 = System.nanoTime()
-                        val toolResult = try {
-                            executeTool(call, settings, indicator)
-                        } catch (_: ProcessCanceledException) {
-                            ToolResult.error("Interrupted during '${call.name}'.")
-                        } catch (e: Exception) {
-                            thisLogger().warn("Tool '${call.name}' threw unexpectedly: ${e.message}", e)
-                            ToolResult.error("Tool '${call.name}' failed: ${e.message}")
-                        }
-                        val elapsedMs = (System.nanoTime() - t0) / 1_000_000
-                        listener.onEvent(AgentEvent.ToolFinished(call.name, toolResult, call.id))
-                        if (elapsedMs > 500) {
-                            listener.onEvent(AgentEvent.Info("⚡ ${call.name} completed in ${elapsedMs}ms"))
-                        }
-                        ContentBlock.ToolResult(call.id, toolResult.content, toolResult.isError)
-                    }
-                })
+                call to SHARED_POOL.submit(Callable { runRegularTimed(call, settings, indicator, listener) })
             }
-        // Per-future get: one failure must not discard the others (which would leave missing
-        // tool_results and corrupt the transcript on resume).
         return futures.map { (call, future) ->
             try {
                 future.get()
@@ -1217,78 +952,44 @@ class AgentLoop(
         /** Stuck-loop guard: how many recent step fingerprints to remember (enough to catch short cycles). */
         const val STUCK_RING_SIZE = 10
 
-        /** Soft cap on notes shown to the model — older notes fold with a marker. */
+        /** Stuck-loop guard: abort only after this many repeated-fingerprint hits (nudged in between). */
+        const val STUCK_ABORT_HITS = 3
+
         const val MAX_NOTES_RETAINED = 50
 
-        /** Sub-agent budget: tight iteration cap and token limit keep each unit cheap. */
-        const val SUB_MAX_ITERATIONS = 4
-        const val SUB_MAX_TURN_TOKENS = 15_000
-
-        /** Tools that read files — tracked for re-read prevention. */
-        val READ_FILE_TOOLS = setOf("read_file", "file_structure", "resolve_ref")
-
-        /** Extract file path from tool arguments JSON. */
-        fun extractFilePathFromArgs(json: String): String? {
-            if (json.isBlank()) return null
-            // Try common path keys
-            val patterns = listOf(
-                Regex(""""(?:target_file|path|file|file_path|directory_path)":\s*"([^"]+)""""),
-                Regex(""""(?:anchor|ref)":\s*"(?:psi:|file:)?([^"]+)"""")
-            )
-            for (pattern in patterns) {
-                pattern.find(json)?.let {
-                    val filePath = it.groupValues[1].trim()
-                    // Clean up the path — remove line numbers, anchors, etc.
-                    return filePath.split("#", ":").firstOrNull()?.trim()
-                }
-            }
-            return null
-        }
-
         /**
-         * Build a post-compression nudge telling the agent to work from notes, not re-read files.
-         * This is the KEY to preventing re-read loops after aggressive compression.
+         * Sub-agent budget. Wide enough that a delegated investigation can actually finish and
+         * return real findings — a starved sub-agent (4 iterations / 15k tokens) returned junk the
+         * orchestrator then re-did itself, doubling the cost instead of saving it.
          */
-        fun buildPostCompressionNudge(
-            session: AgentSession,
-            readFileTracker: Map<String, Int>
-        ): String {
-            val recentReads = readFileTracker.entries
-                .sortedByDescending { it.value }
-                .take(5)
-                .joinToString("\n") { "  - ${it.key} (iteration ${it.value})" }
-
-            return buildString {
-                appendLine("CONTEXT WAS COMPRESSED — work from your notes, NOT from re-reading files.")
-                appendLine("The following files were already read (do NOT re-read them):")
-                appendLine(recentReads)
-                appendLine()
-                appendLine("RULES:")
-                appendLine("1. Build your answer FROM your existing notes and CRITICAL findings.")
-                appendLine("2. If you need a detail you don't have, check your notes FIRST.")
-                appendLine("3. Only re-read a file if you ABSOLUTELY need new information not in your notes.")
-                appendLine("4. Compressed messages show [COMPRESSED: tool_name(status, args)] — this means you already called this tool.")
-                appendLine("5. Prefer making progress (edits, conclusions) over exploration.")
-            }.trim()
-        }
+        const val SUB_MAX_ITERATIONS = 8
+        const val SUB_MAX_TURN_TOKENS = 40_000
 
         private const val SUMMARY_MAX_TOKENS = 2000
         private val SUMMARY_DOCTRINE = com.github.saeldrit.geai.context.SemanticCompressor.DOCTRINE
 
-        /** Keywords that signal a provider rejected the request because images aren't supported. */
         private val VISION_ERROR_KEYWORDS = listOf(
             "image input", "image_url", "vision", "visual",
             "does not support image", "doesn't support image",
             "no endpoints found",
         )
 
-        /** Heuristic: does [errorMessage] look like the provider rejected image content? */
         private fun isVisionError(errorMessage: String): Boolean {
             val lower = errorMessage.lowercase()
             return VISION_ERROR_KEYWORDS.any { lower.contains(it) }
         }
 
-        /** Remove all [ContentBlock.Image] blocks from every message in [session]. Returns true if any images were stripped. */
+        private val CONTEXT_OVERFLOW_KEYWORDS = listOf(
+            "context length", "context_length", "maximum context", "prompt is too long",
+            "too many tokens", "exceeds the maximum", "input length", "context window",
+            "maximum prompt length", "request too large",
+        )
+
+        private fun isContextOverflowError(errorMessage: String): Boolean {
+            val lower = errorMessage.lowercase()
+            return CONTEXT_OVERFLOW_KEYWORDS.any { lower.contains(it) }
+        }
+
         private fun stripImagesFromSession(session: AgentSession): Boolean {
             var stripped = false
             for (msg in session.messages) {
@@ -1297,7 +998,6 @@ class AgentLoop(
                     stripped = true
                     val cleaned = msg.content.filter { it !is ContentBlock.Image }.toMutableList()
                     if (cleaned.isEmpty()) cleaned.add(ContentBlock.Text("(image removed — not supported by model)"))
-                    // ChatMessage is a data class — replace in-place via the mutable list
                     val idx = session.messages.indexOf(msg)
                     session.messages[idx] = msg.copy(content = cleaned)
                 }
@@ -1305,43 +1005,9 @@ class AgentLoop(
             return stripped
         }
 
-        /** Shared pool for parallel tool execution — reused across turns to avoid repeated thread creation. */
         private val SHARED_POOL: ExecutorService = Executors.newFixedThreadPool(
             Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
         )
     }
 }
 
-/**
- * Build a compact status block injected into the system prompt so the model sees its own
- * budget and can self-regulate instead of blindly hitting limits. Only emitted for the
- * main loop (sub-agents have a fixed, tiny budget and don't need this).
- */
-fun buildStatusSuffix(
-    iteration: Int,
-    maxIterations: Int,
-    delegationCount: Int,
-    maxDelegations: Int,
-    readOnlyIterations: Int,
-    readOnlyLimit: Int,
-    compressionCount: Int,
-    turnUsage: TokenUsage,
-    lastCompression: ContextCompressor.CompressionMetrics?,
-): String {
-    // Only start showing status after a few iterations — the model doesn't need it on turn 1.
-    if (iteration < 2) return ""
-    return buildString {
-        append("<system_status>")
-        append("Iteration $iteration/$maxIterations")
-        append(" | Delegates: $delegationCount/$maxDelegations used")
-        append(" | Read-only streak: $readOnlyIterations/$readOnlyLimit")
-        if (compressionCount > 0) append(" | Compressions: $compressionCount")
-        if (turnUsage.inputTokens > 0 || turnUsage.outputTokens > 0) {
-            append(" | Turn tokens: ${turnUsage.inputTokens}in/${turnUsage.outputTokens}out")
-        }
-        if (lastCompression != null && lastCompression.method != "none") {
-            append(" | Last compression: ${lastCompression.method} ${(lastCompression.ratio * 100).toInt()}%")
-        }
-        append("</system_status>")
-    }
-}

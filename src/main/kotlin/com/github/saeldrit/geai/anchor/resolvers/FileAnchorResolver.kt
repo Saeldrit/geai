@@ -8,11 +8,6 @@ import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
 
-/**
- * Resolves `file:<path>[:start-end]` into a (optionally line-ranged) slice of a project file.
- * The trailing `:N` / `:N-M` is parsed off the end so absolute paths with a drive colon
- * (`C:\...`) still work.
- */
 object FileAnchorResolver : AnchorResolver {
 
     override val scheme = "file"
@@ -39,8 +34,6 @@ object FileAnchorResolver : AnchorResolver {
             val from = (start ?: 1).coerceIn(1, lines.size)
             val to = (end ?: lines.size).coerceIn(from, lines.size)
             val body = (from..to).joinToString("\n") { i -> "$i\t${lines[i - 1]}" }
-            // Fingerprint the raw lines WITHOUT the line-number prefix, so inserting or removing lines
-            // ABOVE the range doesn't shift the numbers and trigger a false DRIFT on unchanged content.
             val hashSource = (from..to).joinToString("\n") { i -> lines[i - 1] }
             val rel = FsPaths.relativize(project, file)
             ResolvedAnchor.of(

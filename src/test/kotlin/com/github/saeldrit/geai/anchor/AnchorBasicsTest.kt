@@ -21,9 +21,6 @@ class AnchorBasicsTest {
 
     @Test
     fun `content hash follows hashSource, not the truncated display content`() {
-        // Drift detection must fingerprint the FULL resolved text even when the displayed content is
-        // truncated to a cap — else a change PAST the cap is invisible (false-negative DRIFT). The Psi/
-        // OpenAPI resolvers pass the untruncated text as hashSource; this locks in that hashSource wins.
         val displayed = "X".repeat(50)
         val a = ResolvedAnchor.of("psi:y", "symbol", "y:1", null, displayed, hashSource = displayed + "TAIL-A")
         val b = ResolvedAnchor.of("psi:y", "symbol", "y:1", null, displayed, hashSource = displayed + "TAIL-B")

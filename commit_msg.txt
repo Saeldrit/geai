@@ -1,0 +1,6 @@
+v0.0.74: clean up comments across codebase
+
+Remove all single-line comments (//) and non-essential javadoc blocks
+across 116 source files. Kept only essential public API docs on
+interfaces, sealed classes, and complex algorithms. Build verified
+with compileKotlin.

@@ -47,7 +47,6 @@ class AnthropicClient(
         onEvent: (com.github.saeldrit.geai.llm.StreamEvent) -> Unit,
     ): ChatResult {
         val body = buildRequestBody(request, streaming = true)
-        // SSE is read on one thread (HttpTransport.postJsonSse) and dispatched inline — plain vars suffice.
         var rawStopReason = ""
         var inputTokens = 0
         var outputTokens = 0
@@ -85,9 +84,6 @@ class AnthropicClient(
                                 val name = block.stringOrNull("name").orEmpty()
                                 currentToolId = id
                                 toolNames[id] = name
-                                // Start empty: content_block_start carries an empty input ({}); the real
-                                // arguments arrive as input_json_delta fragments. Seeding with that {} would
-                                // corrupt the accumulated input into "{}{...}" (malformed JSON).
                                 toolUseBuilders[id] = StringBuilder()
                                 onEvent(com.github.saeldrit.geai.llm.StreamEvent.ToolUseStarted(id, name))
                             }
@@ -109,9 +105,20 @@ class AnthropicClient(
                             }
                         }
                     }
+                    "content_block_stop" -> {
+                        val id = currentToolId
+                        if (id != null) {
+                            currentToolId = null
+                            onEvent(
+                                com.github.saeldrit.geai.llm.StreamEvent.ToolUseCompleted(
+                                    id,
+                                    toolNames[id] ?: "tool",
+                                    toolUseBuilders[id]?.toString()?.ifBlank { "{}" } ?: "{}",
+                                ),
+                            )
+                        }
+                    }
                     "message_start" -> {
-                        // Anthropic reports input + cache tokens HERE; message_delta carries only the
-                        // cumulative output_tokens. Seed them or they read as 0 on every streamed turn.
                         data.objectOrNull("message")?.objectOrNull("usage")?.let { u ->
                             inputTokens = u.intOr("input_tokens", 0)
                             cacheReadTokens = u.intOr("cache_read_input_tokens", 0)
@@ -123,7 +130,6 @@ class AnthropicClient(
                         data.stringOrNull("stop_reason")?.let { rawStopReason = it }
                         data.objectOrNull("usage")?.let { u ->
                             outputTokens = u.intOr("output_tokens", outputTokens)
-                            // input/cache are occasionally restated here — keep the larger so the seed isn't lost.
                             inputTokens = maxOf(inputTokens, u.intOr("input_tokens", 0))
                             cacheReadTokens = maxOf(cacheReadTokens, u.intOr("cache_read_input_tokens", 0))
                             cacheWriteTokens = maxOf(cacheWriteTokens, u.intOr("cache_creation_input_tokens", 0))
@@ -131,8 +137,6 @@ class AnthropicClient(
                     }
                 }
             } catch (e: Exception) {
-                // Only skip genuinely malformed SSE data (parse/type-cast errors). Programming bugs
-                // (NPE, IndexOutOfBounds, etc.) must propagate — silencing them hides real issues.
                 if (e is com.google.gson.JsonSyntaxException ||
                     e is ClassCastException ||
                     e is NumberFormatException) {
@@ -151,13 +155,9 @@ class AnthropicClient(
             )
         }
 
-        // Build final content blocks from streamed data. Tool NAMES come from the content_block_start
-        // events captured in toolNames (the streamed name is the only place they appear — the request
-        // body does not echo them back).
         val blocks = mutableListOf<ContentBlock>()
         if (textBuilder.isNotEmpty()) blocks.add(ContentBlock.Text(textBuilder.toString()))
         toolUseBuilders.forEach { (id, jsonBuilder) ->
-            // A tool with no arguments streams no input_json_delta, so the builder may be empty → {}.
             blocks.add(ContentBlock.ToolUse(id, toolNames[id] ?: "tool", jsonBuilder.toString().ifBlank { "{}" }))
         }
         if (blocks.isEmpty()) blocks.add(ContentBlock.Text(""))
@@ -180,11 +180,6 @@ class AnthropicClient(
             addProperty("max_tokens", request.maxTokens)
             addProperty("temperature", request.temperature)
             if (streaming) addProperty("stream", true)
-            // System prompt as a cacheable block: it is large and identical across a session, so a
-            // cache breakpoint here turns repeated reads into cheap cache hits. The per-turn bundle
-            // suffix goes in a SECOND block WITHOUT its own breakpoint — Anthropic auto-extends the
-            // cached prefix up to the NEXT breakpoint (tools), so a turn-stable bundle is implicitly
-            // cached anyway. Saves one of the 4 available breakpoints for transcript caching.
             if (request.system.isNotBlank() || request.systemVolatileSuffix.isNotBlank()) {
                 add("system", JsonArray().apply {
                     if (request.system.isNotBlank()) {
@@ -210,17 +205,12 @@ class AnthropicClient(
                     addProperty("name", spec.name)
                     addProperty("description", spec.description)
                     add("input_schema", spec.parsedSchema)
-                    // Breakpoint on the last tool caches the whole (stable) tool catalog prefix.
                     if (index == request.tools.lastIndex) add("cache_control", ephemeral())
                 })
             }
             root.add("tools", tools)
         }
         val messages = JsonArray()
-        // Incremental transcript caching: cache_control on the LAST tool_result of the MOST RECENT
-        // TOOL message caches the entire transcript prefix up to that point, so the next iteration
-        // reads it from cache (10% of input price) instead of resending. Anthropic allows ≤4 cache
-        // breakpoints — we use 4: doctrine, bundle, tools, last-tool-result.
         val lastToolIndex = request.messages.indexOfLast { it.role == Role.TOOL }
         request.messages.forEachIndexed { index, message ->
             toWireMessage(message, withCacheBreakpoint = index == lastToolIndex)?.let(messages::add)
@@ -232,7 +222,7 @@ class AnthropicClient(
     private fun ephemeral(): JsonObject = JsonObject().apply { addProperty("type", "ephemeral") }
 
     private fun toWireMessage(message: ChatMessage, withCacheBreakpoint: Boolean = false): JsonObject? = when (message.role) {
-        Role.SYSTEM -> null // system prompt is a top-level field, never a message
+        Role.SYSTEM -> null
         Role.USER -> wire("user", textBlocks(message.content))
         Role.ASSISTANT -> wire("assistant", assistantBlocks(message.content))
         Role.TOOL -> wire("user", toolResultBlocks(message.content, withCacheBreakpoint))
@@ -278,8 +268,8 @@ class AnthropicClient(
                     add("input", JsonSupport.parseElement(block.inputJson.ifBlank { "{}" }))
                 })
 
-                is ContentBlock.Image -> Unit // never valid inside an assistant turn
-                is ContentBlock.ToolResult -> Unit // never valid inside an assistant turn
+                is ContentBlock.Image -> Unit
+                is ContentBlock.ToolResult -> Unit
             }
         }
     }
@@ -292,8 +282,6 @@ class AnthropicClient(
                 addProperty("tool_use_id", result.toolUseId)
                 addProperty("content", result.content)
                 if (result.isError) addProperty("is_error", true)
-                // Breakpoint on the LAST tool_result of the message caches the entire transcript prefix
-                // up to (and including) this point — the next turn reads it instead of resending.
                 if (withCacheBreakpoint && index == results.lastIndex) add("cache_control", ephemeral())
             })
         }

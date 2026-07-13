@@ -38,10 +38,8 @@ class OpenAiCompatibleClient(
     private val provider: com.github.saeldrit.geai.settings.LlmProvider = com.github.saeldrit.geai.settings.LlmProvider.OPENAI_COMPATIBLE,
 ) : LlmClient {
 
-    /** OpenRouter is the only OpenAI-compatible endpoint that honours explicit cache_control blocks. */
     private val supportsExplicitCacheControl: Boolean = baseUrl.contains("openrouter.ai", ignoreCase = true)
 
-    /** Xiaomi MiMo does not support OpenAI-specific extensions like stream_options or tool_choice. */
     private val isXiaomiMiMo: Boolean = provider == com.github.saeldrit.geai.settings.LlmProvider.XIAOMI
 
     override fun listModels(indicator: ProgressIndicator): List<String>? {
@@ -87,11 +85,8 @@ class OpenAiCompatibleClient(
             indicator = indicator,
         ) { sse ->
             try {
-                // OpenAI sends [DONE] as the last event
                 if (sse.data == "[DONE]") return@postJsonSse
                 val data = JsonSupport.parseObject(sse.data)
-                // Usage is top-level and arrives on a final chunk whose `choices` is EMPTY, so capture it
-                // BEFORE the choices guard — otherwise the include_usage chunk is dropped (usage reads 0).
                 data.objectOrNull("usage")?.let { usageObj ->
                     usageResult = TokenUsage(
                         inputTokens = usageObj.intOr("prompt_tokens", 0),
@@ -115,6 +110,16 @@ class OpenAiCompatibleClient(
                 delta.get("tool_calls")?.takeIf { it.isJsonArray }?.asJsonArray?.forEach { element ->
                     val tc = element.asJsonObject
                     val index = tc.intOr("index", 0)
+                    toolCallBuilders.forEach { (i, prev) ->
+                        if (i < index && !prev.completedEmitted && prev.id != null && prev.name != null) {
+                            prev.completedEmitted = true
+                            onEvent(
+                                com.github.saeldrit.geai.llm.StreamEvent.ToolUseCompleted(
+                                    prev.id!!, prev.name!!, prev.arguments.toString().ifBlank { "{}" },
+                                ),
+                            )
+                        }
+                    }
                     val acc = toolCallBuilders.computeIfAbsent(index) { ToolCallAccumulator() }
                     tc.stringOrNull("id")?.let { if (it.isNotEmpty()) acc.id = it }
                     tc.objectOrNull("function")?.let { fn ->
@@ -173,15 +178,9 @@ class OpenAiCompatibleClient(
         var name: String? = null
         val arguments = StringBuilder()
         var started: Boolean = false
+        var completedEmitted: Boolean = false
     }
 
-    /**
-     * Build the final `/v1/chat/completions` URL from a configurable base. Tolerates:
-     *  - bare host: `https://api.example.com`
-     *  - with `/v1`: `https://api.example.com/v1`
-     *  - full path: `https://api.example.com/v1/chat/completions`
-     *  - alias like `https://api.xiaomimimo.com/v1/chat/completions` (Mimo Xiaomi)
-     */
     private fun chatCompletionsUrl(base: String): String {
         val trimmed = base.trimEnd('/')
         return when {
@@ -191,12 +190,6 @@ class OpenAiCompatibleClient(
         }
     }
 
-    /**
-     * Build the `/v1/models` URL for listing models. Tolerates:
-     *  - bare host: `https://api.example.com`
-     *  - with `/v1`: `https://api.example.com/v1`
-     *  - full path: `https://api.example.com/v1/chat/completions`
-     */
     private fun modelsListUrl(base: String): String {
         val trimmed = base.trimEnd('/')
         return when {
@@ -213,8 +206,6 @@ class OpenAiCompatibleClient(
             addProperty("temperature", request.temperature)
             if (streaming) {
                 addProperty("stream", true)
-                // Ask for usage on the terminal SSE chunk; without this many OpenAI-compatible servers
-                // omit token counts on streamed turns, blinding the cost guard and the sub-agent budget.
                 if (!isXiaomiMiMo) {
                     add("stream_options", JsonObject().apply { addProperty("include_usage", true) })
                 }
@@ -222,8 +213,6 @@ class OpenAiCompatibleClient(
         }
         val messages = JsonArray()
         appendSystem(messages, request)
-        // For OpenRouter we also tag the last tool_result with cache_control so the growing
-        // transcript prefix caches between iterations (mirrors the AnthropicClient strategy).
         val lastToolIndex = if (supportsExplicitCacheControl) request.messages.indexOfLast { it.role == Role.TOOL } else -1
         request.messages.forEachIndexed { index, message ->
             appendWireMessages(messages, message, withCacheBreakpoint = index == lastToolIndex)
@@ -250,12 +239,6 @@ class OpenAiCompatibleClient(
         return root
     }
 
-    /**
-     * Build the system message. On OpenRouter we emit a multi-part content array so the stable
-     * doctrine and per-turn bundle each get their own cache_control breakpoint — the OpenRouter
-     * proxy forwards these to Anthropic/Gemini back-ends for a 90% input discount on hits.
-     * Elsewhere we fold both into a single string (auto-prefix caching handles it).
-     */
     private fun appendSystem(target: JsonArray, request: ChatRequest) {
         if (supportsExplicitCacheControl) {
             val parts = JsonArray()
@@ -323,8 +306,6 @@ class OpenAiCompatibleClient(
                     target.add(JsonObject().apply {
                         addProperty("role", "tool")
                         addProperty("tool_call_id", result.toolUseId)
-                        // OpenRouter accepts cache_control on the last tool message in a string
-                        // content (Anthropic-style). For other providers we keep plain string content.
                         if (withCacheBreakpoint && index == results.lastIndex && supportsExplicitCacheControl) {
                             add("content", JsonArray().apply { add(textPart(result.content, withCacheBreakpoint = true)) })
                         } else {
@@ -376,8 +357,6 @@ class OpenAiCompatibleClient(
             val function = call.objectOrNull("function") ?: return@forEachIndexed
             blocks.add(
                 ContentBlock.ToolUse(
-                    // Index keeps the id unique when a model omits ids for multiple parallel calls,
-                    // so each tool_result maps back to the right call.
                     id = call.stringOrNull("id") ?: "call_${index}_${function.stringOrNull("name").orEmpty()}",
                     name = function.stringOrNull("name").orEmpty(),
                     inputJson = function.stringOrNull("arguments")?.ifBlank { "{}" } ?: "{}",
@@ -395,8 +374,6 @@ class OpenAiCompatibleClient(
         }
         val usage = root.objectOrNull("usage")
             ?.let { usageObj ->
-                // Cache hits are reported differently per vendor: DeepSeek uses prompt_cache_hit_tokens;
-                // OpenAI uses prompt_tokens_details.cached_tokens. Prefer whichever is present.
                 val deepseekHit = usageObj.intOr("prompt_cache_hit_tokens", 0)
                 val openAiCached = usageObj.objectOrNull("prompt_tokens_details")?.intOr("cached_tokens", 0) ?: 0
                 TokenUsage(

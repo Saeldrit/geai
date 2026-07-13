@@ -6,7 +6,6 @@ import com.github.saeldrit.geai.tools.ToolArgs
 import com.github.saeldrit.geai.tools.ToolContext
 import com.github.saeldrit.geai.tools.ToolResult
 
-/** Removes a stale or wrong knowledge entry by id. */
 object KbForgetTool : AgentTool {
     override val name = "kb_forget"
     override val description = "Delete a knowledge entry by id (use when a recorded fact became wrong or stale)."

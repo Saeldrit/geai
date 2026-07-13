@@ -5,7 +5,6 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 
-/** Calls an upstream greeting API through the shared HTTP client. */
 public class GreetService {
 
     private final HttpClient http = HttpClientConfig.client();

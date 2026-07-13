@@ -12,12 +12,6 @@ import com.intellij.psi.PsiClass
 import com.intellij.psi.PsiElement
 import com.intellij.psi.search.GlobalSearchScope
 
-/**
- * Resolves `psi:<fqClassName>[#member]` into the live signature and location of a JVM symbol via
- * PSI — so the agent reads the current declaration instead of recalling a stale one. Works for
- * Java and Kotlin classes (both expose JVM light-PSI classes). Other languages plug in later
- * behind the same `psi:`/`sym:` schemes without changing callers.
- */
 object PsiAnchorResolver : AnchorResolver {
 
     override val scheme = "psi"
@@ -48,8 +42,6 @@ object PsiAnchorResolver : AnchorResolver {
                 kind = "symbol",
                 location = locationOf(element),
                 signature = signatureOf(element),
-                // Display a truncated slice, but fingerprint the FULL declaration — otherwise a change
-                // PAST the cap is invisible to drift detection (spec_validate would wrongly report OK).
                 content = fullText.take(MAX_CONTENT),
                 hashSource = fullText,
             )
@@ -63,7 +55,6 @@ object PsiAnchorResolver : AnchorResolver {
         throw AnchorException("psi: member '$member' not found on $fqName")
     }
 
-    /** Declaration header: everything before the body brace, collapsed to one line. */
     private fun signatureOf(element: PsiElement): String? =
         element.text?.substringBefore("{")?.trim()?.lines()?.joinToString(" ") { it.trim() }?.take(300)
 

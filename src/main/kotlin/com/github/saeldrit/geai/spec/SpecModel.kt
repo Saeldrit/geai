@@ -35,7 +35,6 @@ data class SpecItem(
     val body: String,
 )
 
-/** One spec document = one `spec/<id>.spec.xml` file. */
 data class Spec(
     val id: String,
     val title: String,

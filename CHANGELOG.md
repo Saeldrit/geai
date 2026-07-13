@@ -4,6 +4,49 @@
 
 ## [Unreleased]
 
+### Fixed — hub task ergonomics
+- **Fresh session per hub task.** Hub tasks previously ran inside the CURRENT chat session —
+  with a large transcript that meant megatokens of cache read on every step (slow, expensive)
+  and hub work polluting the user's chat history. Each hub assignment now starts a new session
+  (the previous one is saved).
+- **Full result delivery.** The agent's final answer used to reach the hub only as truncated
+  streamed log lines; `task_result.outputLog` now carries the complete final text (up to 12k
+  chars), which the hub shows in the task's dedicated Result panel.
+
+### Added — geai Hub orchestration loops (spoke side)
+- **Planner role** (`kind=plan`): the hub delegates objective decomposition to this agent —
+  it receives the fleet composition, may inspect the project read-only, and returns a strict
+  JSON task graph (`name/description/role/dependsOn/verify/requiredContracts`).
+- **Verifier role** (`kind=verify`): runs the relevant tests/build for a completed task
+  (no fixes) and returns `{"passed": bool, "summary": …}` — the hub gates SUCCESS on it.
+- **Contract rejection**: a task that received an unusable contract emits a structured
+  `contract_rejection` JSON; the spoke forwards it as `contract_reject` and requeues instead
+  of building on a broken interface.
+- **Upstream context**: assignments now carry results of completed dependency tasks
+  (artifacts + output tails) and a `reworkReason` on re-dispatch — both are injected into
+  the prompt.
+- Protocol mirror extended: `contract_reject`, `TaskAssign.upstream`/`UpstreamPayload`,
+  `ContractPublish.taskId`.
+
+### Added — geai Hub integration (spoke mode)
+- **Working Hub connection.** The wire protocol is rewritten with stable `@SerialName` short names
+  and a shared `"type"` discriminator (`HubProtocol.kt`, exact mirror of the hub's copy). The old
+  code serialized sealed classes with fully-qualified class names that differed between the hub and
+  the plugin, so neither side could decode the other — registration silently failed; `SpokeEvent`
+  additionally carried a `type` property that collided with the discriminator.
+- **`HubService` (project-level).** Owns the connection; executes `task_assign` through the regular
+  `GeaiAgentService` agent loop (real tools, GRACE, configured LLM). Streams progress, live output
+  lines (`task_log`) and produced artifacts back to the hub; publishes written OpenAPI files as
+  contracts (`contract_publish`); returns `requeue` when busy; announces `ready` only once the loop
+  actually finished. Unique stable `spokeId` per project (IDE type + project name + path hash) —
+  multiple IDEs no longer overwrite each other in the hub registry.
+- **Resilient transport.** `HubClient` now reassembles fragmented WebSocket frames, serializes
+  sends (the JDK client allows one outstanding `sendText`), auto-reconnects with exponential
+  backoff, heartbeats every 25 s, and handles disconnect-during-connect races.
+- **UI/UX.** `Tools → "Geai: Connect to Hub"` is a real toggle (Connect/Disconnect) with balloon
+  notifications instead of modal dialogs; hub URL and auto-connect-on-open in
+  *Settings → Tools → Geai → Show advanced settings*.
+
 ### Removed
 - The in-IDE MCP server (`McpToolServer`) is gone. It existed only to expose geai's tools to the
   external Claude Code CLI engine — removed in 0.0.50 — so nothing constructed it any more. The
@@ -14,6 +57,173 @@
   resolved **live from IntelliJ's PSI/index** (no materialized graph, no `graph_reindex`), search is
   index-backed, and there is a single native agent engine (the Claude Code CLI mode is gone). Updated
   README, `docs/GRACE_ARCHITECTURE.md`, and the plugin-manifest description.
+
+## [0.0.74]
+
+### Added — Phase 1/2 batch: autopsy, instant verification, memory, reports
+- **`failure_autopsy`** — one-call structured post-mortem of the current pause: location, the call
+  stack (top 15), and locals of the top N frames (per-frame). Use right after `break_on_exception`
+  fires: frame #0 is the throw site. Replaces a debug_state + stack + N×debug_variables chain.
+- **Instant syntax verification after every edit** — `edit_file`/`write_file` results now include
+  a `⚠ SYNTAX ERRORS` block (PSI parse scan, fast, no analysis pass) when the change broke the
+  file. A broken edit discovered in the edit result costs one line; discovered N iterations later
+  it costs an investigation.
+- **Cross-session recall** — on the first turn of a session, past session titles are scored
+  against the task (word overlap); the top 3 matches contribute their final answers (heads) to the
+  turn-stable bundle as `<past_sessions>` — "we already fixed something like this" saves whole
+  re-investigations.
+- **Session export** — a topbar button renders the session as a Markdown investigation report
+  (`.geai/exports/<stamp>-<title>.md`: dialogue, tool calls with ✓/✗ results, token totals) and
+  opens it in the editor — ready for a ticket or PR description.
+- Doctrine: for a fix, the agent now offers a regression test reproducing the bug (writes it when
+  asked or when a matching test file exists).
+
+## [0.0.73]
+
+### Added — Phase 1 of the roadmap: eyes and trust
+- **`read_run_output` — the agent's eyes on program output.** A declarative ExecutionListener
+  captures stdout/stderr of every Run/Debug configuration from the moment it starts (bounded ring
+  buffers, last 5 processes × 200k chars, stderr lines prefixed `[err]`). The app's prints, stack
+  traces, and framework logs are usually the FIRST evidence in a bug hunt — until now the agent was
+  blind to them unless it had launched the process itself. In the `run` and `debug` groups;
+  doctrine teaches "evidence first: read_run_output before instrumenting anything". Android logcat
+  guidance via `run_command adb logcat -d -t 300`.
+- **Revert last turn (one click).** A Local History label is taken right before each turn starts;
+  the new ↩ topbar button restores ALL project files to that label (confirmation dialog; chat and
+  session are kept; refuses while a turn is running; on failure points at the manual Local History
+  path). Reversibility is what makes auto-approved edits psychologically safe.
+- Tool groups may now share tools (`read_run_output` lives in both `debug` and `run`) — the
+  advertised catalog deduplicates by name.
+
+## [0.0.72]
+
+### Added — streaming tool execution (roadmap 4.2)
+- **Read-only tools start the moment their JSON finishes streaming** instead of waiting for the
+  whole response. New `StreamEvent.ToolUseCompleted` is emitted by both clients (Anthropic:
+  `content_block_stop`; OpenAI-compatible: on the next tool-call index, since calls stream in
+  order) and the loop launches eligible tools on the shared pool immediately — on a 5-read batch,
+  read #1 executes while reads #2-5 are still streaming their arguments. Meta tools (mutate loop
+  state) and mutating/interactive tools (ordered approvals) keep the strict post-stream order;
+  streamed results are collected unconditionally so a tool_use can never lose its tool_result.
+  Kill-switch: `streamToolExecution` in geai.xml (default on).
+- UI: a tool starting mid-stream no longer finalizes the live text bubble — the model's text keeps
+  flowing into the same bubble while the tool group grows below it.
+
+## [0.0.71]
+
+### Fixed — final speed polish (closing out the context/speed workstream)
+- **Transient provider failures no longer kill turns.** HTTP 500 and 529 (Anthropic
+  "overloaded_error" — the most common failure under load) joined 429/502/503/504 in the retryable
+  set; a 1–2s backoff now saves turns that previously hard-aborted mid-investigation.
+- **Streaming no longer floods the JCEF bridge.** Fast models emit hundreds of deltas per second
+  and each one crossed Kotlin→Chromium as its own executeJavaScript; deltas are now coalesced on a
+  ~33ms tick (flushed immediately before any non-delta event to preserve ordering). Smoother
+  streaming, less EDT time.
+- **Mid-turn session checkpoints moved off the tool pool.** Serializing a large transcript to JSON
+  took tens of ms ON the parallel tool-executor thread on every debounced ToolFinished save;
+  checkpoints now run on a dedicated single-thread queue (strictly ordered, bursts collapse to the
+  latest snapshot). Terminal saves stay synchronous for the hard guarantee.
+
+## [0.0.70]
+
+### Fixed — UX
+- **Instant request feedback.** The chat now echoes the user's message and shows an animated
+  "thinking…" indicator the moment Send is pressed — previously nothing appeared until the first
+  agent event crossed the Kotlin bridge, so it was unclear the request had started at all. The
+  indicator reappears between iterations (model thinking) and disappears on the first streamed
+  output/tool call. The Swing fallback panel gets the equivalent: Send/Stop button states flip
+  immediately and the status shows "Thinking…".
+- **Android Studio: diagnosed and addressed the "different, limited UI".** That UI is the Swing
+  fallback, used when `JBCefApp.isSupported()` is false. The panel now explains itself with a
+  banner: if the `ide.browser.jcef.enabled` registry key is off, a one-click "Enable JCEF…" button
+  turns it on and offers a restart; if the boot runtime lacks JCEF, it points at the "Choose Boot
+  Java Runtime for the IDE" action. The factory logs the exact reason. The fallback also gained a
+  Compact button.
+
+## [0.0.69]
+
+### Added — Debugger 2.0: runtime tracing without stepping
+- **Tracepoints** (`set_tracepoint` + `trace_log`) — breakpoints that never stop the program: on
+  every hit the recorder evaluates the given expression in the paused frame, appends
+  `file:line — expr = value` to a bounded in-memory log, and auto-resumes. Tracing "where does the
+  value get lost" becomes: instrument the flow, run the scenario ONCE, read the log — the first
+  wrong value marks the divergence. Replaces dozens of step/evaluate LLM round-trips with one call.
+  `await_pause`/`debug_step` transparently skip these transient auto-resumed pauses.
+- **Conditional & temporary breakpoints** — `set_breakpoint` gained `condition` ("pause only when
+  `userId == null`", catches the one interesting iteration out of thousands) and `temporary`
+  (auto-removed after first hit).
+- **`break_on_exception`** — toggles the debugger's exception breakpoints (e.g. Java "Any
+  exception", optional filter condition): when the bug is a crash, the session pauses AT the throw
+  with live state instead of the agent guessing which line to breakpoint.
+- **Rich pause snapshots** — `await_pause` and `debug_step` now include the paused frame's local
+  variables in their result, saving a whole `debug_variables` round-trip on every pause (the
+  dominant cost of a stepping session).
+- Doctrine and `/debug` mode teach technique selection: value-flow → tracepoints; crash →
+  break_on_exception; rare state → conditional breakpoint; otherwise classic stepping.
+
+### Added — UI
+- **Command chips** — a one-click row above the composer with all slash commands (`/debug`,
+  `/explain`, `/implement`, `/review`, …; click prefills the composer) plus a direct **Compact**
+  action that folds older context into a summary — previously reachable only by typing.
+
+## [0.0.68]
+
+### Fixed — context architecture rework: "stable prefix, append-only, rare decisive compaction"
+- **Prompt caching restored on every provider** (the main speed/cost bug). The per-iteration
+  `<system_status>` block and the mid-turn automatic bundle refresh mutated the system suffix every
+  step, invalidating the transcript cache prefix on Anthropic/OpenRouter (explicit `cache_control`)
+  AND the implicit prefix caches of OpenAI/DeepSeek/Qwen — every iteration re-processed the entire
+  transcript at full price and latency. The volatile suffix is now **turn-stable**; the bundle
+  refreshes only via an explicit `request_context` call.
+- **Compaction is now one summary + verbatim tail.** Instead of rewriting every old message into
+  `[COMPRESSED: …]` markers (noise that still cost tokens), compaction replaces old history with ONE
+  message: `[CURRENT ACTIVE TASK…]` + optional LLM recap + the deterministic `[SESSION MEMORY…]`
+  ledger — then keeps the recent tail verbatim. Triggers at ~70% of the usable window (was ~85% of a
+  budget that let transcripts balloon past 150k tokens, where "lost in the middle" attention decay
+  made models re-read files that were already in context).
+- **Re-reading after compaction is allowed again.** The hard `RE-READ BLOCKED` refusal fought the
+  model's only recovery path for verbatim content (`edit_file` needs exact bytes) and its
+  deterministic refusal text tripped the stuck-loop guard into aborting turns. A narrow re-read
+  costs ~1k tokens — it is recovery, not failure.
+- **Guard zoo dismantled.** Removed: read-tracker hard block, read-only-iteration counter (aborted
+  legitimate long investigations at 14 steps), post-compression CRITICAL nudge notes, loop-guard
+  scratchpad notes, kb_lookup suppression, adaptive mode-directive drop. One guard remains: the
+  step-fingerprint ring — nudge via a plain one-off message, abort only after 3 repeats (was 2).
+- **"продолжай" no longer wipes working memory.** Task-switch cleanup fires only for substantial
+  new messages (≥40 chars) and keeps NORMAL notes verbatim (last 15) instead of squashing them into
+  a lossy 500-char recap; only LOW notes are dropped.
+- **Active task is no longer re-injected as the newest message every iteration** — that
+  over-anchoring made models re-orient (and re-read) from scratch each step. The task lives in the
+  compaction summary instead.
+- **Window math is provider-safe.** The compaction reserve now covers the request's REAL
+  `max_tokens` (was: reserve 16k while sending max_tokens 65k → "prompt too long" near the top).
+  Defaults: `maxTokens` 65536→8192, `maxContextTokens` 200k→128k (safe across
+  Claude/GPT/DeepSeek/Qwen/GLM). A provider "prompt too long" error now triggers an automatic
+  force-compaction + one retry, so an over-estimated window degrades gracefully on any provider.
+- **Doctrine cut ~2.5×** and de-contradicted: no turn quotas, no mandatory note-taking cadence, no
+  triple-repeated anti-re-read shouting; `read_file` whole-file cap raised 150→400 lines (the old
+  cap forced a chain of range-read round-trips on any normal file).
+- **Sub-agents are usable:** 8 iterations / 40k tokens (was 4 / 15k — starved delegates returned
+  junk the orchestrator then re-did itself) and a lean scout doctrine instead of the full main-loop
+  prompt.
+
+### Added — UI & observability
+- **Agent memory viewer** — a topbar button opens a read-only overlay with the agent's working
+  memory: the active task and every scratchpad note (CRITICAL/NORMAL/LOW markers); `path:line`
+  references in notes are clickable and open in the editor. Makes the agent's "what do I already
+  know" state inspectable instead of invisible.
+- **Context bar shows the compaction threshold** — a tick marks where auto-compaction folds
+  history (≈70% of the usable window), colors switch relative to that threshold, and the bar
+  refreshes live after every tool step (was: only at turn end, so it sat stale through long turns).
+- **Prompt-cache hit rate** in the context bar (`cache N%`, from the provider's cache-read
+  counters) — visible proof the restored prefix caching actually works, on any provider that
+  reports it (Anthropic, OpenRouter, OpenAI, DeepSeek).
+
+### Fixed — misc
+- Replayed sessions no longer render the loop's synthetic user messages (compaction summaries,
+  guard nudges, auto-continue prompts) as if the human typed them.
+- The per-turn `contextChars` metric stringified every image attachment's base64 (megabytes per
+  iteration) and double-counted text blocks — now a cheap typed sum.
 
 ## [0.0.67]
 

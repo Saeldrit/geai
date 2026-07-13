@@ -17,24 +17,13 @@ import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 
-/**
- * Project-scoped entry point used by the UI. Owns the active [AgentSession], runs turns on a
- * cancellable background task, and persists progress after every tool result and at turn end so a
- * disconnect/restart can resume. Only one turn runs at a time.
- */
 @Service(Service.Level.PROJECT)
 class GeaiAgentService(private val project: Project) {
 
     companion object {
         fun getInstance(project: Project): GeaiAgentService = project.service()
 
-        /**
-         * Manual /compact folds the transcript toward this size. The effective budget is
-         * `target * CHARS_PER_TOKEN * SAFETY` chars — NOT exactly this many tokens, and with no output
-         * reserve subtracted (/compact generates no reply). So ~24_000 * 4 * 0.6 ≈ 57.6k chars ≈ 14k
-         * tokens — aggressive on purpose (the SAFETY factor stays; we only dropped the parasitic reserve).
-         */
-        private const val COMPACT_TARGET_TOKENS = 24_000
+        private const val COMPACT_TARGET_TOKENS = 48_000
     }
 
     @Volatile
@@ -45,8 +34,12 @@ class GeaiAgentService(private val project: Project) {
     @Volatile
     private var currentIndicator: ProgressIndicator? = null
 
-    /** Debounce session saves to ~once per 300ms. ToolFinished can fire from several parallel tool-pool
-     *  threads at once, so the window check is an atomic compare-and-set — only one thread wins it. */
+    @Volatile
+    private var lastTurnLabel: com.intellij.history.Label? = null
+
+    @Volatile
+    private var lastTurnTitle: String = ""
+
     private val lastSaveMs = java.util.concurrent.atomic.AtomicLong(0L)
 
     private fun shouldSave(): Boolean {
@@ -65,8 +58,6 @@ class GeaiAgentService(private val project: Project) {
 
     @Synchronized
     fun newSession(): AgentSession {
-        // Save the current session before switching — otherwise the user loses history
-        // if they haven't explicitly saved it yet.
         current?.let { if (!it.isEmpty) GeaiSessionStore.getInstance(project).save(it) }
         val session = AgentSession()
         current = session
@@ -97,7 +88,6 @@ class GeaiAgentService(private val project: Project) {
         }
 
         val store = GeaiSessionStore.getInstance(project)
-        // Non-image attachments (text files) are prepended as text blocks
         val textFileBlocks = attachments.filter { !it.isImage }.map { att ->
             ContentBlock.Text("[Attached file: ${att.name}]\n${String(java.util.Base64.getDecoder().decode(att.base64Data))}")
         }
@@ -105,11 +95,16 @@ class GeaiAgentService(private val project: Project) {
         val savingListener = AgentListener { event ->
             listener.onEvent(event)
             when (event) {
-                is AgentEvent.ToolFinished -> if (shouldSave()) store.save(session)
+                is AgentEvent.ToolFinished -> if (shouldSave()) store.saveAsync(session)
                 is AgentEvent.Done, is AgentEvent.Error, is AgentEvent.Cancelled -> store.save(session)
                 else -> Unit
             }
         }
+
+        lastTurnLabel = runCatching {
+            com.intellij.history.LocalHistory.getInstance().putSystemLabel(project, "geai: before turn — ${text.take(60)}")
+        }.getOrNull()
+        lastTurnTitle = text.take(60)
 
         ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Geai", true) {
             override fun run(indicator: ProgressIndicator) {
@@ -125,12 +120,45 @@ class GeaiAgentService(private val project: Project) {
         })
     }
 
-    /**
-     * Manual "/compact": fold the current session's transcript into a dense recap so the next turn
-     * re-sends far fewer tokens, without losing the thread. One cheap summariser call. The VISIBLE
-     * chat is untouched (it stays for the human); only the model's context shrinks. No-op while a turn
-     * runs — guarded by [running] so it can't race a turn mutating the same transcript.
-     */
+    fun revertLastTurn(listener: AgentListener) {
+        if (running.get()) {
+            listener.onEvent(AgentEvent.Info("Geai is still working — stop the turn before reverting."))
+            return
+        }
+        val label = lastTurnLabel
+        if (label == null) {
+            listener.onEvent(AgentEvent.Info("Nothing to revert: no turn has run in this window yet."))
+            return
+        }
+        val base = project.basePath?.let { com.intellij.openapi.vfs.LocalFileSystem.getInstance().findFileByPath(it) }
+        if (base == null) {
+            listener.onEvent(AgentEvent.Error("Cannot revert: project base directory is unavailable."))
+            return
+        }
+        com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater {
+            val choice = com.intellij.openapi.ui.Messages.showYesNoDialog(
+                project,
+                "Revert ALL file changes made since the last turn started" +
+                    (lastTurnTitle.takeIf { it.isNotBlank() }?.let { " (“$it”)" } ?: "") +
+                    "?\n\nThis restores project files from Local History; the chat itself is kept. " +
+                    "Your own edits made after the turn started will also be reverted.",
+                "Geai — Revert Last Turn",
+                "Revert Files",
+                "Cancel",
+                com.intellij.openapi.ui.Messages.getWarningIcon(),
+            )
+            if (choice != com.intellij.openapi.ui.Messages.YES) return@invokeLater
+            runCatching { label.revert(project, base) }
+                .onSuccess {
+                    lastTurnLabel = null
+                    listener.onEvent(AgentEvent.Info("↩ Project files reverted to the state before the last turn (Local History)."))
+                }
+                .onFailure { e ->
+                    listener.onEvent(AgentEvent.Error("Revert failed: ${e.message}. Use Local History (right-click project → Local History → Show History) to revert manually — look for the label \"geai: before turn\"."))
+                }
+        }
+    }
+
     fun compact(listener: AgentListener) {
         if (!running.compareAndSet(false, true)) {
             listener.onEvent(AgentEvent.Info("Geai is busy right now — I'll compress the context after the current turn finishes."))
@@ -153,7 +181,6 @@ class GeaiAgentService(private val project: Project) {
                     var spent = TokenUsage.ZERO
                     val summarizer = TranscriptSummary.summarizer(client, settings.loopModel(), indicator) { used -> spent += used }
                     val compacted = runCatching {
-                        // outputReserve = 0: /compact does not generate a reply, so no reserve to subtract.
                         ContextCompressor.compress(session.messages, COMPACT_TARGET_TOKENS, 0, 0, summarizer)
                     }.getOrNull()
                     if (compacted.isNullOrEmpty()) {

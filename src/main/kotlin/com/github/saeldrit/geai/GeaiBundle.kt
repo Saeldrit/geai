@@ -7,11 +7,6 @@ import org.jetbrains.annotations.PropertyKey
 @NonNls
 private const val BUNDLE = "messages.GeaiBundle"
 
-/**
- * Localized message accessor for the geai plugin.
- *
- * Keys live in `src/main/resources/messages/GeaiBundle.properties`.
- */
 object GeaiBundle : DynamicBundle(BUNDLE) {
 
     @JvmStatic

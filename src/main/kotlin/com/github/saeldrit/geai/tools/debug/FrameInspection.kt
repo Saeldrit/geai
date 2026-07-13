@@ -23,14 +23,6 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import javax.swing.Icon
 
-/**
- * Reads runtime state from the currently paused stack frame: local variables, expression evaluation,
- * and whole-object dumps. The XDebugger value APIs are asynchronous AND multi-stage — `evaluate` hands
- * back an [XValue] REFERENCE, and the concrete data arrives later through [XValue.computePresentation]
- * (often a "Collecting data…" placeholder first, then the real value) or, for large/lazy values, an
- * [XFullValueEvaluator]. We bridge all of that to synchronous results and, when a value still won't
- * materialise (e.g. a jOOQ/Hibernate lazy proxy), force it to a concrete string. Language-agnostic.
- */
 internal object FrameInspection {
 
     private const val MAX_VARS = 40
@@ -69,7 +61,6 @@ internal object FrameInspection {
         return ToolResult.ok(builder.toString().trimEnd())
     }
 
-    /** Read the local variables of the paused frame (one level). */
     fun locals(project: Project, timeoutMs: Long): ToolResult {
         val frame = pausedFrame(project)
             ?: return ToolResult.error("Debugger is not paused at a frame. Set a breakpoint, start_debug, then await_pause.")
@@ -119,15 +110,12 @@ internal object FrameInspection {
         if (children.size > MAX_VARS) builder.append(indent).append("… (${children.size - MAX_VARS} more)\n")
     }
 
-    /** Evaluate one expression with an already-resolved evaluator; resolve lazily, force as a backstop. */
     private fun evaluateOne(evaluator: XDebuggerEvaluator, position: XSourcePosition?, expression: String, timeoutMs: Long): String {
         val (value, error) = evaluateXValue(evaluator, position, expression, timeoutMs)
         if (error != null) return "ERROR: $error"
         if (value == null) return "<no value>"
         val presented = presentValue(value, timeoutMs)
         if (presented.text.isNotBlank() && !isPlaceholder(presented.text)) return presented.text
-        // Backstop for a stubborn lazy proxy: stringify to force materialisation. java.lang.String.valueOf
-        // works in Java AND Kotlin frames and is null-safe.
         val (forcedValue, forcedError) = evaluateXValue(evaluator, position, "java.lang.String.valueOf($expression)", timeoutMs)
         if (forcedError == null && forcedValue != null) {
             val forced = presentValue(forcedValue, timeoutMs).text
@@ -136,7 +124,6 @@ internal object FrameInspection {
         return presented.text.ifBlank { "<no value>" }
     }
 
-    /** Evaluate an expression to its [XValue]. Returns (value, null) or (null, errorMessage). */
     private fun evaluateXValue(
         evaluator: XDebuggerEvaluator,
         position: XSourcePosition?,
@@ -166,7 +153,6 @@ internal object FrameInspection {
         return value.get() to null
     }
 
-    /** Read the children (fields / elements) of a container — shared by [locals] and [dumpChildren]. */
     private fun readChildren(compute: (XCompositeNode) -> Unit, timeoutMs: Long): List<Pair<String, XValue>> {
         val latch = CountDownLatch(1)
         val out = mutableListOf<Pair<String, XValue>>()
@@ -187,13 +173,6 @@ internal object FrameInspection {
         return out
     }
 
-    /**
-     * Resolve an [XValue] to a structured [Presented], keeping the type and `hasChildren` flag (needed to
-     * decide whether to recurse). The presentation callback is async and multi-stage: the first call can
-     * be a "Collecting data…" PLACEHOLDER. We finalise only on a real value, and as soon as an
-     * [XFullValueEvaluator] is offered we stop waiting and pull the full value through it — so a lazy
-     * proxy comes back concrete WITHOUT waiting out the whole timeout on the placeholder.
-     */
     private fun presentValue(value: XValue, timeoutMs: Long): Presented {
         val done = CountDownLatch(1)
         val last = AtomicReference(Presented("", null, false, null))
@@ -221,7 +200,6 @@ internal object FrameInspection {
 
             override fun setFullValueEvaluator(fullValueEvaluator: XFullValueEvaluator) {
                 last.set(last.get().copy(fullEvaluator = fullValueEvaluator))
-                // We will pull the full value below — no need to wait out the timeout on the placeholder.
                 done.countDown()
             }
 
@@ -274,16 +252,62 @@ internal object FrameInspection {
         return ref.get()
     }
 
-    private fun textRenderer(builder: StringBuilder): XValuePresentation.XValueTextRenderer =
+    /** Top [maxFrames] frames of the paused session's active execution stack (async → sync). */
+    fun topFrames(project: Project, maxFrames: Int, timeoutMs: Long): List<XStackFrame> {
+        val stackRef = AtomicReference<com.intellij.xdebugger.frame.XExecutionStack?>(null)
+        ApplicationManager.getApplication().invokeAndWait {
+            val session = XDebuggerManager.getInstance(project).currentSession
+            stackRef.set(if (session != null && session.isPaused) session.suspendContext?.activeExecutionStack else null)
+        }
+        val stack = stackRef.get() ?: return emptyList()
+        val latch = CountDownLatch(1)
+        val out = ArrayList<XStackFrame>()
+        stack.computeStackFrames(
+            0,
+            object : com.intellij.xdebugger.frame.XExecutionStack.XStackFrameContainer {
+                override fun addStackFrames(frames: MutableList<out XStackFrame>, last: Boolean) {
+                    synchronized(out) { out.addAll(frames) }
+                    if (last) latch.countDown()
+                }
+
+                override fun errorOccurred(errorMessage: String) {
+                    latch.countDown()
+                }
+            },
+        )
+        latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+        return synchronized(out) { out.take(maxFrames) }
+    }
+
+    /** Best-effort "file:line" for a specific stack frame; blank source position falls back to a marker. */
+    fun framePosition(project: Project, frame: XStackFrame): String {
+        val position = frame.sourcePosition
+        return if (position != null) "${position.file.name}:${position.line + 1}" else "<no source>"
+    }
+
+    /** Local variables of a SPECIFIC frame (not only the current one), formatted with a two-space indent. */
+    fun localsOf(frame: XStackFrame, timeoutMs: Long, maxVars: Int): String {
+        val variables = readChildren(frame::computeChildren, timeoutMs)
+        if (variables.isEmpty()) return "    <no locals>"
+        val builder = StringBuilder()
+        variables.take(maxVars).forEach { (name, value) ->
+            builder.append("    ").append(name).append(" = ")
+                .append(presentValue(value, timeoutMs).text.ifBlank { "<...>" }).append('\n')
+        }
+        if (variables.size > maxVars) builder.append("    … (${variables.size - maxVars} more)\n")
+        return builder.toString().trimEnd('\n')
+    }
+
+    private fun textRenderer(sb: StringBuilder): XValuePresentation.XValueTextRenderer =
         object : XValuePresentation.XValueTextRenderer {
-            override fun renderValue(value: String) { builder.append(value) }
-            override fun renderStringValue(value: String) { builder.append(value) }
-            override fun renderNumericValue(value: String) { builder.append(value) }
-            override fun renderKeywordValue(value: String) { builder.append(value) }
-            override fun renderValue(value: String, key: TextAttributesKey) { builder.append(value) }
-            override fun renderStringValue(value: String, additionalSpecialCharsToHighlight: String?, maxLength: Int) { builder.append(value) }
-            override fun renderComment(comment: String) { builder.append(comment) }
-            override fun renderSpecialSymbol(symbol: String) { builder.append(symbol) }
-            override fun renderError(error: String) { builder.append("ERROR: ").append(error) }
+            override fun renderValue(value: String) { sb.append(value) }
+            override fun renderValue(value: String, key: TextAttributesKey) { sb.append(value) }
+            override fun renderStringValue(value: String) { sb.append(value) }
+            override fun renderStringValue(value: String, additionalSpecialCharsToHighlight: String?, maxLength: Int) { sb.append(value) }
+            override fun renderNumericValue(value: String) { sb.append(value) }
+            override fun renderKeywordValue(value: String) { sb.append(value) }
+            override fun renderComment(comment: String) { sb.append(comment) }
+            override fun renderSpecialSymbol(symbol: String) { sb.append(symbol) }
+            override fun renderError(error: String) { sb.append(error) }
         }
 }

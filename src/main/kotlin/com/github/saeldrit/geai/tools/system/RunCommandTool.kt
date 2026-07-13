@@ -12,7 +12,6 @@ import com.intellij.util.execution.ParametersListUtil
 import java.io.File
 import java.nio.charset.StandardCharsets
 
-/** Runs an external command (build / run / tests / git) and returns its exit code and output. */
 object RunCommandTool : AgentTool {
     override val name = "run_command"
     override val mutating = true
@@ -33,24 +32,23 @@ object RunCommandTool : AgentTool {
     override fun execute(args: ToolArgs, context: ToolContext): ToolResult {
         val command = args.string("command")
         val workingDir = args.stringOrNull("working_dir")
-        val timeoutSeconds = args.int("timeout_seconds", 180).coerceIn(1, 1800)
+        val timeoutSeconds = args.int("timeout_seconds", 300).coerceIn(1, 1800)
 
-        val parts = ParametersListUtil.parse(command)
-        if (parts.isEmpty()) return ToolResult.error("Empty command.")
+        if (command.isBlank()) return ToolResult.error("Empty command.")
         val dir = resolveWorkingDir(context, workingDir)
             ?: return ToolResult.error(
                 "Working directory not found, not a directory, or outside the project: ${workingDir ?: "<project root>"}",
             )
 
         return runCatching {
-            val commandLine = GeneralCommandLine(parts)
+            val isWindows = System.getProperty("os.name", "").lowercase().contains("win")
+            val shellParts = if (isWindows) listOf("cmd", "/c", command) else listOf("/bin/sh", "-c", command)
+            val commandLine = GeneralCommandLine(shellParts)
                 .withWorkDirectory(dir)
                 .withCharset(StandardCharsets.UTF_8)
             val handler = CapturingProcessHandler(commandLine)
             val output = handler.runProcessWithProgressIndicator(context.indicator, timeoutSeconds * 1000)
 
-            // The command may have written files (codegen, npm/gradle, git checkout/pull). Refresh the
-            // IDE's VFS so read_file/edit_file (and PSI navigation) don't keep seeing stale content.
             runCatching {
                 LocalFileSystem.getInstance().refreshAndFindFileByIoFile(dir)?.let { vfsDir ->
                     VfsUtil.markDirtyAndRefresh(true, true, true, vfsDir)
@@ -75,8 +73,6 @@ object RunCommandTool : AgentTool {
         val base = context.project.basePath?.let(::File)?.canonicalFile ?: return null
         if (dir.isNullOrBlank()) return base
         val candidate = File(dir).let { if (it.isAbsolute) it else File(base, dir) }.canonicalFile
-        // Confine execution to the project tree: an arbitrary absolute working_dir would let the
-        // model run commands anywhere on disk, even when edit tools are auto-approved.
         if (candidate != base && !candidate.path.startsWith(base.path + File.separator)) return null
         candidate.takeIf { it.isDirectory }
     }.getOrNull()

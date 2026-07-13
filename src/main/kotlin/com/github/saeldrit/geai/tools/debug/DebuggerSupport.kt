@@ -17,26 +17,27 @@ import com.intellij.xdebugger.breakpoints.XBreakpointManager
 import com.intellij.xdebugger.breakpoints.XBreakpointProperties
 import com.intellij.xdebugger.breakpoints.XLineBreakpoint
 import com.intellij.xdebugger.breakpoints.XLineBreakpointType
+import com.intellij.xdebugger.impl.breakpoints.XExpressionImpl
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
-/** How to advance a PAUSED debug session — see [DebuggerSupport.step]. */
 internal enum class StepKind { OVER, INTO, OUT, RESUME }
 
-/**
- * EDT/write-action-safe wrapper over the generic XDebugger API. Stays language-agnostic by
- * discovering a [XLineBreakpointType] that `canPutAt` the requested line, so it works for Java,
- * Kotlin, and any language whose debugger registers line breakpoints.
- */
 internal object DebuggerSupport {
 
     fun manager(project: Project): XDebuggerManager = XDebuggerManager.getInstance(project)
 
     fun breakpointManager(project: Project): XBreakpointManager = manager(project).breakpointManager
 
-    fun addBreakpoint(project: Project, file: VirtualFile, line1: Int): ToolResult {
+    fun addBreakpoint(
+        project: Project,
+        file: VirtualFile,
+        line1: Int,
+        condition: String? = null,
+        temporary: Boolean = false,
+    ): ToolResult {
         val line0 = line1 - 1
         val location = "${FsPaths.relativize(project, file)}:$line1"
         return onEdtWrite {
@@ -44,8 +45,18 @@ internal object DebuggerSupport {
                 ?: return@onEdtWrite ToolResult.error("No breakpoint can be placed at $location (not an executable line?).")
             val mgr = breakpointManager(project)
             existingAt(mgr, file.url, line0)?.let { mgr.removeBreakpoint(it) }
-            addTyped(mgr, type, file, line0)
-            ToolResult.ok("Breakpoint set at $location")
+            val bp = addTyped(mgr, type, file, line0)
+            val extras = buildList {
+                condition?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                    bp.conditionExpression = XExpressionImpl.fromText(it)
+                    add("when [$it]")
+                }
+                if (temporary) {
+                    bp.isTemporary = true
+                    add("temporary (auto-removed after first hit)")
+                }
+            }
+            ToolResult.ok("Breakpoint set at $location" + if (extras.isEmpty()) "" else " — ${extras.joinToString(", ")}")
         }
     }
 
@@ -53,11 +64,13 @@ internal object DebuggerSupport {
         val mgr = breakpointManager(project)
         val inFile = mgr.allBreakpoints.filterIsInstance<XLineBreakpoint<*>>().filter { it.fileUrl == file.url }
         val target = if (line1 == null) inFile else inFile.filter { it.line == line1 - 1 }
+        val droppedTracepoints = TracepointRecorder.unregister(project, file.url, line1?.minus(1))
         if (target.isEmpty()) {
             ToolResult.ok("No matching breakpoints to remove in ${FsPaths.relativize(project, file)}.")
         } else {
             target.forEach { mgr.removeBreakpoint(it) }
-            ToolResult.ok("Removed ${target.size} breakpoint(s) in ${FsPaths.relativize(project, file)}.")
+            val tp = if (droppedTracepoints > 0) " ($droppedTracepoints were tracepoints)" else ""
+            ToolResult.ok("Removed ${target.size} breakpoint(s) in ${FsPaths.relativize(project, file)}.$tp")
         }
     }
 
@@ -69,7 +82,8 @@ internal object DebuggerSupport {
             val rows = lineBreakpoints.map { bp ->
                 val state = if (bp.isEnabled) "enabled" else "disabled"
                 val condition = bp.conditionExpression?.expression?.takeIf { it.isNotBlank() }?.let { " when [$it]" } ?: ""
-                "${bp.fileUrl.substringAfterLast('/')}:${bp.line + 1} ($state)$condition"
+                val trace = if (TracepointRecorder.isRegistered(project, bp.fileUrl, bp.line)) " [tracepoint]" else ""
+                "${bp.fileUrl.substringAfterLast('/')}:${bp.line + 1} ($state)$condition$trace"
             }
             ToolResult.ok("${lineBreakpoints.size} breakpoint(s):\n${rows.joinToString("\n")}")
         }
@@ -85,7 +99,8 @@ internal object DebuggerSupport {
     /**
      * One-shot snapshot for await_pause: (paused location or null, whether ANY debug session is live).
      * Lets await_pause return the instant it is paused, AND bail out when the session has ENDED instead
-     * of polling out the whole timeout for a pause that can never come.
+     * of polling out the whole timeout for a pause that can never come. A pause AT A TRACEPOINT is
+     * reported as "not paused" — it is transient: the recorder captures the value and auto-resumes.
      */
     fun pauseSnapshot(project: Project): Pair<String?, Boolean> {
         val ref = AtomicReference<Pair<String?, Boolean>>(null to false)
@@ -93,10 +108,28 @@ internal object DebuggerSupport {
             val mgr = manager(project)
             val active = mgr.debugSessions.isNotEmpty()
             val session = mgr.currentSession
-            val paused = if (session != null && session.isPaused) describeSession(project, session) else null
+            val paused = if (session != null && session.isPaused && !TracepointRecorder.isTracepointPause(project, session)) {
+                describeSession(project, session)
+            } else {
+                null
+            }
             ref.set(paused to active)
         }
         return ref.get()
+    }
+
+    /**
+     * Compact runtime snapshot appended to await_pause / debug_step results: the local variables of
+     * the paused frame. Saves the model a whole extra round-trip (debug_variables) on EVERY pause —
+     * the dominant cost of a stepping session. Best-effort and bounded.
+     */
+    fun localsSnapshot(project: Project, timeoutMs: Long = 2_000L, maxChars: Int = 1_500): String {
+        val result = runCatching { FrameInspection.locals(project, timeoutMs) }.getOrNull() ?: return ""
+        if (result.isError) return ""
+        val text = result.content.trim()
+        if (text.isEmpty() || text.startsWith("No local variables")) return ""
+        val bounded = if (text.length > maxChars) text.take(maxChars) + "\n…(truncated; use debug_variables/debug_evaluate for more)" else text
+        return "\nLocals:\n$bounded"
     }
 
     fun describeState(project: Project): ToolResult = onEdt {
@@ -145,13 +178,13 @@ internal object DebuggerSupport {
             )
         }
 
-        val latch = CountDownLatch(1)
+        val pauseLatch = AtomicReference(CountDownLatch(1))
         val stopped = AtomicBoolean(false)
         val listener = object : XDebugSessionListener {
-            override fun sessionPaused() = latch.countDown()
+            override fun sessionPaused() = pauseLatch.get().countDown()
             override fun sessionStopped() {
                 stopped.set(true)
-                latch.countDown()
+                pauseLatch.get().countDown()
             }
         }
         ApplicationManager.getApplication().invokeAndWait {
@@ -169,7 +202,19 @@ internal object DebuggerSupport {
             var signalled = false
             while (System.currentTimeMillis() < deadline) {
                 if (indicator.isCanceled) throw ProcessCanceledException()
-                if (latch.await(200, TimeUnit.MILLISECONDS)) {
+                if (pauseLatch.get().await(200, TimeUnit.MILLISECONDS)) {
+                    if (stopped.get()) {
+                        signalled = true
+                        break
+                    }
+                    val transient = AtomicBoolean(false)
+                    ApplicationManager.getApplication().invokeAndWait {
+                        transient.set(session.isPaused && TracepointRecorder.isTracepointPause(project, session))
+                    }
+                    if (transient.get()) {
+                        pauseLatch.set(CountDownLatch(1))
+                        continue
+                    }
                     signalled = true
                     break
                 }
@@ -181,7 +226,10 @@ internal object DebuggerSupport {
                         "Call await_pause with a longer timeout, or debug_state to poll.",
                 )
 
-                else -> ToolResult.ok("Stepped $verb → ${pausedSessionDescription(project) ?: "paused (position unavailable)"}")
+                else -> ToolResult.ok(
+                    "Stepped $verb → ${pausedSessionDescription(project) ?: "paused (position unavailable)"}" +
+                        localsSnapshot(project),
+                )
             }
         } finally {
             ApplicationManager.getApplication().invokeAndWait { session.removeSessionListener(listener) }
@@ -203,10 +251,10 @@ internal object DebuggerSupport {
         mgr.allBreakpoints.filterIsInstance<XLineBreakpoint<*>>().firstOrNull { it.fileUrl == url && it.line == line0 }
 
     @Suppress("UNCHECKED_CAST")
-    private fun addTyped(mgr: XBreakpointManager, type: XLineBreakpointType<*>, file: VirtualFile, line0: Int) {
+    private fun addTyped(mgr: XBreakpointManager, type: XLineBreakpointType<*>, file: VirtualFile, line0: Int): XLineBreakpoint<XBreakpointProperties<*>> {
         val typed = type as XLineBreakpointType<XBreakpointProperties<*>>
         val properties = typed.createBreakpointProperties(file, line0)
-        mgr.addLineBreakpoint(typed, file.url, line0, properties)
+        return mgr.addLineBreakpoint(typed, file.url, line0, properties)
     }
 
     private fun onEdt(block: () -> ToolResult): ToolResult {

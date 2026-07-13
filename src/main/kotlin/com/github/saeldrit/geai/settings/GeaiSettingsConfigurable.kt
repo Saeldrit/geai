@@ -24,16 +24,8 @@ import javax.swing.SwingUtilities
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
 
-/**
- * Settings page under **Settings | Tools | Geai**. Deliberately minimal: the everyday tab ("Model")
- * holds only what a user must set to get going — provider, model, key — while optional/expert flags
- * live under "Advanced". The mechanical loop knobs (iteration ceiling, transcript/turn token budgets)
- * are NOT exposed: they have sound internal defaults so the agent just works without anyone tuning a
- * number. The navigator model appears only when tiered routing is on. API keys go to [GeaiSecrets].
- */
 class GeaiSettingsConfigurable : Configurable {
 
-    // Model (the essentials)
     private val providerCombo = ComboBox(DefaultComboBoxModel(LlmProvider.entries.toTypedArray()))
     private val modelCombo = ComboBox<String>().apply {
         isEditable = true
@@ -46,7 +38,6 @@ class GeaiSettingsConfigurable : Configurable {
     private val baseUrlField = JBTextField()
     private val apiKeyField = JBPasswordField()
 
-    // Advanced / expert
     private val graceEnabledCheck =
         JBCheckBox("Enable GRACE (anchors / specs / graph / context bundle / tiered routing) — off = lean baseline")
     private val tieredRoutingCheck =
@@ -56,13 +47,15 @@ class GeaiSettingsConfigurable : Configurable {
     private val autoEditCheck = JBCheckBox("Auto-approve mutating tools (write / edit / run / self-modify) — ON by default; uncheck to require per-call confirmation")
     private val sourcePathField = JBTextField()
 
+    private val hubUrlField = JBTextField()
+    private val hubAutoConnectCheck = JBCheckBox("Connect to the geai Hub automatically when a project opens")
+
     private lateinit var navigatorPanel: JPanel
+    private val baseUrlLabel = JBLabel("Base URL:")
     private val visionIndicator = JBLabel("")
 
-    /** Full list of all known model ids — used for editor filtering. */
     private val allModelItems = mutableListOf<String>()
 
-    /** Guard flag preventing DocumentListener re-entrancy (infinite loop on setSelectedItem). */
     private var isFilteringModels = false
 
     override fun getDisplayName(): String = GeaiBundle.message("geai.settings.title")
@@ -73,7 +66,6 @@ class GeaiSettingsConfigurable : Configurable {
         providerCombo.addActionListener { onProviderChanged() }
         refreshModelsButton.addActionListener { refreshModelsAsync() }
 
-        // Filter the combo popup
         val editorComponent = modelCombo.editor.editorComponent
         if (editorComponent is javax.swing.text.JTextComponent) {
             editorComponent.document.addDocumentListener(object : DocumentListener {
@@ -101,7 +93,7 @@ class GeaiSettingsConfigurable : Configurable {
         val mainForm = FormBuilder.createFormBuilder()
             .addLabeledComponent("Provider:", providerCombo)
             .addLabeledComponent("Model:", modelPanel)
-            .addLabeledComponent("Base URL:", baseUrlField)
+            .addLabeledComponent(baseUrlLabel, baseUrlField)
             .addLabeledComponent("API key:", apiKeyField)
             .panel
 
@@ -117,6 +109,9 @@ class GeaiSettingsConfigurable : Configurable {
             .addComponent(autoEditCheck)
             .addSeparator()
             .addLabeledComponent("Geai source path:", sourcePathField)
+            .addSeparator()
+            .addLabeledComponent("Hub URL:", hubUrlField)
+            .addComponent(hubAutoConnectCheck)
             .panel
         val advancedToggle = javax.swing.JCheckBox("Show advanced settings")
         advancedToggle.foreground = javax.swing.UIManager.getColor("Component.infoForeground")
@@ -136,9 +131,18 @@ class GeaiSettingsConfigurable : Configurable {
     private fun onProviderChanged() {
         val provider = providerCombo.selectedItem as? LlmProvider ?: return
         populateModels(provider)
-        modelCombo.selectedItem = null // fall back to the new provider's default
+        modelCombo.selectedItem = provider.defaultModel.lowercase()
+        baseUrlField.text = provider.defaultBaseUrl
         baseUrlField.emptyText.text = provider.defaultBaseUrl
+        val isFixedUrl = provider != LlmProvider.OPENAI_COMPATIBLE
+        baseUrlLabel.isVisible = !isFixedUrl
+        baseUrlField.isVisible = !isFixedUrl
+        baseUrlField.parent?.revalidate()
         updateVisionIndicator()
+
+        if (String(apiKeyField.password).isNotBlank() && provider != LlmProvider.ANTHROPIC) {
+            refreshModelsAsync()
+        }
     }
 
     private fun updateVisionIndicator() {
@@ -150,16 +154,12 @@ class GeaiSettingsConfigurable : Configurable {
 
     private fun populateModels(provider: LlmProvider) {
         allModelItems.clear()
-        allModelItems.addAll(provider.suggestedModels)
+        val lower = provider.suggestedModels.map { it.lowercase() }
+        allModelItems.addAll(lower)
         modelCombo.removeAllItems()
-        provider.suggestedModels.forEach { modelCombo.addItem(it) }
+        lower.forEach { modelCombo.addItem(it) }
     }
 
-    /**
-     * Filter the combo-box popup items to those matching [text] (case-insensitive).
-     * Uses [isFilteringModels] guard to prevent re-entrancy: [setSelectedItem] changes
-     * the editor document which would otherwise fire DocumentListener → infinite loop.
-     */
     private fun filterModels(text: String) {
         if (isFilteringModels) return
         isFilteringModels = true
@@ -175,13 +175,11 @@ class GeaiSettingsConfigurable : Configurable {
             }
             val lower = text.lowercase()
             val matching = allModelItems.filter { it.lowercase().contains(lower) }
-            // Always keep the current editor text visible so the user can type custom models
             val toShow = if (text !in matching && text.isNotBlank()) {
                 matching + text
             } else {
                 matching
             }
-            // Skip UI update if nothing actually changed (avoid redundant DocumentEvents)
             if (toShow.toSet() == (0 until modelCombo.itemCount).map { modelCombo.getItemAt(it) }.toSet()) return
             modelCombo.removeAllItems()
             toShow.forEach { modelCombo.addItem(it) }
@@ -191,9 +189,6 @@ class GeaiSettingsConfigurable : Configurable {
         }
     }
 
-    /**
-     * Fetch models from the provider API on a background thread, then update the UI.
-     */
     private fun refreshModelsAsync() {
         val provider = providerCombo.selectedItem as? LlmProvider ?: return
         val apiKey = String(apiKeyField.password).trim()
@@ -205,7 +200,6 @@ class GeaiSettingsConfigurable : Configurable {
             return
         }
 
-        // For native Anthropic API we know listModels is not supported
         if (provider == LlmProvider.ANTHROPIC) {
             Messages.showInfoMessage(
                 "Model list is not available for ${provider.displayName}.",
@@ -230,11 +224,12 @@ class GeaiSettingsConfigurable : Configurable {
 
                     if (models != null) {
                         if (models.isNotEmpty()) {
+                            val lower = models.map { it.lowercase() }
                             allModelItems.clear()
-                            allModelItems.addAll(models)
+                            allModelItems.addAll(lower)
                             modelCombo.removeAllItems()
-                            models.forEach { modelCombo.addItem(it) }
-                            modelCombo.selectedItem = null
+                        lower.forEach { modelCombo.addItem(it) }
+                            modelCombo.selectedItem = provider.defaultModel.lowercase().takeIf { it in lower } ?: lower.firstOrNull()
                         } else {
                             Messages.showInfoMessage(
                                 "Provider returned an empty model list.",
@@ -273,7 +268,6 @@ class GeaiSettingsConfigurable : Configurable {
     private fun currentModel(): String =
         ((modelCombo.editor.item as? String) ?: (modelCombo.selectedItem as? String)).orEmpty().trim()
 
-    /** The navigator model surfaces only when GRACE + tiered routing are on. */
     private fun updateEnabled() {
         val grace = graceEnabledCheck.isSelected
         tieredRoutingCheck.isEnabled = grace
@@ -294,6 +288,8 @@ class GeaiSettingsConfigurable : Configurable {
             graceEnabledCheck.isSelected != state.graceEnabled ||
             tieredRoutingCheck.isSelected != state.tieredRoutingEnabled ||
             navigatorModelField.text != state.navigatorModel.orEmpty() ||
+            hubUrlField.text != state.hubUrl.orEmpty() ||
+            hubAutoConnectCheck.isSelected != state.hubAutoConnect ||
             String(apiKeyField.password) != storedKey
     }
 
@@ -309,6 +305,8 @@ class GeaiSettingsConfigurable : Configurable {
         state.graceEnabled = graceEnabledCheck.isSelected
         state.tieredRoutingEnabled = tieredRoutingCheck.isSelected
         state.navigatorModel = navigatorModelField.text.trim().ifBlank { null }
+        state.hubUrl = hubUrlField.text.trim().ifBlank { null }
+        state.hubAutoConnect = hubAutoConnectCheck.isSelected
         GeaiSecrets.setApiKey(provider, String(apiKeyField.password).trim().ifBlank { null })
     }
 
@@ -316,7 +314,8 @@ class GeaiSettingsConfigurable : Configurable {
         val state = GeaiSettings.getInstance().state
         providerCombo.selectedItem = state.provider
         populateModels(state.provider)
-        modelCombo.selectedItem = state.model?.takeIf { it.isNotBlank() }
+        val savedModel = state.model?.takeIf { it.isNotBlank() }
+        modelCombo.selectedItem = savedModel ?: state.provider.defaultModel.lowercase()
         baseUrlField.text = state.baseUrl.orEmpty()
         baseUrlField.emptyText.text = state.provider.defaultBaseUrl
         autoReadCheck.isSelected = state.autoApproveReadTools
@@ -327,6 +326,9 @@ class GeaiSettingsConfigurable : Configurable {
         tieredRoutingCheck.isSelected = state.tieredRoutingEnabled
         navigatorModelField.text = state.navigatorModel.orEmpty()
         navigatorModelField.emptyText.text = "cheap model of the same provider, e.g. claude-haiku-4-5 / deepseek-chat (blank = main model)"
+        hubUrlField.text = state.hubUrl.orEmpty()
+        hubUrlField.emptyText.text = "ws://localhost:9876/ws"
+        hubAutoConnectCheck.isSelected = state.hubAutoConnect
         apiKeyField.text = GeaiSecrets.apiKey(state.provider).orEmpty()
         updateEnabled()
     }

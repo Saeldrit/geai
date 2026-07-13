@@ -2,40 +2,23 @@ package com.github.saeldrit.geai.agent
 
 import java.util.concurrent.CopyOnWriteArrayList
 
-/**
- * Collects per-turn timing and size metrics for the agent loop.
- * Thread-safe: metrics are emitted from the agent worker thread but may be read from the EDT for display.
- */
 class AgentMetrics {
 
     data class TurnMetrics(
         val turnIndex: Int,
-        /** Wall-clock time of the LLM streaming call (ms). */
         val llmCallMs: Long,
-        /** Wall-clock time of all tool execution combined (ms). */
         val toolExecutionMs: Long,
-        /** Wall-clock time of context compression (ms). */
         val compressionMs: Long,
-        /** Total turn wall-clock time (ms). */
         val turnTotalMs: Long,
-        /** Message count BEFORE compression. */
         val messagesBefore: Int,
-        /** Message count AFTER compression (same as before if no compression happened). */
         val messagesAfter: Int,
-        /** Number of tool calls in this turn. */
         val toolCallCount: Int,
-        /** Number of parallel vs sequential tool calls. */
         val parallelToolCalls: Int,
         val sequentialToolCalls: Int,
-        /** Approximate context size in chars sent to LLM. */
         val contextChars: Int,
-        /** Input tokens reported by the LLM for this turn. */
         val inputTokens: Int,
-        /** Output tokens reported by the LLM for this turn. */
         val outputTokens: Int,
-        /** Whether context compression was triggered. */
         val compressed: Boolean,
-        /** Whether summarization (LLM-based) was used during compression. */
         val summarized: Boolean,
         val hitIterationLimit: Boolean = false,
     )

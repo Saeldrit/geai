@@ -38,7 +38,6 @@ object Pricing {
         return rates
     }
 
-    /** Exact match first, then a lenient prefix match (handles dated model ids). */
     fun rateFor(rates: Map<String, ModelRate>, model: String): ModelRate? =
         rates[model] ?: rates.entries.firstOrNull { model.startsWith(it.key) || it.key.startsWith(model) }?.value
 

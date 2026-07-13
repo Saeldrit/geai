@@ -9,14 +9,9 @@ import com.google.gson.JsonParser
 import com.google.gson.stream.JsonReader
 import java.io.StringReader
 
-/** Thin Gson wrapper. Gson ships inside the IDE, so no library is bundled by the plugin. */
 internal object JsonSupport {
     val gson: Gson = GsonBuilder().disableHtmlEscaping().create()
 
-    // Parse leniently. The plugin compiles against Gson 2.10.1 but runs against whatever Gson the IDE
-    // bundles; 2.11+ made JsonParser STRICT by default and throws MalformedJsonException on input the
-    // old lenient parser accepted (e.g. a stray SSE chunk). setLenient(true) exists in both versions, so
-    // reading through a lenient JsonReader stays robust regardless of the IDE's Gson.
     fun parseElement(raw: String): JsonElement =
         JsonParser.parseReader(JsonReader(StringReader(raw)).apply { isLenient = true })
 

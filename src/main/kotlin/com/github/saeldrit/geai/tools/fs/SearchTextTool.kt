@@ -22,7 +22,6 @@ import com.intellij.usages.FindUsagesProcessPresentation
 import com.intellij.usages.UsageViewPresentation
 import com.intellij.util.Processor
 
-/** Bounded full-text search across project content (substring or regex). */
 object SearchTextTool : AgentTool {
     override val name = "search_text"
     override val description =
@@ -41,15 +40,12 @@ object SearchTextTool : AgentTool {
     private const val MAX_FILES = 20_000
     private const val MAX_LINE = 240
 
-    /** Longest run of word chars; the trigram/word index needs >=3 chars to narrow soundly. */
     private val INDEXABLE_WORD = Regex("""\w{3,}""")
 
     override fun execute(args: ToolArgs, context: ToolContext): ToolResult {
         val query = args.string("query")
         val isRegex = args.boolean("regex", false)
         val glob = args.stringOrNull("file_glob")
-        // Default kept low: a 100-row table is ~24KB and lives in the transcript forever. If the
-        // model needs more, it can ask explicitly — but usually it should narrow file_glob/regex first.
         val maxResults = args.int("max_results", 30).coerceIn(1, 1000)
 
         val regex = if (isRegex) {
@@ -59,9 +55,6 @@ object SearchTextTool : AgentTool {
         }
         val nameRegex = glob?.let { Globs.toRegex(it) }
 
-        // Regex -> IntelliJ's native Find-in-Path engine (trigram-narrowed candidate files + a correct
-        // regex matcher), so a project-wide regex no longer reads every file. Best-effort: any failure
-        // (or a not-yet-indexed project) falls through to the bounded scan below — no regression.
         if (isRegex && !DumbService.isDumb(context.project)) {
             val ide = runCatching { regexViaIde(query, glob, maxResults, context) }
                 .onFailure { if (it is ProcessCanceledException) throw it }
@@ -79,10 +72,6 @@ object SearchTextTool : AgentTool {
             }
         }
 
-        // Index-backed narrowing: for a plain substring with an indexable (>=3 char) word, ask the IDE's
-        // word/trigram index which files could contain that word — milliseconds, instead of reading EVERY
-        // file. The substring necessarily contains the word, so the candidate set is a sound superset.
-        // Word-less queries, dumb mode, and a regex that fell back above use the bounded full scan.
         val anchorWord = if (isRegex) null else INDEXABLE_WORD.findAll(query).maxByOrNull { it.value.length }?.value
 
         return ReadAction.compute<ToolResult, RuntimeException> {
@@ -116,7 +105,7 @@ object SearchTextTool : AgentTool {
                 PsiSearchHelper.getInstance(context.project).processCandidateFilesForText(
                     GlobalSearchScope.projectScope(context.project),
                     UsageSearchContext.ANY,
-                    false, // case-insensitive candidate match; the line scan re-confirms
+                    false,
                     anchorWord!!,
                 ) { vf -> candidates.add(vf); true }
                 for (file in candidates) if (!scan(file)) break
@@ -136,12 +125,6 @@ object SearchTextTool : AgentTool {
         }
     }
 
-    /**
-     * Project-wide regex via IntelliJ's Find-in-Path engine: it narrows candidate files through the
-     * trigram index and applies the regex natively, instead of this tool reading every file. Returns the
-     * matched "path:line: snippet" rows. Best-effort — the caller falls back to a scan if this throws
-     * (e.g. a platform/test fixture without the find subsystem).
-     */
     private fun regexViaIde(query: String, glob: String?, maxResults: Int, context: ToolContext): List<String> {
         val model = FindModel().apply {
             stringToFind = query

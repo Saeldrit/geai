@@ -32,9 +32,6 @@ object ContextBundler {
     )
 
     fun build(project: Project, query: String, seedIds: List<String>, maxNodes: Int, hops: Int, charBudget: Int = CHAR_BUDGET): Bundle {
-        // Seeds + a small neighbourhood graph built LIVE from PSI (no materialized snapshot, no full
-        // walk, always fresh). The downstream expand/rank/resolve/pack is unchanged, so the bundle's
-        // shape and quality contract are preserved.
         val seeds = PsiStructure.bundleSeeds(project, query, seedIds, SEED_FALLBACK)
         if (seeds.isEmpty()) {
             return Bundle("No seeds matched '$query'. Try graph_query / find_symbol or pass explicit seed_ids.", emptyList(), 0, 0, 0)
@@ -53,7 +50,6 @@ object ContextBundler {
             .map { it.to }
             .toSet()
 
-        // Build atoms in priority order: protected rules → resolved contracts/symbols → nav nodes.
         val ruleAtoms = ruleAtoms(project, governingSpecIds)
         var resolvedCount = 0
         val anchored = ranked.filter { it.node.anchor != null }.take(MAX_RESOLVE)
@@ -72,7 +68,6 @@ object ContextBundler {
             } catch (e: ProcessCanceledException) {
                 throw e
             } catch (e: Exception) {
-                // One bad anchor must not fail the whole bundle — degrade just this atom.
                 Atom(candidate.node.id, "sym", mapOf("id" to candidate.node.id, "anchor" to anchor), "[unresolved: ${e.message}]")
             }
         }
@@ -86,7 +81,6 @@ object ContextBundler {
             )
         }
 
-        // Whole-or-absent packing: protected rules always in; others added while they fit entirely.
         val ordered = ruleAtoms + resolvedAtoms + navAtoms
         var used = 0
         val decided = ordered.map { atom ->
@@ -124,11 +118,6 @@ object ContextBundler {
         }
     }
 
-    /**
-     * BFS from seeds up to [hops], recording the minimum hop distance per reached node. Walks the
-     * snapshot's prebuilt endpoint adjacency (each edge filed under both endpoints) instead of
-     * rebuilding the full adjacency map on every turn.
-     */
     private fun expand(adjacency: Map<String, List<GraphEdge>>, seedSet: Set<String>, hops: Int): Map<String, Int> {
         val hopOf = LinkedHashMap<String, Int>()
         seedSet.forEach { hopOf[it] = 0 }

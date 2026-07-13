@@ -9,7 +9,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 
-/** Result of a save operation, including any conflicts detected. */
 data class SaveResult(
     val skill: Skill?,
     val conflicts: List<Skill> = emptyList(),
@@ -19,12 +18,6 @@ data class SaveResult(
     val hasConflicts: Boolean get() = conflicts.isNotEmpty()
 }
 
-/**
- * Persists [Skill] entries as individual JSON files under `<project>/.geai/skills/`.
- *
- * Thread-safe — all read/write operations synchronize on [lock]. The store is project-scoped;
- * each [Project] gets its own directory.
- */
 class SkillStore private constructor(private val project: Project) {
 
     companion object {
@@ -40,7 +33,6 @@ class SkillStore private constructor(private val project: Project) {
 
     private val lock = Any()
 
-    /** Resolve the skills directory, creating it if it doesn't exist. */
     private fun skillsDir(): Path {
         val base = project.basePath
         val dir = if (base != null) {
@@ -52,7 +44,6 @@ class SkillStore private constructor(private val project: Project) {
         return dir
     }
 
-    /** Load all skills from disk, sorted by creation time ascending. */
     fun loadAll(): List<Skill> = synchronized(lock) {
         val dir = skillsDir()
         if (!Files.isDirectory(dir)) return emptyList()
@@ -72,7 +63,6 @@ class SkillStore private constructor(private val project: Project) {
         }
     }
 
-    /** Save (create or overwrite) a skill. Returns SaveResult with conflict info. */
     fun save(description: String, source: String = "user"): SaveResult = synchronized(lock) {
         val trimmed = description.trim()
         if (trimmed.isBlank()) {
@@ -80,13 +70,11 @@ class SkillStore private constructor(private val project: Project) {
             return SaveResult(null)
         }
         val id = slugify(trimmed)
-        // Reject duplicate: check if existing skills already have the same ID
         val existing = loadAll()
         if (existing.size >= MAX_SKILLS && existing.none { it.id == id }) {
             thisLogger().warn("SkillStore: max skills ($MAX_SKILLS) reached, rejecting new skill '$id'")
             return SaveResult(null)
         }
-        // Detect conflicts with existing skills
         val (conflicts, domain) = detectConflicts(trimmed, existing)
         if (conflicts.isNotEmpty()) {
             thisLogger().info("SkillStore: new skill '$id' conflicts with: ${conflicts.joinToString { it.id }} (domain: $domain)")
@@ -94,7 +82,6 @@ class SkillStore private constructor(private val project: Project) {
         val duplicate = existing.find { it.id == id }
         if (duplicate != null) {
             thisLogger().debug("SkillStore: skill '$id' already exists, updating description")
-            // Update existing skill rather than creating a duplicate
             val updated = duplicate.copy(description = trimmed, source = source)
             val path = skillsDir().resolve("$id.json")
             runCatching {
@@ -119,7 +106,6 @@ class SkillStore private constructor(private val project: Project) {
         SaveResult(skill, conflicts, domain)
     }
 
-    /** Toggle the [enabled] flag of a skill by [id]. Returns the updated skill or null. */
     fun toggle(id: String): Skill? = synchronized(lock) {
         val existing = loadAll().find { it.id == id } ?: return null
         val updated = existing.copy(enabled = !existing.enabled)
@@ -132,7 +118,6 @@ class SkillStore private constructor(private val project: Project) {
         updated
     }
 
-    /** Update a skill's description by [id]. Returns the updated skill or null. */
     fun update(id: String, newDescription: String): Skill? = synchronized(lock) {
         val trimmed = newDescription.trim()
         if (trimmed.isBlank()) return null
@@ -147,7 +132,6 @@ class SkillStore private constructor(private val project: Project) {
         updated
     }
 
-    /** Delete a skill by [id]. Returns `true` if a file was removed. */
     fun delete(id: String): Boolean = synchronized(lock) {
         val path = skillsDir().resolve("$id.json")
         runCatching { Files.deleteIfExists(path) }.getOrElse {
@@ -156,7 +140,6 @@ class SkillStore private constructor(private val project: Project) {
         }
     }
 
-    /** Known conflicting preference pairs. Each pair is (pattern_a, pattern_b, domain). */
     private val CONFLICT_PAIRS = listOf(
         Triple(Regex("tab", RegexOption.IGNORE_CASE), Regex("space", RegexOption.IGNORE_CASE), "indentation"),
         Triple(Regex("russian|русск", RegexOption.IGNORE_CASE), Regex("english|англ", RegexOption.IGNORE_CASE), "language"),
@@ -167,7 +150,6 @@ class SkillStore private constructor(private val project: Project) {
         Triple(Regex("exception|исключен", RegexOption.IGNORE_CASE), Regex("result.?(?:type|<)", RegexOption.IGNORE_CASE), "error handling"),
     )
 
-    /** Detect skills that conflict with the new description. Returns Pair of conflicting skills and the domain. */
     private fun detectConflicts(newDescription: String, existing: List<Skill>): Pair<List<Skill>, String?> {
         val newLower = newDescription.lowercase()
         val conflicting = mutableListOf<Skill>()
@@ -185,11 +167,6 @@ class SkillStore private constructor(private val project: Project) {
         return conflicting to detectedDomain
     }
 
-    /**
-     * Render all saved skills into a `<user_preferences>` block for system-prompt injection.
-     * Returns an empty string when there are no skills.
-     * Skills are grouped by category for better readability.
-     */
     fun renderForPrompt(): String {
         val skills = loadAll().filter { it.enabled }
         if (skills.isEmpty()) return ""
@@ -212,7 +189,6 @@ class SkillStore private constructor(private val project: Project) {
         STYLE, LANGUAGE, TESTING, ARCHITECTURE, OTHER
     }
 
-    /** Categorize a skill description for grouped rendering. */
     private fun categorize(description: String): SkillCategory {
         val lower = description.lowercase()
         return when {
@@ -224,11 +200,9 @@ class SkillStore private constructor(private val project: Project) {
         }
     }
 
-    /** Derive a kebab-case slug from the first five words of the description. Handles non-ASCII by transliteration. */
     private fun slugify(description: String): String {
         val words = description.trim().split(Regex("\\s+")).take(5)
         val raw = words.joinToString("-") { it.lowercase() }
-        // Transliterate Cyrillic to Latin, keep alphanumeric and hyphens
         val transliterated = StringBuilder()
         for (c in raw) {
             when {
@@ -244,7 +218,6 @@ class SkillStore private constructor(private val project: Project) {
             .ifBlank { "skill-${System.currentTimeMillis() % 10000}" }
     }
 
-    /** Basic Cyrillic to Latin transliteration for skill IDs. */
     private val CYRILLIC_MAP: Map<Char, String> = buildMap {
         put('а', "a"); put('б', "b"); put('в', "v"); put('г', "g"); put('д', "d"); put('е', "e"); put('ё', "e")
         put('ж', "zh"); put('з', "z"); put('и', "i"); put('й', "y"); put('к', "k"); put('л', "l"); put('м', "m")

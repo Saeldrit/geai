@@ -7,7 +7,6 @@ import com.github.saeldrit.geai.tools.ToolArgs
 import com.github.saeldrit.geai.tools.ToolContext
 import com.github.saeldrit.geai.tools.ToolResult
 
-/** Records or updates a durable fact so future turns skip re-discovery. Updates use CAS. */
 object KbRecordTool : AgentTool {
     override val name = "kb_record"
     override val description =

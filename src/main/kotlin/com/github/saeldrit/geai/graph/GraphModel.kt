@@ -12,16 +12,12 @@ enum class NodeKind {
 }
 
 enum class EdgeKind {
-    /** structural nesting: file -> class -> method, spec -> item */
     CONTAINS,
 
-    /** class -> its superclass / implemented interface */
     IMPLEMENTS,
 
-    /** spec reference item -> the symbol/contract anchor it points at */
     REFS,
 
-    /** code node -> the spec that governs it (the inverse navigation of REFS) */
     GOVERNED_BY,
 }
 

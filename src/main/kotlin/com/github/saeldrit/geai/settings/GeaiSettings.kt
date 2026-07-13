@@ -7,10 +7,6 @@ import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
 import com.intellij.openapi.components.service
 
-/**
- * Application-level persisted configuration for geai. API keys are intentionally NOT
- * stored here — they live in the OS credential store via [GeaiSecrets].
- */
 @Service(Service.Level.APP)
 @State(
     name = "com.github.saeldrit.geai.settings.GeaiSettings",
@@ -26,23 +22,31 @@ class GeaiSettingsState : BaseState() {
     var provider by enum(LlmProvider.ANTHROPIC)
     var model by string()
     var baseUrl by string()
-    // Output cap per reply. Internal default — not surfaced in the UI; tunable via geai.xml if needed.
-    var maxTokens by property(65536)
-
-    /** Model context window (tokens) used to size transcript compaction. Default ~200k (Claude). */
-    var maxContextTokens by property(200_000)
+    var maxTokens by property(8_192)
 
     /**
-     * Active working window the transcript is compacted to (see [transcriptWindow]) — applies to ALL
-     * providers. The loop resends the whole transcript every iteration, so it is kept near this budget
-     * rather than the full [maxContextTokens] window, and deliberately BELOW the model ceiling so
-     * compaction runs during a normal session, not only at the limit. Raise for more retained context,
-     * lower to spend less.
-     *
-     * Increased from 48K to 96K: the agent needs a larger working window to avoid re-read loops
-     * where compression loses file contents and the agent re-reads them, causing context bloat.
+     * Model context window in tokens — the real limit. Compaction is sized against this. Default
+     * 128k is safe across Claude/GPT/DeepSeek/Qwen/GLM-class models; raise it for 200k+ models or
+     * lower it for small local models via geai.xml. A provider "prompt too long" error additionally
+     * triggers an automatic force-compaction, so a too-high value degrades gracefully.
      */
-    var maxTranscriptTokens by property(96_000)
+    var maxContextTokens by property(128_000)
+
+    /**
+     * Optional soft cap on transcript size (tokens). **0 = use the full [maxContextTokens] model
+     * window** (the recommended default). Set a positive value only if you deliberately want earlier
+     * compaction (e.g. to save cost on a huge-window model). Never exceeds [maxContextTokens].
+     *
+     * Previously defaulted to 96k, which combined with maxTokens-as-reserve collapsed the working
+     * budget to ~15k tokens and caused continuous re-read loops.
+     */
+    var maxTranscriptTokens by property(0)
+
+    /**
+     * Tokens reserved for the model's *next reply* when sizing compaction. Independent of [maxTokens]
+     * so a large output ceiling does not starve the transcript. Internal — not in the UI.
+     */
+    var outputReserveTokens by property(16_384)
 
     /** Master switch for the GRACE toolset + doctrine (anchors/specs/graph/bundle/routing). Off = lean baseline. */
     var graceEnabled by property(true)
@@ -70,6 +74,13 @@ class GeaiSettingsState : BaseState() {
      */
     var modelPrices by string()
 
+    /**
+     * Start executing read-only tools the moment their JSON finishes streaming, overlapping tool
+     * I/O with the rest of the model's output (saves up to seconds per iteration on multi-tool
+     * batches). Internal kill-switch — disable via geai.xml if a provider misbehaves.
+     */
+    var streamToolExecution by property(true)
+
     /** Read-only tools (read/list/search/navigate) may run without per-call confirmation. */
     var autoApproveReadTools by property(true)
 
@@ -82,7 +93,14 @@ class GeaiSettingsState : BaseState() {
 
     /** Absolute path to geai's own plugin source tree, enabling the self-modification tools. */
     var geaiSourcePath by string()
+
+    var hubUrl by string()
+
+    var hubAutoConnect by property(false)
 }
+
+fun GeaiSettingsState.effectiveHubUrl(): String =
+    hubUrl?.takeIf { it.isNotBlank() } ?: "ws://localhost:9876/ws"
 
 fun GeaiSettingsState.effectiveModel(): String =
     model?.takeIf { it.isNotBlank() } ?: provider.defaultModel
@@ -91,18 +109,28 @@ fun GeaiSettingsState.effectiveBaseUrl(): String =
     baseUrl?.takeIf { it.isNotBlank() }?.trimEnd('/') ?: provider.defaultBaseUrl
 
 /**
- * Token budget the transcript is compacted to — the active working window, applied for ALL providers.
- * The growing transcript is re-sent as fresh input on every iteration, so it is compacted to
- * [GeaiSettingsState.maxTranscriptTokens] (never above the model's actual [GeaiSettingsState.maxContextTokens]
- * window). Prompt caching only cheapens the STABLE prefix (system + tools) — it is NOT attached to the
- * transcript and gives no discount here, so there is no provider special-case.
+ * Token budget the transcript is compacted against — the model's real context window, optionally
+ * soft-capped by [GeaiSettingsState.maxTranscriptTokens] when that is set > 0.
+ *
+ * Default: full [GeaiSettingsState.maxContextTokens]. Prompt caching only cheapens the STABLE
+ * prefix (system + tools), not the growing transcript, so there is no provider special-case.
  */
-fun GeaiSettingsState.transcriptWindow(): Int =
-    minOf(maxContextTokens, maxTranscriptTokens)
+fun GeaiSettingsState.transcriptWindow(): Int {
+    val modelWindow = maxContextTokens.coerceAtLeast(4_096)
+    val softCap = maxTranscriptTokens
+    return if (softCap <= 0) modelWindow else minOf(modelWindow, softCap)
+}
+
+/**
+ * How many tokens to leave free for the next assistant reply when compacting. Must cover the
+ * request's REAL max_tokens: providers validate input + max_tokens ≤ window, so a reserve smaller
+ * than maxTokens produces "prompt too long" rejections near the top of the window.
+ */
+fun GeaiSettingsState.effectiveOutputReserve(): Int =
+    maxOf(outputReserveTokens.coerceAtLeast(4_096), maxTokens.coerceAtLeast(1_024))
 
 /** Model the agent loop runs on: the cheap navigator when tiered, otherwise the main model. */
 fun GeaiSettingsState.loopModel(): String =
     if (tieredRoutingEnabled) navigatorModel?.takeIf { it.isNotBlank() } ?: effectiveModel() else effectiveModel()
 
-/** Strong author-tier model for code authoring (the configured main model). */
 fun GeaiSettingsState.authorModel(): String = effectiveModel()

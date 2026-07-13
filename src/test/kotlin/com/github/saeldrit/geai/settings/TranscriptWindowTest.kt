@@ -3,27 +3,25 @@ package com.github.saeldrit.geai.settings
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
-/**
- * The transcript compaction budget is the active working window, applied UNIFORMLY to all providers:
- * the growing transcript is re-sent every iteration, so it is capped to maxTranscriptTokens (never
- * above the model's maxContextTokens window). Prompt caching only cheapens the stable prefix
- * (system + tools), not the transcript — so there is no provider special-case.
- */
 class TranscriptWindowTest {
 
-    private fun state(p: LlmProvider, window: Int, cap: Int) = GeaiSettingsState().apply {
-        provider = p
-        maxContextTokens = window
-        maxTranscriptTokens = cap
+    private fun state(p: LlmProvider, window: Int, cap: Int, maxOut: Int = 8_192, reserve: Int = 16_384) =
+        GeaiSettingsState().apply {
+            provider = p
+            maxContextTokens = window
+            maxTranscriptTokens = cap
+            maxTokens = maxOut
+            outputReserveTokens = reserve
+        }
+
+    @Test
+    fun `default soft cap of 0 uses the full model window`() {
+        assertEquals(128_000, state(LlmProvider.ANTHROPIC, window = 128_000, cap = 0).transcriptWindow())
     }
 
     @Test
-    fun `anthropic is capped to the active window like every provider`() {
+    fun `positive soft cap shrinks the working window`() {
         assertEquals(32_000, state(LlmProvider.ANTHROPIC, window = 200_000, cap = 32_000).transcriptWindow())
-    }
-
-    @Test
-    fun `providers cap the transcript to the active window`() {
         assertEquals(32_000, state(LlmProvider.OPENROUTER, window = 200_000, cap = 32_000).transcriptWindow())
         assertEquals(32_000, state(LlmProvider.OPENAI_COMPATIBLE, window = 200_000, cap = 32_000).transcriptWindow())
     }
@@ -35,5 +33,21 @@ class TranscriptWindowTest {
             16_000,
             state(LlmProvider.OPENAI_COMPATIBLE, window = 16_000, cap = 32_000).transcriptWindow(),
         )
+    }
+
+    @Test
+    fun `output reserve covers a huge maxTokens ceiling`() {
+        val s = state(LlmProvider.ANTHROPIC, window = 200_000, cap = 0, maxOut = 65_536, reserve = 16_384)
+        assertEquals(
+            "reserve must grow with maxTokens or the provider rejects near-full prompts",
+            65_536,
+            s.effectiveOutputReserve(),
+        )
+    }
+
+    @Test
+    fun `small maxTokens keeps the configured reserve floor`() {
+        val s = state(LlmProvider.ANTHROPIC, window = 200_000, cap = 0, maxOut = 4_096, reserve = 16_384)
+        assertEquals(16_384, s.effectiveOutputReserve())
     }
 }

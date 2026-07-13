@@ -14,11 +14,6 @@ import java.nio.file.Paths
 import java.nio.file.StandardCopyOption
 import kotlin.streams.toList
 
-/**
- * Persists sessions as JSON under `<project>/.geai/sessions/` so an investigation survives
- * disconnects and IDE restarts. Falls back to the IDE system directory when there is no project
- * base path. All access is best-effort: persistence failures are logged, never fatal.
- */
 @Service(Service.Level.PROJECT)
 class GeaiSessionStore(private val project: Project) {
 
@@ -39,10 +34,21 @@ class GeaiSessionStore(private val project: Project) {
 
     private val saveLock = Any()
 
+    private val pendingAsync = java.util.concurrent.atomic.AtomicReference<AgentSession?>(null)
+    private val saveExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "geai-session-save").apply { isDaemon = true }
+    }
+
+    fun saveAsync(session: AgentSession) {
+        if (pendingAsync.getAndSet(session) == null) {
+            saveExecutor.execute {
+                val snapshot = pendingAsync.getAndSet(null) ?: return@execute
+                save(snapshot)
+            }
+        }
+    }
+
     fun save(session: AgentSession) {
-        // Saves can fire concurrently from the parallel tool pool (ToolFinished), so serialize them and
-        // write atomically (temp file + move) — a reader never sees a half-written file and two writers
-        // can't interleave into corruption.
         synchronized(saveLock) {
             runCatching {
                 val json = JsonSupport.gson.toJson(SessionCodec.toDto(session))
@@ -52,7 +58,7 @@ class GeaiSessionStore(private val project: Project) {
                     Files.writeString(tmp, json, StandardCharsets.UTF_8)
                     Files.move(tmp, dir.resolve("${session.id}.json"), StandardCopyOption.REPLACE_EXISTING)
                 } catch (e: Throwable) {
-                    Files.deleteIfExists(tmp) // don't leak the temp file on a write/move failure
+                    Files.deleteIfExists(tmp)
                     throw e
                 }
             }.onFailure { thisLogger().warn("Geai: failed to save session ${session.id}", it) }

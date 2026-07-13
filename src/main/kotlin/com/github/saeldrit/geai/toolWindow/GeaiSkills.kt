@@ -1,6 +1,5 @@
 package com.github.saeldrit.geai.toolWindow
 
-/** A one-click preset shown on the welcome screen. Clicking fills the composer with [prompt]. */
 data class GeaiSkill(
     val id: String,
     val icon: String,
@@ -9,7 +8,6 @@ data class GeaiSkill(
     val prompt: String,
 )
 
-/** Curated presets that map to geai's real capabilities. */
 object GeaiSkills {
 
     fun all(): List<GeaiSkill> = listOf(

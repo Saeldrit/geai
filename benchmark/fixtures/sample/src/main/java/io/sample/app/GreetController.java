@@ -1,6 +1,5 @@
 package io.sample.app;
 
-/** Minimal entry point that exposes the greeting use case. */
 public class GreetController {
 
     private final GreetService service = new GreetService();

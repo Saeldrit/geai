@@ -8,11 +8,6 @@ import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 
-/**
- * Shared entry for launching the A/B benchmark from the UI (tool-window button) or the Tools-menu
- * action: prompt for a task, run baseline vs GRACE in the background on the current project, write
- * the Markdown report, and show where it landed. Must be called on the EDT (it opens dialogs).
- */
 object BenchmarkLauncher {
 
     private const val DEFAULT_TASK =

@@ -6,7 +6,6 @@ import com.github.saeldrit.geai.tools.ToolContext
 import com.github.saeldrit.geai.tools.ToolResult
 import com.intellij.openapi.progress.ProcessCanceledException
 
-/** Blocks (cooperatively) until a debug session pauses at a breakpoint or the timeout elapses. */
 object AwaitPauseTool : AgentTool {
     override val name = "await_pause"
     override val idempotentPoll = true
@@ -21,7 +20,6 @@ object AwaitPauseTool : AgentTool {
         }}
     """.trimIndent()
 
-    /** Grace for a session to appear after start_debug before we treat "no session" as "nothing to wait for". */
     private const val SESSION_GRACE_MS = 4_000L
 
     override fun execute(args: ToolArgs, context: ToolContext): ToolResult {
@@ -33,10 +31,9 @@ object AwaitPauseTool : AgentTool {
         while (System.currentTimeMillis() < deadline) {
             if (context.indicator.isCanceled) throw ProcessCanceledException()
             val (pausedAt, active) = DebuggerSupport.pauseSnapshot(context.project)
-            if (pausedAt != null) return ToolResult.ok("Paused — $pausedAt")
-            // No pause. If a session is live, keep waiting (it may hit a breakpoint). But if there is NO
-            // live session — it ENDED (program finished / ran past all breakpoints) or never started —
-            // don't block out the whole timeout: return now. (A short grace covers start_debug's launch.)
+            if (pausedAt != null) {
+                return ToolResult.ok("Paused — $pausedAt${DebuggerSupport.localsSnapshot(context.project)}")
+            }
             if (active) {
                 sawSession = true
             } else if (sawSession || System.currentTimeMillis() >= graceDeadline) {

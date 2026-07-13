@@ -7,11 +7,6 @@ import com.github.saeldrit.geai.llm.TokenUsage
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.progress.ProgressIndicator
 
-/**
- * Builds a [ContextCompressor.Summarizer] backed by one cheap, tool-less LLM call — used by the manual
- * /compact action to fold the old transcript into a dense recap. (The agent loop has its own inline
- * equivalent; this keeps the manual path independent and reusable.)
- */
 object TranscriptSummary {
 
     private const val MAX_TOKENS = 2000

@@ -9,7 +9,6 @@ import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import java.util.concurrent.atomic.AtomicReference
 
-/** Exact-substring replacement in a file (undoable). Mirrors the discipline of the host IDE's edit. */
 object EditFileTool : AgentTool {
     override val name = "edit_file"
     override val mutating = true
@@ -50,9 +49,6 @@ object EditFileTool : AgentTool {
     ): ToolResult {
         if (oldString.isEmpty()) return ToolResult.error("'old_string' must be non-empty")
         val file = FsPaths.resolve(context.project, path) ?: return ToolResult.error("File not found: $path")
-        // Mirror write_file: never edit a file outside the project tree, even under auto-approve.
-        // FsPaths.resolve tries the raw absolute path first, so without this an absolute path could
-        // reach any file on disk.
         if (!FsPaths.isInsideProject(context.project, file)) {
             return ToolResult.error("Refusing to edit a file outside the project: $path")
         }
@@ -71,7 +67,8 @@ object EditFileTool : AgentTool {
                 document.setText(updated)
                 FileDocumentManager.getInstance().saveDocument(document)
                 val changed = if (replaceAll) occurrences else 1
-                ToolResult.ok("Edited ${FsPaths.relativize(context.project, file)} ($changed replacement(s))")
+                val syntax = PostEditCheck.syntaxWarning(context.project, file, document)
+                ToolResult.ok("Edited ${FsPaths.relativize(context.project, file)} ($changed replacement(s))$syntax")
             }
         }
     }
@@ -79,7 +76,7 @@ object EditFileTool : AgentTool {
     private fun countOccurrences(haystack: String, needle: String): Int {
         var count = 0
         var index = haystack.indexOf(needle)
-        while (index >= 0) {
+        while (index != -1) {
             count++
             index = haystack.indexOf(needle, index + needle.length)
         }

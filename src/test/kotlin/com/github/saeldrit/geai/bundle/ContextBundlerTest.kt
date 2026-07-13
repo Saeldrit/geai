@@ -4,11 +4,6 @@ import com.github.saeldrit.geai.spec.SpecItemKind
 import com.github.saeldrit.geai.spec.SpecStore
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 
-/**
- * The context bundle is now sourced from live PSI (seeds + neighbourhood) instead of a materialized
- * graph. These lock in the quality contract — a seed resolves to live content and its governing rule
- * is included — and that it works with NO graph build (cold project).
- */
 class ContextBundlerTest : BasePlatformTestCase() {
 
     fun testBundleResolvesSeedLiveAndIncludesGoverningRule() {
@@ -33,7 +28,6 @@ class ContextBundlerTest : BasePlatformTestCase() {
             "com/app/Widget.java",
             "package com.app;\npublic class Widget { public void render() {} }",
         )
-        // No graph_reindex anywhere — PSI is the source.
         val bundle = ContextBundler.build(project, "Widget", emptyList(), maxNodes = 24, hops = 2)
         assertFalse(bundle.text.contains("Graph is empty"))
         assertTrue("bundle built around the live symbol", bundle.text.contains("Widget"))

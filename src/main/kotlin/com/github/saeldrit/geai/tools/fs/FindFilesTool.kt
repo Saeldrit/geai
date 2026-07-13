@@ -8,7 +8,6 @@ import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.roots.ProjectFileIndex
 
-/** Finds files by name (glob or substring). */
 object FindFilesTool : AgentTool {
     override val name = "find_files"
     override val description =

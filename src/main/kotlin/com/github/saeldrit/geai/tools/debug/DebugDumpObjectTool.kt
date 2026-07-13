@@ -5,12 +5,6 @@ import com.github.saeldrit.geai.tools.ToolArgs
 import com.github.saeldrit.geai.tools.ToolContext
 import com.github.saeldrit.geai.tools.ToolResult
 
-/**
- * Dumps an object's full field tree at a paused breakpoint in ONE call. Use this instead of a series of
- * `debug_evaluate` calls probing one field at a time — it returns the object and its fields several
- * levels deep at once, so the model sees the whole structure (and where the data is wrong/missing)
- * immediately. Lazy/proxy values are materialised; large collections are capped per level.
- */
 object DebugDumpObjectTool : AgentTool {
     override val name = "debug_dump_object"
     override val description =

@@ -11,12 +11,6 @@ import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
 
-/**
- * Resolves `openapi:<doc>#<json-pointer>` against a generated OpenAPI document — the live API
- * contract, never a hand-copied duplicate. `<doc>` is a project-relative path or a short name
- * matched against common locations; the pointer follows RFC 6901 (`~1`=/, `~0`=~). Spring and
- * peers generate this from annotations, so the resolved fragment is always current.
- */
 object OpenApiAnchorResolver : AnchorResolver {
 
     override val scheme = "openapi"
@@ -58,10 +52,7 @@ object OpenApiAnchorResolver : AnchorResolver {
                 ref = "openapi:$locator",
                 kind = "contract",
                 location = "$rel#$pointer",
-                // takeIf isJsonPrimitive: `summary: null` is legal OpenAPI and `asString` on JsonNull (or an
-                // object/array summary) throws UnsupportedOperationException, aborting the whole resolve.
                 signature = node.takeIf { it.isJsonObject }?.asJsonObject?.get("summary")?.takeIf { it.isJsonPrimitive }?.asString,
-                // Display a truncated slice, but fingerprint the FULL contract so drift past the cap is caught.
                 content = full.take(MAX_CONTENT),
                 hashSource = full,
             )

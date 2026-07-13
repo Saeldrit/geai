@@ -12,7 +12,6 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 object Rankers {
 
-    // active() runs on every bundle; log the "not available yet" notice once per IDE session, not per call.
     private val warned = AtomicBoolean(false)
 
     fun active(): Ranker {

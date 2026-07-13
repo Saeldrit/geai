@@ -7,7 +7,6 @@ import com.github.saeldrit.geai.tools.ToolArgs
 import com.github.saeldrit.geai.tools.ToolContext
 import com.github.saeldrit.geai.tools.ToolResult
 
-/** Reads geai's project knowledge index — the cheap first stop before searching/reading files. */
 object KbLookupTool : AgentTool {
     override val name = "kb_lookup"
     override val description =

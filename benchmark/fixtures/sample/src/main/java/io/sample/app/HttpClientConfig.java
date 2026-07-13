@@ -7,10 +7,6 @@ import java.net.http.HttpClient;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
 
-/**
- * Builds the outbound HTTP client used by services. Benchmark fixture — intentionally unsafe so a
- * "find and fix the TLS config" task has a real target.
- */
 public final class HttpClientConfig {
 
     private HttpClientConfig() {
@@ -18,7 +14,6 @@ public final class HttpClientConfig {
 
     public static HttpClient client() {
         try {
-            // BUG: trusts EVERY server certificate (MITM-vulnerable) and sets no connect timeout.
             TrustManager[] trustAll = new TrustManager[]{
                 new X509TrustManager() {
                     public void checkClientTrusted(X509Certificate[] chain, String authType) {

@@ -5,7 +5,6 @@ import com.github.saeldrit.geai.tools.ToolContext
 import com.intellij.openapi.progress.EmptyProgressIndicator
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 
-/** graph_query now finds classes live from IntelliJ's index — no graph build, always fresh. */
 class GraphQueryToolTest : BasePlatformTestCase() {
 
     private fun query(json: String): String =

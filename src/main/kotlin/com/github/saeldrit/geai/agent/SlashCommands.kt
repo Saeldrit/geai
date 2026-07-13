@@ -1,13 +1,5 @@
 package com.github.saeldrit.geai.agent
 
-/**
- * Lightweight slash-command layer. A leading `/<cmd>` in the user's message selects a working MODE:
- * it PRE-LOADS the tool group that mode needs (so the model does not spend a whole round-trip on
- * `load_tools`) and appends a focused directive to the volatile system suffix (placed AFTER the cache
- * breakpoint, so the stable doctrine keeps caching). Unknown or absent commands are a no-op — the
- * message is used verbatim. This is what makes e.g. `/debug` go STRAIGHT to debugging instead of
- * orienting first.
- */
 object SlashCommands {
 
     data class Parsed(val preloadGroups: Set<String>, val directive: String?)
@@ -18,10 +10,13 @@ object SlashCommands {
         val debug = Mode(
             setOf("debug"),
             "MODE: DEBUGGING. Go straight to it — do NOT over-orient. Locate the failing path quickly " +
-                "(find_symbol / find_usages / one narrow search), set the breakpoints along it in ONE step, " +
-                "start_debug, then await_pause with a long timeout and DRIVE the debugger yourself " +
-                "(debug_step over/into/out/resume, debug_variables, debug_evaluate) until you see where the " +
-                "data diverges. Remove the breakpoints you set when done. Be fast: minimal reads, no ceremony.",
+                "(find_symbol / find_usages / one narrow search). Pick the right technique: tracing a " +
+                "VALUE through a flow → set_tracepoint along the path (with the value expression), run " +
+                "the scenario, read trace_log — no stepping. A crash/exception → break_on_exception, " +
+                "trigger it, await_pause at the throw. A specific state → set_breakpoint with a " +
+                "'condition'. Otherwise classic: breakpoints in ONE step, start_debug, await_pause " +
+                "(returns locals), debug_step/debug_evaluate until you SEE the divergence. Remove the " +
+                "breakpoints you set when done. Be fast: minimal reads, no ceremony.",
         )
         put("debug", debug); put("debugger", debug); put("дебаг", debug); put("дебагер", debug)
 
@@ -68,10 +63,8 @@ object SlashCommands {
         put("security", security)
     }
 
-    /** The command words known to this layer — for UI hints / discoverability. */
     fun names(): Set<String> = MODES.keys
 
-    /** Primary commands with one-line descriptions for the UI "/" menu (aliases omitted). */
     fun catalog(): List<Pair<String, String>> = listOf(
         "debug" to "Set breakpoints and drive the debugger to the root cause",
         "run" to "Build, run, test, or git to reproduce and verify",
@@ -83,7 +76,6 @@ object SlashCommands {
         "security" to "Hunt for injection, secrets, broken authz, unsafe deserialization",
     )
 
-    /** Parse a leading `/<cmd>` token. Returns empty groups + null directive when there is no command. */
     fun parse(text: String): Parsed {
         val trimmed = text.trimStart()
         if (!trimmed.startsWith("/")) return Parsed(emptySet(), null)

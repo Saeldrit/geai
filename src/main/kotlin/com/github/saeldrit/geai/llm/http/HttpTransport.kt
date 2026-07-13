@@ -14,11 +14,6 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
-/**
- * Minimal blocking JSON-over-HTTPS transport built on the JDK [HttpClient] (no extra deps).
- * Cancellation is cooperative: the in-flight request is aborted when [ProgressIndicator] is
- * cancelled, surfacing as [ProcessCanceledException] so the agent loop unwinds cleanly.
- */
 internal object HttpTransport {
 
     private val client: HttpClient = HttpClient.newBuilder()
@@ -27,16 +22,11 @@ internal object HttpTransport {
         .build()
 
     private const val MAX_RETRIES = 3
-    private val RETRYABLE_STATUS = setOf(429, 502, 503, 504)
+    private val RETRYABLE_STATUS = setOf(429, 500, 502, 503, 504, 529)
     private const val POLL_MS = 150L
 
-    /** Abort a stream that goes completely silent this long — it is wedged (a live LLM stream never
-     *  pauses minutes between bytes). Bounds a stall to this instead of the 10-min request timeout, and
-     *  keeps cancellation responsive (a blocking readLine can't see the indicator). */
     private const val SSE_IDLE_CAP_MS = 180_000L
 
-    /** A larger budget for TIME-TO-FIRST-byte: a cold/heavy provider (big prompt, model spin-up, queueing)
-     *  can be slow to START but is healthy. Only inter-token gaps use the tighter [SSE_IDLE_CAP_MS]. */
     private const val SSE_CONNECT_CAP_MS = 300_000L
 
     /** Parse an SSE event line. Returns null for comments, heartbeat, or blank lines. */
@@ -69,8 +59,6 @@ internal object HttpTransport {
             val status = response.statusCode()
             if (status in 200..299) return streamBody(status, response, indicator, onEvent)
 
-            // Transient error BEFORE any stream data — safe to retry the connection (no partial output),
-            // mirroring postJson. A 429/503 at connect no longer hard-aborts the turn.
             val errorBody = try { response.body()?.use { it.bufferedReader(Charsets.UTF_8).readText() }.orEmpty() } catch (_: Exception) { "" }
             if (status in RETRYABLE_STATUS && attempt < MAX_RETRIES) {
                 val waitMillis = retryAfterMillis(response) ?: (500L shl attempt)
@@ -82,13 +70,6 @@ internal object HttpTransport {
         }
     }
 
-    /**
-     * Read the 2xx response body as an SSE stream on a daemon thread while the caller polls a queue — so a
-     * blocking readLine can't hide cancellation, and a stalled stream aborts at [SSE_IDLE_CAP_MS]. (The
-     * old loop only checked the indicator BETWEEN lines, so a mid-line wedge ignored Stop until the 10-min
-     * request timeout.) The future is already complete once headers arrive, so we close the reader — not
-     * cancel the future — to unblock a wedged read.
-     */
     private fun streamBody(
         status: Int,
         response: HttpResponse<java.io.InputStream>,
@@ -103,7 +84,7 @@ internal object HttpTransport {
             try {
                 while (true) queue.put(reader.readLine() ?: break)
             } catch (e: Exception) {
-                readerError.set(e) // happens-before the consumer via the queue's put/poll barrier
+                readerError.set(e)
             } finally {
                 queue.put(eof)
             }
@@ -119,7 +100,6 @@ internal object HttpTransport {
                 val item = queue.poll(POLL_MS, TimeUnit.MILLISECONDS)
                 if (item == null) {
                     idleMs += POLL_MS
-                    // Tight inter-token cap once streaming; a larger budget while waiting for the first byte.
                     val cap = if (firstByteSeen) SSE_IDLE_CAP_MS else SSE_CONNECT_CAP_MS
                     if (idleMs >= cap) {
                         throw LlmException("Stream stalled — no data for ${cap / 1000}s; aborted. Try again.")
@@ -130,8 +110,6 @@ internal object HttpTransport {
                 firstByteSeen = true
                 if (item === eof) {
                     val err = readerError.get()
-                    // A benign close (our own cancel/abort) interrupts the read — don't surface it as a
-                    // stream error; only a genuine mid-stream failure should.
                     if (err != null && !indicator.isCanceled && err !is java.io.InterruptedIOException) {
                         throw LlmException("SSE stream error: ${err.message}", cause = err)
                     }
@@ -153,7 +131,7 @@ internal object HttpTransport {
                 }
             }
         } finally {
-            runCatching { reader.close() } // unblocks the daemon reader + releases the connection
+            runCatching { reader.close() }
         }
         if (dataBuffer.isNotEmpty()) {
             onEvent(SseEvent(eventType.ifBlank { "message" }, dataBuffer.toString()))
@@ -213,7 +191,6 @@ internal object HttpTransport {
             val payload = response.body().orEmpty()
             if (status in 200..299) return payload
 
-            // Transient errors are worth retrying with backoff; honour Retry-After when present.
             if (status in RETRYABLE_STATUS && attempt < MAX_RETRIES) {
                 val waitMillis = retryAfterMillis(response) ?: (500L shl attempt)
                 attempt++
@@ -253,7 +230,6 @@ internal object HttpTransport {
             try {
                 return future.get(150, TimeUnit.MILLISECONDS)
             } catch (_: TimeoutException) {
-                // Still in flight — loop and re-check cancellation.
             } catch (_: InterruptedException) {
                 future.cancel(true)
                 Thread.currentThread().interrupt()

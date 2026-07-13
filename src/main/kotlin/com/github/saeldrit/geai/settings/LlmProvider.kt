@@ -14,7 +14,6 @@ enum class LlmProvider(
     val defaultModel: String,
     /** Suggestions for the model dropdown; the field stays editable for custom endpoints. */
     val suggestedModels: List<String>,
-    /** Whether ALL models under this provider natively support image/vision input. */
     val supportsVision: Boolean,
 ) {
     ANTHROPIC(
@@ -32,7 +31,7 @@ enum class LlmProvider(
         displayName = "OpenAI-compatible (DeepSeek / Qwen / local)",
         defaultBaseUrl = "https://api.deepseek.com",
         defaultModel = "deepseek-chat",
-        supportsVision = false, // mixed — gpt-4o yes, deepseek no; conservative default
+        supportsVision = false,
         suggestedModels = listOf(
             "deepseek-chat",
             "deepseek-reasoner",
@@ -47,7 +46,7 @@ enum class LlmProvider(
         displayName = "OpenRouter (one key, many models)",
         defaultBaseUrl = "https://openrouter.ai/api/v1",
         defaultModel = "anthropic/claude-sonnet-4",
-        supportsVision = false, // depends on the selected model
+        supportsVision = false,
         suggestedModels = listOf(
             "anthropic/claude-sonnet-4",
             "anthropic/claude-3.5-sonnet",
@@ -60,34 +59,28 @@ enum class LlmProvider(
     XIAOMI(
         displayName = "Xiaomi MiMo",
         defaultBaseUrl = "https://api.xiaomimimo.com",
-        defaultModel = "MiMo-V2.5-Pro",
+        defaultModel = "mimo-v2.5-pro",
         supportsVision = false,
         suggestedModels = listOf(
-            "MiMo-V2.5-Pro",
-            "MiMo-V2.5",
-            "MiMo-V2-Flash",
-            "MiMo-V2.5-DFlash",
-            "MiMo-V2.5-Pro-FP4-DFlash",
+            "mimo-v2.5-pro",
+            "mimo-v2.5",
+            "mimo-v2-flash",
+            "mimo-v2.5-dflash",
+            "mimo-v2.5-pro-fp4-dflash",
         ),
     );
 
     companion object {
-        /**
-         * Known vision-capable model-id prefixes (case-insensitive).
-         * Checked against the raw model string the user typed, covering both direct API
-         * names (`claude-sonnet-4-6`) and OpenRouter names (`anthropic/claude-sonnet-4`).
-         */
         private val VISION_MODEL_PREFIXES = listOf(
-            "claude-",           // all Anthropic Claude models
+            "claude-",
             "anthropic/claude-",
-            "gpt-4o",            // OpenAI GPT-4o / GPT-4o-mini
+            "gpt-4o",
             "openai/gpt-4o",
-            "google/gemini",     // Google Gemini
-            "mistralai/pixtral", // Mistral Pixtral (vision)
-            "qwen-vl",           // Alibaba Qwen-VL family
+            "google/gemini",
+            "mistralai/pixtral",
+            "qwen-vl",
         )
 
-        /** Whether [modelId] is a known vision-capable model, regardless of provider. */
         fun modelSupportsVision(modelId: String): Boolean {
             val lower = modelId.lowercase()
             return VISION_MODEL_PREFIXES.any { lower.startsWith(it) }

@@ -9,7 +9,6 @@ import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.module.ModuleManager
 import com.intellij.openapi.roots.ProjectRootManager
 
-/** A quick orientation map of the project. The agent should call this first on a fresh task. */
 object ProjectOverviewTool : AgentTool {
     override val name = "project_overview"
     override val description =

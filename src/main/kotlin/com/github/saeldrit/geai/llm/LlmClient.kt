@@ -35,23 +35,27 @@ interface LlmClient {
 
 /** Events emitted during a streaming response. */
 sealed interface StreamEvent {
-    /** A chunk of text from the assistant. */
     data class TextDelta(val text: String) : StreamEvent
 
-    /** A chunk of thinking/reasoning from the assistant. */
     data class ThinkingDelta(val text: String) : StreamEvent
 
     /** The model started a tool_use block (id + name known, input still streaming). */
     data class ToolUseStarted(val id: String, val name: String) : StreamEvent
 
-    /** A chunk of JSON for the current tool_use's input. */
     data class ToolUseInputDelta(val id: String, val partialJson: String) : StreamEvent
+
+    /**
+     * A tool_use block finished streaming — [inputJson] is COMPLETE and executable. Emitted as
+     * soon as the provider closes the block, typically while the rest of the response is still
+     * streaming: the agent loop uses this to start read-only tools early (streaming execution),
+     * overlapping tool I/O with the remainder of the model's output.
+     */
+    data class ToolUseCompleted(val id: String, val name: String, val inputJson: String) : StreamEvent
 
     /** Streaming is finished — the full response is available as the returned ChatResult. */
     data object Done : StreamEvent
 }
 
-/** Raised for transport, auth, rate-limit, or protocol failures from a provider. */
 class LlmException(
     message: String,
     val statusCode: Int? = null,

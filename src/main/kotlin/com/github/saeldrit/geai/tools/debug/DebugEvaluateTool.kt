@@ -5,7 +5,6 @@ import com.github.saeldrit.geai.tools.ToolArgs
 import com.github.saeldrit.geai.tools.ToolContext
 import com.github.saeldrit.geai.tools.ToolResult
 
-/** Evaluates one or more expressions in the currently paused stack frame and returns their values. */
 object DebugEvaluateTool : AgentTool {
     override val name = "debug_evaluate"
     override val description =
@@ -23,7 +22,6 @@ object DebugEvaluateTool : AgentTool {
     """.trimIndent()
 
     override fun execute(args: ToolArgs, context: ToolContext): ToolResult {
-        // Accept the batch form, and tolerate a single "expression" string for backward compatibility.
         val expressions = args.stringList("expressions").ifEmpty { listOfNotNull(args.stringOrNull("expression")) }
         if (expressions.isEmpty()) return ToolResult.error("Provide 'expressions' (array of expressions to evaluate).")
         val timeoutMs = args.int("timeout_seconds", 8).coerceIn(1, 60) * 1000L

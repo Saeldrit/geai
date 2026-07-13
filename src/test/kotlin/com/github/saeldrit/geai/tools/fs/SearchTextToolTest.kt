@@ -5,10 +5,6 @@ import com.github.saeldrit.geai.tools.ToolContext
 import com.intellij.openapi.progress.EmptyProgressIndicator
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 
-/**
- * Exercises [SearchTextTool] against a real (light) project + index, covering the index-backed
- * substring path, the regex full-scan fallback, and the no-match case.
- */
 class SearchTextToolTest : BasePlatformTestCase() {
 
     private fun search(json: String): String =

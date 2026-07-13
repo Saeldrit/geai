@@ -7,23 +7,19 @@ package com.github.saeldrit.geai.llm
  */
 enum class Role { SYSTEM, USER, ASSISTANT, TOOL }
 
-/** A single piece of message content. Immutable by construction. */
 sealed interface ContentBlock {
 
-    /** Plain text, possibly streamed/aggregated. */
     data class Text(val text: String) : ContentBlock
 
     /** An inline image attached by the user. [mediaType] is a MIME type (e.g. "image/png"). */
     data class Image(val base64Data: String, val mediaType: String) : ContentBlock
 
-    /** Model's request to invoke a tool. [inputJson] is the raw JSON object argument. */
     data class ToolUse(
         val id: String,
         val name: String,
         val inputJson: String,
     ) : ContentBlock
 
-    /** Result of a tool invocation, referencing the originating [toolUseId]. */
     data class ToolResult(
         val toolUseId: String,
         val content: String,
@@ -31,12 +27,10 @@ sealed interface ContentBlock {
     ) : ContentBlock
 }
 
-/** An immutable conversation turn. */
 data class ChatMessage(
     val role: Role,
     val content: List<ContentBlock>,
 ) {
-    /** Concatenated text of all [ContentBlock.Text] blocks. */
     val text: String
         get() = content.filterIsInstance<ContentBlock.Text>().joinToString("\n") { it.text }
 

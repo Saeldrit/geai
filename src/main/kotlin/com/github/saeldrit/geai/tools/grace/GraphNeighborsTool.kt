@@ -37,8 +37,6 @@ object GraphNeighborsTool : AgentTool {
         }
         val max = args.int("max_results", 50).coerceIn(1, 300)
 
-        // Resolved LIVE from PSI (code structure) + the spec overlay (governance) — always fresh, and
-        // works before/without a graph build, so a cold project navigates immediately.
         val edges = PsiStructure.neighbors(context.project, nodeId, edgeKind, direction, max)
         if (edges.isEmpty()) {
             return ToolResult.ok(

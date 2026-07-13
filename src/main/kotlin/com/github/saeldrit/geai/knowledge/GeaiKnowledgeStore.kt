@@ -11,11 +11,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 
-/**
- * Project knowledge index persisted as tagged, versioned XML at `<project>/.geai/knowledge.xml`.
- * Reads stay cheap (no file scanning); updates use optimistic concurrency (compare-and-swap on
- * [KnowledgeEntry.version]) so parallel agents do not silently clobber each other.
- */
 @Service(Service.Level.PROJECT)
 class GeaiKnowledgeStore(private val project: Project) {
 
@@ -25,7 +20,6 @@ class GeaiKnowledgeStore(private val project: Project) {
 
     private val lock = Any()
 
-    /** In-memory cache — invalidated on every write so query() always sees the latest state. */
     @Volatile
     private var cache: List<KnowledgeEntry>? = null
 
@@ -36,7 +30,6 @@ class GeaiKnowledgeStore(private val project: Project) {
         return dir.resolve("knowledge.xml")
     }
 
-    /** Loads from cache if warm, otherwise reads from disk. Must be called inside [lock]. */
     private fun load(): MutableList<KnowledgeEntry> {
         cache?.let { return it.toMutableList() }
         return loadFromDisk().also { cache = it.toList() }

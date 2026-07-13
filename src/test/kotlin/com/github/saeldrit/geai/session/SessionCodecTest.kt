@@ -6,7 +6,6 @@ import com.github.saeldrit.geai.llm.ChatMessage
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
-/** Round-trip guarantees for [SessionCodec] — the durable bits must survive persistence. */
 class SessionCodecTest {
 
     @Test

@@ -2,7 +2,9 @@ package com.github.saeldrit.geai.tools
 
 import com.github.saeldrit.geai.llm.ToolSpec
 import com.github.saeldrit.geai.tools.debug.AwaitPauseTool
+import com.github.saeldrit.geai.tools.debug.BreakOnExceptionTool
 import com.github.saeldrit.geai.tools.debug.DebugDumpObjectTool
+import com.github.saeldrit.geai.tools.debug.FailureAutopsyTool
 import com.github.saeldrit.geai.tools.debug.DebugEvaluateTool
 import com.github.saeldrit.geai.tools.debug.DebugStateTool
 import com.github.saeldrit.geai.tools.debug.DebugStepTool
@@ -11,7 +13,9 @@ import com.github.saeldrit.geai.tools.debug.DebugVariablesTool
 import com.github.saeldrit.geai.tools.debug.ListBreakpointsTool
 import com.github.saeldrit.geai.tools.debug.RemoveBreakpointTool
 import com.github.saeldrit.geai.tools.debug.SetBreakpointTool
+import com.github.saeldrit.geai.tools.debug.SetTracepointTool
 import com.github.saeldrit.geai.tools.debug.StartDebugTool
+import com.github.saeldrit.geai.tools.debug.TraceLogTool
 import com.github.saeldrit.geai.tools.fs.EditFileTool
 import com.github.saeldrit.geai.tools.fs.FindFilesTool
 import com.github.saeldrit.geai.tools.fs.ListFilesTool
@@ -39,6 +43,7 @@ import com.github.saeldrit.geai.tools.project.ProjectOverviewTool
 import com.github.saeldrit.geai.tools.selfmod.SelfInfoTool
 import com.github.saeldrit.geai.tools.selfmod.SelfPatchTool
 import com.github.saeldrit.geai.tools.interaction.AskUserTool
+import com.github.saeldrit.geai.tools.system.ReadRunOutputTool
 import com.github.saeldrit.geai.tools.system.RunCommandTool
 import com.github.saeldrit.geai.settings.GeaiSettings
 
@@ -59,7 +64,6 @@ object GeaiToolset {
     const val CONTEXT_STATUS = "context_status"
     const val ESCALATE = "escalate_author"
 
-    /** Always advertised: knowledge axes, interaction, navigation, reading, editing. */
     private val CORE: List<AgentTool> = listOf(
         KbLookupTool,
         KbRecordTool,
@@ -75,12 +79,6 @@ object GeaiToolset {
         EditFileTool,
     )
 
-    /**
-     * GRACE / semantic surface, all resolved LIVE from IntelliJ's index + PSI (no materialized graph):
-     * an on-demand context bundle (context_bundle), live Category-B truth (resolve_ref), graph navigation
-     * (graph_query/graph_neighbors), and PSI semantic search (find_symbol/find_usages/find_implementations/
-     * diagnostics) — the IDE-native alternative to grepping. Advertised alongside CORE when GRACE is on.
-     */
     private val GRACE: List<AgentTool> = listOf(
         ContextBundleTool,
         ResolveRefTool,
@@ -92,14 +90,13 @@ object GeaiToolset {
         DiagnosticsTool,
     )
 
-    /**
-     * Heavier, situational tools advertised ONLY after the model loads the group via `load_tools`.
-     * Their schemas are large and seldom needed on a given turn; shipping them every iteration is
-     * pure cost (paid N times where there is no prompt caching). Insertion order is the catalog order.
-     */
     private val ON_DEMAND: Map<String, List<AgentTool>> = linkedMapOf(
         "debug" to listOf(
             SetBreakpointTool,
+            SetTracepointTool,
+            TraceLogTool,
+            BreakOnExceptionTool,
+            FailureAutopsyTool,
             RemoveBreakpointTool,
             ListBreakpointsTool,
             DebugStateTool,
@@ -110,25 +107,20 @@ object GeaiToolset {
             DebugVariablesTool,
             DebugEvaluateTool,
             DebugDumpObjectTool,
+            ReadRunOutputTool,
         ),
-        "run" to listOf(RunCommandTool),
+        "run" to listOf(RunCommandTool, ReadRunOutputTool),
         "specs" to listOf(SpecListTool, SpecLookupTool, SpecValidateTool, SpecRecordTool),
         "selfmod" to listOf(SelfInfoTool, SelfPatchTool),
     )
 
-    /** One-line purpose per group, shown to the model in the `load_tools` description. */
     private val GROUP_SUMMARY: Map<String, String> = linkedMapOf(
-        "debug" to "set/remove/list breakpoints, start a debug session, await a pause, STEP (over/into/out/resume) the debugger yourself, inspect state & variables, evaluate expressions (batch), dump a whole object tree",
-        "run" to "run_command — run shell/build/test/git commands in the project",
+        "debug" to "set/remove/list breakpoints (with conditions, temporary), set TRACEPOINTS that auto-record an expression on every hit without stopping (trace_log reads the captured flow), break_on_exception to pause at a throw, failure_autopsy for a one-call stack+locals post-mortem of the current pause, start a debug session, await a pause (returns locals), STEP (over/into/out/resume) yourself, inspect variables, evaluate expressions (batch), dump a whole object tree, read_run_output for the app's console",
+        "run" to "run_command — run shell/build/test/git commands in the project; read_run_output — read the console output (stdout/stderr) of Run/Debug configurations launched in the IDE",
         "specs" to "spec_list/spec_lookup (read the Category-A rules that govern code), spec_validate (drift-check specs against live code), spec_record (author/update a rule as an anchor, never a copy)",
         "selfmod" to "self_info, self_patch — inspect and modify geai's own source",
     )
 
-    /**
-     * Read-only navigation/analysis tools handed to a DELEGATED sub-agent. No mutation, no `delegate`
-     * (no recursion), no `load_tools`. The sub-agent explores in its own clean context and returns a
-     * compact finding, so the orchestrator's transcript never fills with raw file contents.
-     */
     private val DELEGATE_TOOLS: List<AgentTool> = listOf(
         KbLookupTool,
         ProjectOverviewTool,
@@ -149,9 +141,11 @@ object GeaiToolset {
     private fun base(graceEnabled: Boolean): List<AgentTool> = if (graceEnabled) GRACE + CORE else CORE
 
     /** Full catalog (every tool) — used by the registry for execution and by the Claude Code engine.
-     *  escalate_author is always present for EXECUTION; it is only ADVERTISED under tiered routing. */
+     *  escalate_author is always present for EXECUTION; it is only ADVERTISED under tiered routing.
+     *  distinctBy: a tool may live in several groups (read_run_output is in both debug and run). */
     fun all(): List<AgentTool> =
-        base(GeaiSettings.getInstance().state.graceEnabled) + ON_DEMAND.values.flatten() + EscalateAuthorTool
+        (base(GeaiSettings.getInstance().state.graceEnabled) + ON_DEMAND.values.flatten() + EscalateAuthorTool)
+            .distinctBy { it.name }
 
     fun registry(): ToolRegistry = ToolRegistry(all())
 
@@ -159,10 +153,11 @@ object GeaiToolset {
      * Tools advertised to the model right now: CORE (+GRACE) plus any on-demand groups already loaded.
      * Under [tieredRouting] (and GRACE enabled) the navigator can hand authoring to the strong tier, so
      * `escalate_author` is advertised; with a single model (author == navigator) it would be dead weight.
+     * distinctBy: loading both debug and run must not advertise shared tools twice.
      */
     fun advertisedTools(graceEnabled: Boolean, activeGroups: Set<String>, tieredRouting: Boolean = false): List<AgentTool> {
         val tools = base(graceEnabled) + activeGroups.flatMap { ON_DEMAND[it] ?: emptyList() }
-        return if (tieredRouting && graceEnabled) tools + EscalateAuthorTool else tools
+        return (if (tieredRouting && graceEnabled) tools + EscalateAuthorTool else tools).distinctBy { it.name }
     }
 
     fun isGroup(name: String): Boolean = ON_DEMAND.containsKey(name)
@@ -172,7 +167,6 @@ object GeaiToolset {
     /** Names of the on-demand groups, in catalog order (e.g. for doctrine text and error messages). */
     fun groupNames(): Set<String> = ON_DEMAND.keys
 
-    /** Read-only toolset for a delegated sub-agent (see [DELEGATE_TOOLS]). */
     fun delegateTools(): List<AgentTool> = DELEGATE_TOOLS
 
     /** The `delegate` meta-tool spec, advertised by the main loop so it can fan work out to sub-agents. */
@@ -211,7 +205,6 @@ object GeaiToolset {
         return ToolSpec(REQUEST_CONTEXT, description, schema)
     }
 
-    /** The `context_status` meta-tool spec: show the agent its current context state. */
     fun contextStatusSpec(): ToolSpec {
         val description = "Show current context state: token usage, note counts, active task, compression stats."
         val schema = """{"type":"object","properties":{}}"""

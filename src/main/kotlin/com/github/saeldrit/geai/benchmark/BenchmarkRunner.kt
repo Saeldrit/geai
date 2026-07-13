@@ -19,15 +19,8 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 
-/**
- * Project-agnostic A/B harness: runs the SAME task list through the real agent loop under several
- * configs (baseline vs GRACE), capturing tokens/cost/tool-usage per run, and renders a Markdown
- * comparison. Works against any open [Project]; the automated test feeds it a fixed sample project.
- * Requires a configured provider + API key (it makes real LLM calls).
- */
 object BenchmarkRunner {
 
-    /** Hard ceiling on agent iterations per benchmark run — a backstop against runaway API cost. */
     private const val BENCH_MAX_ITERATIONS = 12
 
     data class Task(val id: String, val prompt: String)
@@ -45,9 +38,6 @@ object BenchmarkRunner {
         val settings = GeaiSettings.getInstance().state
         val savedGrace = settings.graceEnabled
         val savedAutoEdit = settings.autoApproveEditTools
-        // Run unattended: no modal approval dialogs mid-benchmark. The iteration cap is passed per-run
-        // via LoopProfile.main(BENCH_MAX_ITERATIONS) so a runaway loop can't burn the full budget here
-        // and we never mutate the user's (now internal) iteration setting. Restored in finally.
         settings.autoApproveEditTools = true
         val results = ArrayList<RunResult>()
         try {
@@ -99,7 +89,6 @@ object BenchmarkRunner {
         )
     }
 
-    /** Writes the report under `<project>/.geai/benchmark/run-<stamp>.md` and returns the path. */
     fun writeReport(project: Project, report: BenchmarkReport): Path {
         val base = project.basePath
         val dir = if (base != null) Paths.get(base, ".geai", "benchmark") else Paths.get(PathManager.getSystemPath(), "geai", project.locationHash, "benchmark")
@@ -109,7 +98,6 @@ object BenchmarkRunner {
         return file
     }
 
-    /** Collects per-run metrics from the agent event stream. */
     private class Collector : AgentListener {
         val toolCounts = HashMap<String, Int>()
         var usage: TokenUsage = TokenUsage.ZERO

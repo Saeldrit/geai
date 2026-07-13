@@ -12,7 +12,6 @@ import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
 import java.util.concurrent.atomic.AtomicReference
 
-/** Creates or overwrites a project file (undoable write command). */
 object WriteFileTool : AgentTool {
     override val name = "write_file"
     override val mutating = true
@@ -43,7 +42,9 @@ object WriteFileTool : AgentTool {
                                 "Cannot create '$path': use a project-relative path with an existing or creatable parent.",
                             )
                         VfsUtil.saveText(file, content)
-                        ToolResult.ok("Wrote ${content.length} chars to ${FsPaths.relativize(project, file)}")
+                        val document = com.intellij.openapi.fileEditor.FileDocumentManager.getInstance().getDocument(file)
+                        val syntax = PostEditCheck.syntaxWarning(project, file, document)
+                        ToolResult.ok("Wrote ${content.length} chars to ${FsPaths.relativize(project, file)}$syntax")
                     }.getOrElse { ToolResult.error("Write failed: ${it.message}") },
                 )
             }
@@ -52,17 +53,14 @@ object WriteFileTool : AgentTool {
     }
 
     private fun createOrFind(project: Project, path: String): VirtualFile? {
-        // Overwrite an existing file only when it lives inside the project — an absolute path that
-        // happens to exist elsewhere on disk (e.g. a system file) must never be clobbered.
         FsPaths.resolve(project, path)?.let { return it.takeIf { f -> FsPaths.isInsideProject(project, f) } }
-        if (ABSOLUTE.matches(path.trim())) return null // don't create new files outside the project
+        if (ABSOLUTE.matches(path.trim())) return null
         val base = project.basePath ?: return null
         val baseDir = LocalFileSystem.getInstance().findFileByPath(base) ?: return null
         val normalized = path.trim().replace('\\', '/').trimStart('/')
         val fileName = normalized.substringAfterLast('/')
-        if (fileName.isBlank()) return null
-        val dirPart = normalized.substringBeforeLast('/', "")
-        val dir = if (dirPart.isEmpty()) baseDir else VfsUtil.createDirectoryIfMissing(baseDir, dirPart) ?: return null
+        val dirPath = normalized.substringBeforeLast('/', "")
+        val dir = if (dirPath.isEmpty()) baseDir else VfsUtil.createDirectories("$base/$dirPath")
         return dir.findChild(fileName) ?: dir.createChildData(this, fileName)
     }
 }

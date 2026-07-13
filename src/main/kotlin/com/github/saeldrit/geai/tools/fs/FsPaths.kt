@@ -4,7 +4,6 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 
-/** Path <-> [VirtualFile] helpers that accept both absolute and project-relative paths. */
 internal object FsPaths {
 
     fun resolve(project: Project, path: String): VirtualFile? {
@@ -15,7 +14,6 @@ internal object FsPaths {
         return lfs.findFileByPath("$base/${normalized.trimStart('/')}")
     }
 
-    /** Project content root via [Project.getBasePath] — avoids the `guessProjectDir` extension import. */
     fun projectRoot(project: Project): VirtualFile? {
         val base = project.basePath ?: return null
         return LocalFileSystem.getInstance().findFileByPath(base)
@@ -27,7 +25,6 @@ internal object FsPaths {
         return if (path.startsWith("$base/")) path.removePrefix("$base/") else path
     }
 
-    /** True when [file] lives under the project content root — the boundary for mutating tools. */
     fun isInsideProject(project: Project, file: VirtualFile): Boolean {
         val base = project.basePath?.replace('\\', '/') ?: return false
         val path = file.path

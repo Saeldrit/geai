@@ -5,10 +5,6 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Progressive tool disclosure: the agent loop must advertise only CORE (+GRACE) until the model
- * loads an on-demand group. These are pure functions, so no IDE fixture is needed.
- */
 class GeaiToolsetTest {
 
     private fun names(tools: List<AgentTool>) = tools.map { it.name }.toSet()
@@ -72,7 +68,6 @@ class GeaiToolsetTest {
     fun `delegate sub-agent toolset is read-only and cannot recurse`() {
         val sub = names(GeaiToolset.delegateTools())
         assertTrue("sub-agent can read & navigate", sub.containsAll(setOf("read_file", "search_text", "find_files", "project_overview")))
-        // No mutation, no recursion, no progressive-disclosure plumbing.
         listOf("write_file", "edit_file", "run_command", "self_patch", "self_info", GeaiToolset.DELEGATE, GeaiToolset.LOAD_TOOLS, "ask_user")
             .forEach { assertFalse("sub-agent must not expose '$it'", sub.contains(it)) }
         GeaiToolset.groupTools("debug").forEach {
@@ -94,7 +89,6 @@ class GeaiToolsetTest {
         assertEquals(GeaiToolset.NOTE, spec.name)
         assertTrue("note takes a text argument", spec.parametersJsonSchema.contains("\"text\""))
         assertTrue("text is required", spec.parametersJsonSchema.contains("\"required\":[\"text\"]"))
-        // It's loop-intercepted (like load_tools/delegate), never advertised as a normal tool.
         assertFalse(names(GeaiToolset.advertisedTools(graceEnabled = true, activeGroups = emptySet())).contains(GeaiToolset.NOTE))
         assertFalse(names(GeaiToolset.delegateTools()).contains(GeaiToolset.NOTE))
     }
@@ -124,8 +118,6 @@ class GeaiToolsetTest {
 
     @Test
     fun `grace advertises the graph navigation tools the doctrine names`() {
-        // Drift guard: the system prompt and tool error texts reference these, so they MUST be
-        // advertised+executable when GRACE is on — or a literal model hits an "Unknown tool" dead-end.
         val grace = names(GeaiToolset.advertisedTools(graceEnabled = true, activeGroups = emptySet()))
         listOf("context_bundle", "graph_query", "graph_neighbors").forEach {
             assertTrue("GRACE must advertise '$it' (named by the doctrine)", grace.contains(it))

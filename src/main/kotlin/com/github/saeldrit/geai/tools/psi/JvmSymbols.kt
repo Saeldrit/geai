@@ -21,7 +21,6 @@ object JvmSymbols {
         "Java PSI (com.intellij.modules.java) is not available in this IDE — use search_text / read_file instead.",
     )
 
-    /** Resolve `fqClass[#member]` to a PSI element, or null if not found. */
     fun resolve(project: Project, fqName: String, member: String?): PsiElement? {
         val psiClass = findClass(project, fqName) ?: return null
         return if (member == null) psiClass else findMember(psiClass, member)
@@ -40,7 +39,6 @@ object JvmSymbols {
             ?: psiClass.findFieldByName(member, true)
             ?: psiClass.innerClasses.firstOrNull { it.name == member }
 
-    /** `path:line` of an element's declaration/usage site, or null when it has no file. */
     fun locationOf(element: PsiElement): String? {
         val vf = element.containingFile?.virtualFile ?: return null
         val doc = FileDocumentManager.getInstance().getDocument(vf) ?: return vf.path

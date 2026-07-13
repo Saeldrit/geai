@@ -9,7 +9,6 @@ import com.intellij.execution.RunManager
 import com.intellij.execution.executors.DefaultDebugExecutor
 import com.intellij.openapi.application.ApplicationManager
 
-/** Launches the currently selected Run/Debug configuration in debug mode. */
 object StartDebugTool : AgentTool {
     override val name = "start_debug"
     override val mutating = true

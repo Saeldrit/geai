@@ -2,7 +2,6 @@ package com.github.saeldrit.geai.tools
 
 import com.github.saeldrit.geai.llm.ToolSpec
 
-/** Immutable lookup of the tools advertised to the model for a session. */
 class ToolRegistry(tools: List<AgentTool>) {
 
     private val byName: Map<String, AgentTool> = tools.associateBy { it.name }
