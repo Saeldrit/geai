@@ -1,0 +1,1 @@
+fix: update HubService mapper prompt with IDE index grounding
