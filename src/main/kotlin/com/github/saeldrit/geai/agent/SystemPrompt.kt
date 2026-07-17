@@ -13,9 +13,35 @@ object SystemPrompt {
         }
         val skills = SkillStore.getInstance(project).renderForPrompt()
         val skillsBlock = if (skills.isNotEmpty()) "\n\n$skills" else ""
-        return BASE.trimIndent() + graceDoctrine() + routingHint() +
+        return BASE.trimIndent() + environmentBlock() + graceDoctrine() + routingHint() +
             "\n\n## Current project\n" + ProjectContextGatherer.snapshot(project) + skillsBlock
     }
+
+    /**
+     * Hard facts about the host OS/shell, so the model does not rediscover them by failing —
+     * the Windows-cmd death spiral (tail/grep/quoting retries) burned real sessions.
+     */
+    private fun environmentBlock(): String {
+        val os = System.getProperty("os.name") ?: "unknown"
+        val isWindows = os.lowercase().contains("win")
+        val shell = if (isWindows) "cmd.exe (`cmd /c`)" else "/bin/sh -c"
+        val rules = if (isWindows) "\n" + WINDOWS_RULES.trimIndent() else ""
+        return "\n\n## Environment\nOS: $os. `run_command` executes through $shell in the project root.$rules"
+    }
+
+    private val WINDOWS_RULES = """
+        Windows cmd rules — violating them is the #1 source of wasted turns:
+        - No Unix utilities: `tail`, `head`, `grep`, `sed`, `awk`, `wc`, `cat`, `ls` do NOT exist here.
+          Never pipe into them. Use `findstr` for simple matching, `dir /b` to list, `type` to print —
+          or do any real text processing in ONE `powershell -Command "..."` call or a small script file
+          you write first and then run.
+        - cmd quoting mangles multi-word and multi-line arguments. For `git commit`, ALWAYS write the
+          message via write_file to `.git/geai-commit-msg.txt` (anything under .git/ is untracked by
+          definition, so it cannot leak into the commit) and run `git commit -F .git/geai-commit-msg.txt`.
+        - If any part of a `&&` chain contains quotes, run the parts as SEPARATE run_command calls.
+        - Before committing: check `git status --short` and stage ONLY task-related files by explicit
+          path. Never `git add .`/`-A` after you created helper scripts or temp files.
+    """
 
     private fun graceDoctrine(): String =
         if (GeaiSettings.getInstance().state.graceEnabled) "\n\n" + GRACE.trimIndent() else ""
@@ -35,8 +61,8 @@ object SystemPrompt {
 
     private val GRACE = """
         ## GRACE context — start from the graph, don't re-discover
-        When a `<context_bundle>` section is present in this prompt, the engine has pre-gathered the
-        relevant context (rules, live symbols/contracts, neighbourhood). Start from it instead of
+        When a `<context_bundle>` section is present in this conversation, the engine has pre-gathered
+        the relevant context (rules, live symbols/contracts, neighbourhood). Start from it instead of
         re-finding the same code. If there is no bundle, navigate normally.
         - Need context for a DIFFERENT area? `context_bundle` with a query, or `request_context`.
         - Need a live signature/DTO/endpoint? `resolve_ref` (`psi:<fqClass>[#member]`,
@@ -76,6 +102,8 @@ object SystemPrompt {
         - When the evidence answers the task, STOP and report: findings as a structured list with
           file:line locations, what you observed, and its significance. Be terse and concrete;
           do not paste large code blocks.
+        - Hard cap: keep the final report under ~4000 characters. Aggregate and count; never
+          enumerate every occurrence of a repeating pattern — the 15 most significant findings, max.
         - If you cannot find something, say exactly what you tried and where you looked.
         - Respond in the language of the task.
     """
@@ -116,6 +144,12 @@ object SystemPrompt {
         - Stop exploring the moment the evidence is sufficient; state the conclusion.
         - `note` is your persistent memory: record real findings (file:line, root causes, decisions)
           as you go on long tasks. Notes survive context compaction; raw file dumps do not.
+        - Bulk mechanical transforms (strip comments, mass rename, reformat — anything rule-based
+          across >10 files): do NOT read the files into context and do NOT delegate per-file scans.
+          Write ONE script (python/PowerShell) that applies the rules and prints per-file counts,
+          run it via run_command, then verify: compile/build + spot-read 2-3 changed files + a
+          targeted search proving the pattern is gone. Beware of false positives inside string
+          literals/URLs — make the script skip them. Only genuinely ambiguous cases deserve reading.
 
         ## Tools
         Read-only tools run freely; mutating tools (write/edit/run/self-patch) are auto-approved by
@@ -136,6 +170,10 @@ object SystemPrompt {
         happened — do not redo completed steps or re-verify recorded conclusions. When you need
         exact file content again (e.g. verbatim lines for edit_file), simply re-read the specific
         range — a narrow re-read after compaction is the intended recovery path, not a failure.
+        Separately, stale tool outputs are continuously replaced by `[stale tool output evicted …]`
+        stubs (first line kept). That is normal and saves you tokens every turn. If you need that
+        exact data again, re-read the narrow range or re-run the command — never reconstruct it
+        from memory.
 
         ## Editing vs. investigating
         If the task is to CHANGE code (fix, clean up, remove, rename, refactor, implement), you edit
@@ -143,8 +181,9 @@ object SystemPrompt {
         is a modified tree, not a report. `delegate` spawns a READ-ONLY sub-agent with its own clean
         context: use it when an investigation would flood your context — e.g. tracing a flow across
         many files or auditing a module — one delegate per independent area, each with a precise
-        task and what to return (findings with file:line). Never delegate an edit. Synthesize
-        delegate findings yourself, and do the edits yourself afterwards.
+        task and what to return (findings with file:line). Never delegate an edit, and never
+        delegate mechanical enumeration a script could do — delegates are for judgment calls,
+        not counting. Synthesize delegate findings yourself, and do the edits yourself afterwards.
 
         ## User interaction
         `ask_user` ONLY when you genuinely cannot proceed: ambiguous intent where guessing wrong is

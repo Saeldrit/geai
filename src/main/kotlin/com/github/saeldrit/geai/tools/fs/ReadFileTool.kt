@@ -23,6 +23,14 @@ object ReadFileTool : AgentTool {
     private const val MAX_BYTES = 2_000_000L
     private const val MAX_LINES_WITHOUT_RANGE = 400
 
+    /**
+     * Hard span cap that applies EVEN WHEN a range is given. A model that passes only `start_line`
+     * (e.g. `start_line=1` to "start at the top") would otherwise disable the no-range cap and dump the
+     * whole file — which then re-ships on every subsequent turn. A deliberate range up to this many
+     * lines is honored; beyond it the read is truncated with a "read in smaller chunks" hint.
+     */
+    private const val MAX_LINES_WITH_RANGE = 800
+
     override fun execute(args: ToolArgs, context: ToolContext): ToolResult {
         val path = args.string("path")
         val startLine = args.intOrNull("start_line")
@@ -39,16 +47,19 @@ object ReadFileTool : AgentTool {
             val lines = document.charsSequence.toString().split("\n")
             val noRange = startLine == null && endLine == null
             val from = (startLine ?: 1).coerceAtLeast(1)
-            var to = (endLine ?: lines.size).coerceAtMost(lines.size)
-            if (from > to) return@compute ToolResult.error("Invalid range: start_line ($from) > end_line ($to)")
+            val requestedTo = (endLine ?: lines.size).coerceAtMost(lines.size)
+            if (from > requestedTo) return@compute ToolResult.error("Invalid range: start_line ($from) > end_line ($requestedTo)")
 
-            val capped = noRange && lines.size > MAX_LINES_WITHOUT_RANGE
-            if (capped) to = MAX_LINES_WITHOUT_RANGE
+            // The span cap applies whether or not an explicit range was given, so a lone start_line
+            // can't bypass it. No-range reads are capped tighter (400) than deliberate ranges (800).
+            val maxSpan = if (noRange) MAX_LINES_WITHOUT_RANGE else MAX_LINES_WITH_RANGE
+            val capped = requestedTo - from + 1 > maxSpan
+            val to = if (capped) from + maxSpan - 1 else requestedTo
 
             val body = (from..to).joinToString("\n") { i -> "$i\t${lines[i - 1]}" }
             val header = "// ${FsPaths.relativize(context.project, file)} (lines $from-$to of ${lines.size})"
             val note = if (capped) {
-                "\n…[file truncated at $MAX_LINES_WITHOUT_RANGE of ${lines.size} lines; request a specific range via start_line/end_line]"
+                "\n…[truncated to $maxSpan lines (requested $from-$requestedTo of ${lines.size}); read the next range in a follow-up call with start_line/end_line]"
             } else {
                 ""
             }

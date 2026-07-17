@@ -95,6 +95,10 @@
   .cmdrow.active{background:var(--card-hover)}
   .cmdrow .cn{color:var(--accent);font-weight:600;font-family:ui-monospace,Consolas,monospace;flex-shrink:0}
   .cmdrow .cd{color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #cmdchips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px}
+  .cmdchip{border:1px solid var(--border);border-radius:999px;padding:2px 10px;cursor:pointer;
+    color:var(--muted);font-size:12px;font-family:ui-monospace,Consolas,monospace;user-select:none}
+  .cmdchip:hover{color:var(--accent);border-color:var(--accent);background:var(--card-hover)}
   #inputwrap{border:1px solid var(--border);border-radius:10px;background:var(--field);padding:8px 10px}
   #inputwrap:focus-within{border-color:var(--accent)}
   #input{width:100%;border:none;outline:none;resize:none;background:transparent;color:var(--fg);
@@ -615,6 +619,19 @@
   }
   cmdMenu.addEventListener('click',function(e){ var r=e.target.closest?e.target.closest('.cmdrow'):null; if(r) acceptCmd(r.getAttribute('data-cmd')); });
 
+  function renderCmdChips(){
+    var host=el('cmdchips'); if(!host) return;
+    if(!cmds.length){ host.classList.add('hidden'); host.innerHTML=''; return; }
+    host.innerHTML=cmds.map(function(c){
+      return '<span class="cmdchip" data-cmd="'+esc(c.name)+'" title="'+esc(c.desc)+'">/'+esc(c.name)+'</span>';
+    }).join('');
+    host.classList.remove('hidden');
+  }
+  el('cmdchips').addEventListener('click',function(e){
+    var r=e.target.closest?e.target.closest('.cmdchip'):null;
+    if(r) acceptCmd(r.getAttribute('data-cmd'));
+  });
+
   send.onclick=submit;
   input.addEventListener('input', function(){ autoGrow(); refreshCmdMenu(); });
   input.addEventListener('keydown',function(e){
@@ -652,6 +669,7 @@
     if(state.engine) tokensEl.title=state.engine;
     renderSkills(state.skills);
     cmds = state.commands || [];
+    renderCmdChips();
     chat.innerHTML=''; streamBody=null; streamRaw=''; reasonBody=null; started=false; welcome.classList.remove('hidden'); chat.classList.add('hidden');
     if(state.transcript && state.transcript.length){ state.transcript.forEach(renderEvent); }
     if(state.usage) setUsage(state.usage); else setTokens(state.tokensIn||0, state.tokensOut||0);

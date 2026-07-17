@@ -18,6 +18,8 @@ class AgentMetrics {
         val contextChars: Int,
         val inputTokens: Int,
         val outputTokens: Int,
+        val cacheReadTokens: Int = 0,
+        val cacheWriteTokens: Int = 0,
         val compressed: Boolean,
         val summarized: Boolean,
         val hitIterationLimit: Boolean = false,
@@ -45,7 +47,13 @@ class AgentMetrics {
         sb.appendLine("  Compression:   ${totalComp}ms (${(totalComp * 100 / totalAll.coerceAtLeast(1))}%)")
         sb.appendLine("  Overhead:      ${totalAll - totalLlm - totalTool - totalComp}ms")
         sb.appendLine()
-        sb.appendLine("Tokens — input: ${turns.sumOf { it.inputTokens }}, output: ${turns.sumOf { it.outputTokens }}")
+        val totalFresh = turns.sumOf { it.inputTokens }
+        val totalCacheRead = turns.sumOf { it.cacheReadTokens }
+        val totalCacheWrite = turns.sumOf { it.cacheWriteTokens }
+        val totalPromptIn = totalFresh + totalCacheRead
+        val cacheHitPct = if (totalPromptIn > 0) totalCacheRead * 100 / totalPromptIn else 0
+        sb.appendLine("Tokens — input(fresh): $totalFresh, cacheRead: $totalCacheRead, cacheWrite: $totalCacheWrite, output: ${turns.sumOf { it.outputTokens }}")
+        sb.appendLine("Prompt-cache hit rate: $cacheHitPct% (fresh+cacheRead = $totalPromptIn input tokens processed)")
         sb.appendLine("Tool calls: ${turns.sumOf { it.toolCallCount }} total (${turns.sumOf { it.parallelToolCalls }} parallel, ${turns.sumOf { it.sequentialToolCalls }} serial)")
         sb.appendLine("Compressions: ${turns.count { it.compressed }} (${turns.count { it.summarized }} with LLM summarization)")
         sb.appendLine()

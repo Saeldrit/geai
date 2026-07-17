@@ -87,16 +87,7 @@ class OpenAiCompatibleClient(
             try {
                 if (sse.data == "[DONE]") return@postJsonSse
                 val data = JsonSupport.parseObject(sse.data)
-                data.objectOrNull("usage")?.let { usageObj ->
-                    usageResult = TokenUsage(
-                        inputTokens = usageObj.intOr("prompt_tokens", 0),
-                        outputTokens = usageObj.intOr("completion_tokens", 0),
-                        cacheReadTokens = maxOf(
-                            usageObj.intOr("prompt_cache_hit_tokens", 0),
-                            usageObj.objectOrNull("prompt_tokens_details")?.intOr("cached_tokens", 0) ?: 0,
-                        ),
-                    )
-                }
+                data.objectOrNull("usage")?.let { usageObj -> usageResult = parseUsage(usageObj) }
                 val choice = data.arrayOrEmpty("choices").firstOrNull()?.asJsonObject ?: return@postJsonSse
                 val delta = choice.objectOrNull("delta") ?: return@postJsonSse
 
@@ -240,30 +231,19 @@ class OpenAiCompatibleClient(
     }
 
     private fun appendSystem(target: JsonArray, request: ChatRequest) {
+        if (request.system.isBlank()) return
         if (supportsExplicitCacheControl) {
-            val parts = JsonArray()
-            if (request.system.isNotBlank()) {
-                parts.add(textPart(request.system, withCacheBreakpoint = true))
-            }
-            if (request.systemVolatileSuffix.isNotBlank()) {
-                parts.add(textPart(request.systemVolatileSuffix, withCacheBreakpoint = true))
-            }
-            if (parts.size() > 0) {
-                target.add(JsonObject().apply {
-                    addProperty("role", "system")
-                    add("content", parts)
-                })
-            }
+            // ONE stable, cached system block — volatile context rides in trailing user messages, so
+            // the cache breakpoint here stays byte-identical across turns and keeps hitting.
+            target.add(JsonObject().apply {
+                addProperty("role", "system")
+                add("content", JsonArray().apply { add(textPart(request.system, withCacheBreakpoint = true)) })
+            })
         } else {
-            val systemText = listOf(request.system, request.systemVolatileSuffix)
-                .filter { it.isNotBlank() }
-                .joinToString("\n\n")
-            if (systemText.isNotBlank()) {
-                target.add(JsonObject().apply {
-                    addProperty("role", "system")
-                    addProperty("content", systemText)
-                })
-            }
+            target.add(JsonObject().apply {
+                addProperty("role", "system")
+                addProperty("content", request.system)
+            })
         }
     }
 
@@ -372,18 +352,28 @@ class OpenAiCompatibleClient(
             "length" -> StopReason.MAX_TOKENS
             else -> if (hasToolUse) StopReason.TOOL_USE else StopReason.OTHER
         }
-        val usage = root.objectOrNull("usage")
-            ?.let { usageObj ->
-                val deepseekHit = usageObj.intOr("prompt_cache_hit_tokens", 0)
-                val openAiCached = usageObj.objectOrNull("prompt_tokens_details")?.intOr("cached_tokens", 0) ?: 0
-                TokenUsage(
-                    inputTokens = usageObj.intOr("prompt_tokens", 0),
-                    outputTokens = usageObj.intOr("completion_tokens", 0),
-                    cacheReadTokens = maxOf(deepseekHit, openAiCached),
-                )
-            }
-            ?: TokenUsage.ZERO
+        val usage = root.objectOrNull("usage")?.let(::parseUsage) ?: TokenUsage.ZERO
 
         return ChatResult(ChatMessage.assistant(blocks), stopReason, usage)
+    }
+
+    /**
+     * Normalize OpenAI-shaped usage to the same semantics the Anthropic client uses: [inputTokens] is
+     * the FRESH (uncached) prompt, [cacheReadTokens] the cached subset — additive, never overlapping.
+     * OpenAI/OpenRouter/DeepSeek report `prompt_tokens` as the TOTAL (cached + uncached), so fresh =
+     * total − cached. Reporting the total as `inputTokens` (the old behavior) both double-counted the
+     * cache in cost and made the compaction calibration think the whole prompt was billed at full rate.
+     */
+    internal fun parseUsage(usageObj: JsonObject): TokenUsage {
+        val promptTotal = usageObj.intOr("prompt_tokens", 0)
+        val cached = maxOf(
+            usageObj.intOr("prompt_cache_hit_tokens", 0),
+            usageObj.objectOrNull("prompt_tokens_details")?.intOr("cached_tokens", 0) ?: 0,
+        ).coerceIn(0, promptTotal)
+        return TokenUsage(
+            inputTokens = (promptTotal - cached).coerceAtLeast(0),
+            outputTokens = usageObj.intOr("completion_tokens", 0),
+            cacheReadTokens = cached,
+        )
     }
 }

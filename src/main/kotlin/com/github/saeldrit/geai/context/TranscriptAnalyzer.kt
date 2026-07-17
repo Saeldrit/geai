@@ -94,6 +94,13 @@ private val FILE_OPS_TOOLS = setOf(
     "file_structure", "list_dir", "similar_search",
 )
 
+/**
+ * State-changing shell commands MUST survive compaction in the ledger: losing "what did I already
+ * run" (git add/commit, build results) mid-task forces the agent to re-derive external state — the
+ * exact failure that produced a dirty push after a compaction once dropped the staging state.
+ */
+private val COMMAND_TOOLS = setOf("run_command")
+
 object TranscriptAnalyzer {
 
     fun analyze(messages: List<ChatMessage>, activeTask: String = ""): TranscriptDigest {
@@ -155,6 +162,10 @@ object TranscriptAnalyzer {
                             val preview = truncate(toolName, 20) + "(" + argsPreview(inputJson) + ")"
                             val resultPreview = if (block.isError) "ERROR: ${truncate(block.content, 100)}" else truncate(block.content, 100)
                             toolCallSummaries.add("$preview → $resultPreview")
+                        } else if (toolName in COMMAND_TOOLS) {
+                            val oneLine = block.content.replace('\n', ' ').replace(Regex("\\s+"), " ")
+                            val status = if (block.isError) "FAILED" else "ok"
+                            toolCallSummaries.add("$toolName [$status]: ${truncate(oneLine, 180)}")
                         }
 
                         if (block.isError && !isRetryError(block.content)) {

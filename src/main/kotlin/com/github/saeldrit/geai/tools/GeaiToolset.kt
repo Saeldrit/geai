@@ -179,7 +179,9 @@ object GeaiToolset {
                 "anything — never delegate a task that must modify code; do those yourself with " +
                 "edit_file/write_file. Spawn ONE per independent unit (a " +
                 "file, a module, a question), then synthesize their results. State exactly what to investigate " +
-                "and what to return (findings with file:line — not raw code)."
+                "and what to return (findings with file:line — not raw code). The report is hard-capped at " +
+                "~6000 chars: ask for aggregates and the top findings, never exhaustive per-occurrence listings. " +
+                "Not for mechanical enumeration a script could do — script those via run_command instead."
         val schema =
             """{"type":"object","properties":{"task":{"type":"string","description":"The focused, self-contained instruction for the sub-agent, including exactly what it should return."},"hint":{"type":"string","description":"Optional leads — file paths, anchors, symbols — to save the sub-agent discovery time."}},"required":["task"]}"""
         return ToolSpec(DELEGATE, description, schema)

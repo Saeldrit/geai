@@ -6,9 +6,43 @@ import com.github.saeldrit.geai.llm.Role
 
 object ContextCompressor {
 
-    private const val CHARS_PER_TOKEN = 4
+    /** Fallback density until the first provider response calibrates it. */
+    private const val CHARS_PER_TOKEN_DEFAULT = 4.0
 
+    /**
+     * Observed chars-per-token, calibrated from real provider usage each turn. A fixed /4 is
+     * systematically optimistic for code and Cyrillic (~3–3.5), so estimates undercount, the
+     * 70% trigger fires too late, and the provider rejects the request — forcing the emergency
+     * half-window compress. Clamped to a sane band against pathological samples.
+     */
+    @Volatile
+    private var charsPerToken: Double = CHARS_PER_TOKEN_DEFAULT
+
+    /** Feed real usage back: [chars] of rendered prompt that the provider billed as [inputTokens]. */
+    fun calibrate(chars: Int, inputTokens: Int) {
+        if (chars < 10_000 || inputTokens < 2_500) return // too small a sample to trust
+        val observed = chars.toDouble() / inputTokens
+        // EMA smoothing: one weird turn (huge tool schemas, images) must not swing the estimate.
+        charsPerToken = (0.7 * charsPerToken + 0.3 * observed).coerceIn(2.0, 5.0)
+    }
+
+    /** High watermark: compaction fires only above this share of the usable window. */
     private const val TRIGGER = 0.70
+
+    /**
+     * Low watermark: when compaction fires, shrink to THIS share, not to [TRIGGER]. With
+     * trigger == target the transcript lands just under the line and the next turn re-crosses
+     * it — firing a blocking summarizer LLM call and a full prompt-cache-miss on EVERY turn
+     * (compaction thrashing). The gap between the watermarks buys many quiet turns per event.
+     */
+    private const val TARGET = 0.50
+
+    /**
+     * Flat char-mass estimate for an image block (≈1.6k tokens). Counting base64 length is
+     * catastrophically wrong: a single pasted screenshot is 200–700k base64 chars, which looks
+     * like 50–170k "tokens" and pins the session in permanent compaction.
+     */
+    private const val IMAGE_CHARS_ESTIMATE = 6_400
 
     private const val KEEP_RECENT_DEFAULT = 14
     private const val KEEP_RECENT_MIN = 6
@@ -35,6 +69,20 @@ object ContextCompressor {
     var lastMetrics: CompressionMetrics? = null
         private set
 
+    /**
+     * Metrics of the last REAL compression (method != "none"). [lastMetrics] is overwritten by every
+     * no-op call, so reading it a turn later shows "none" even when a compression just happened —
+     * status reporting must use THIS field.
+     */
+    @Volatile
+    var lastCompressionMetrics: CompressionMetrics? = null
+        private set
+
+    private fun record(metrics: CompressionMetrics) {
+        lastMetrics = metrics
+        if (metrics.method != "none") lastCompressionMetrics = metrics
+    }
+
     fun compress(
         messages: List<ChatMessage>,
         contextWindowTokens: Int,
@@ -43,11 +91,12 @@ object ContextCompressor {
         summarizer: Summarizer? = null,
         activeTask: String = "",
     ): List<ChatMessage> {
-        val budget = charBudget(contextWindowTokens, outputReserveTokens, systemPromptChars)
+        val triggerBudget = charBudget(contextWindowTokens, outputReserveTokens, systemPromptChars, TRIGGER)
+        val budget = charBudget(contextWindowTokens, outputReserveTokens, systemPromptChars, TARGET)
         val originalChars = estimateChars(messages)
 
-        if (originalChars <= budget) {
-            lastMetrics = CompressionMetrics(originalChars, originalChars, 1.0f, "none")
+        if (originalChars <= triggerBudget) {
+            record(CompressionMetrics(originalChars, originalChars, 1.0f, "none"))
             return messages
         }
 
@@ -58,7 +107,7 @@ object ContextCompressor {
         if (tailStart <= 0) {
             val result = truncateToBudget(messages.toList(), budget)
             val outputChars = estimateChars(result)
-            lastMetrics = CompressionMetrics(originalChars, outputChars, outputChars.toFloat() / originalChars.coerceAtLeast(1), "truncate")
+            record(CompressionMetrics(originalChars, outputChars, outputChars.toFloat() / originalChars.coerceAtLeast(1), "truncate"))
             return result
         }
 
@@ -98,11 +147,13 @@ object ContextCompressor {
             method = "truncate"
         }
         val outputChars = estimateChars(result)
-        lastMetrics = CompressionMetrics(
-            inputChars = originalChars,
-            outputChars = outputChars,
-            ratio = outputChars.toFloat() / originalChars.coerceAtLeast(1),
-            method = method,
+        record(
+            CompressionMetrics(
+                inputChars = originalChars,
+                outputChars = outputChars,
+                ratio = outputChars.toFloat() / originalChars.coerceAtLeast(1),
+                method = method,
+            ),
         )
         return result
     }
@@ -164,12 +215,16 @@ object ContextCompressor {
         budget: Int,
         eligible: (ChatMessage) -> Boolean,
     ) {
+        var total = estimateChars(working)
         for (index in working.indices) {
-            if (estimateChars(working) <= budget) return
+            if (total <= budget) return
             val message = working[index]
             if (!eligible(message)) continue
             if (isSyntheticMemory(message)) continue
-            working[index] = message.copy(content = message.content.map(::truncateBlock))
+            val before = message.content.sumOf(::blockLength)
+            val compacted = message.copy(content = message.content.map(::truncateBlock))
+            working[index] = compacted
+            total -= before - compacted.content.sumOf(::blockLength)
         }
     }
 
@@ -190,9 +245,14 @@ object ContextCompressor {
         is ContentBlock.ToolUse -> block
     }
 
-    private fun charBudget(contextWindowTokens: Int, outputReserveTokens: Int, systemPromptChars: Int = 0): Int {
+    private fun charBudget(
+        contextWindowTokens: Int,
+        outputReserveTokens: Int,
+        systemPromptChars: Int = 0,
+        fraction: Double = TRIGGER,
+    ): Int {
         val usableTokens = (contextWindowTokens - outputReserveTokens).coerceAtLeast(0)
-        val raw = (usableTokens * CHARS_PER_TOKEN * TRIGGER).toInt()
+        val raw = (usableTokens * charsPerToken * fraction).toInt()
         val floored = if (contextWindowTokens >= 32_000) {
             raw.coerceAtLeast(MIN_BUDGET)
         } else {
@@ -201,10 +261,11 @@ object ContextCompressor {
         return (floored - systemPromptChars).coerceAtLeast(2_000)
     }
 
-    fun estimatedTokens(messages: List<ChatMessage>): Int = estimateChars(messages) / CHARS_PER_TOKEN
+    fun estimatedTokens(messages: List<ChatMessage>): Int =
+        (estimateChars(messages) / charsPerToken).toInt()
 
     fun compactionThresholdTokens(contextWindowTokens: Int, outputReserveTokens: Int, systemPromptChars: Int = 0): Int =
-        charBudget(contextWindowTokens, outputReserveTokens, systemPromptChars) / CHARS_PER_TOKEN
+        (charBudget(contextWindowTokens, outputReserveTokens, systemPromptChars) / charsPerToken).toInt()
 
     private fun estimateChars(messages: List<ChatMessage>): Int =
         messages.sumOf { message -> message.content.sumOf(::blockLength) }
@@ -212,7 +273,7 @@ object ContextCompressor {
     private fun blockLength(block: ContentBlock): Int = when (block) {
         is ContentBlock.Text -> block.text.length
         is ContentBlock.ToolUse -> block.name.length + block.inputJson.length
-        is ContentBlock.Image -> block.base64Data.length
+        is ContentBlock.Image -> IMAGE_CHARS_ESTIMATE
         is ContentBlock.ToolResult -> block.content.length
     }
 }

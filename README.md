@@ -53,6 +53,17 @@ index, it is always current and needs no rebuild step.
 `spec_validate` detects drift: it re-resolves all Category-B anchors and reports OK / DRIFT /
 BROKEN so regressions are caught mechanically.
 
+## geai Hub (multi-IDE orchestration)
+
+geai can register as a **spoke agent** on the geai Hub — a desktop orchestrator that routes
+tasks across IDEs, runs cross-project questions in parallel and merges the answers. Run
+**Tools → "Geai: Connect to Hub"** with the Hub running (default `ws://localhost:9876/ws`).
+Hub tasks execute through the same agent loop as the chat window in a fresh session; progress,
+logs, artifacts, token spend and system metrics stream back. The spoke also serves the hub's
+loops: `plan` (objective → JSON task graph), `verify` (run tests → verdict), `map` (project
+architecture fragment from the IDE index), and contract rejection. Hub URL and auto-connect
+live under *Settings → Tools → Geai → Show advanced settings*.
+
 ## Tiered model routing
 
 One provider, one API key, two model roles. Enable with *"GRACE tiered routing"* in settings.

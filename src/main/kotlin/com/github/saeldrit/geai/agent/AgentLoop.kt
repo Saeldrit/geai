@@ -6,6 +6,7 @@ import com.github.saeldrit.geai.context.NoteEntry
 import com.github.saeldrit.geai.context.NotePriority
 import com.github.saeldrit.geai.context.ScratchpadManager
 import com.github.saeldrit.geai.context.SkillStore
+import com.github.saeldrit.geai.context.ToolResultEvictor
 import com.github.saeldrit.geai.cost.UsageFormat
 import com.github.saeldrit.geai.llm.ChatMessage
 import com.github.saeldrit.geai.llm.ChatRequest
@@ -140,6 +141,11 @@ class AgentLoop(
         val rawBundleSuffix = listOf(buildBundle(project, userText, emptyList(), settings, command), pastHint)
             .filter { it.isNotBlank() }
             .joinToString("\n\n")
+        // Persist the GRACE bundle into the transcript ONCE, right after the task, instead of
+        // re-appending it after the cache breakpoint on every iteration. Inside the rolling breakpoint's
+        // cached prefix it is billed fresh once and served from cache for every later iteration of the
+        // turn; a trailing copy would never cache and would be re-billed on each of the ~20 iterations.
+        if (rawBundleSuffix.isNotBlank()) session.messages.add(ChatMessage.user(rawBundleSuffix))
         val maxIterations = profile.maxIterations.coerceAtLeast(1)
         val subTokenBudget = if (profile.isSubAgent) profile.maxTurnTokens else 0
 
@@ -149,6 +155,7 @@ class AgentLoop(
 
 
             val recentStepSignatures = ArrayDeque<Long>()
+            val toolErrorStreaks = HashMap<String, Int>()
             var noProgressHits = 0
             var visionRetries = 0
             var contextOverflowRetries = 0
@@ -159,7 +166,11 @@ class AgentLoop(
             var delegationCount = 0
             var turnUsage = TokenUsage.ZERO
             var compressionCount = 0
-            var bundleSuffix = rawBundleSuffix
+            // currentBundle: the effective bundle handed to delegate sub-agents. bundleSuffix: the
+            // TRAILING (post-breakpoint, uncached) bundle — empty because the initial bundle is now
+            // persisted+cached above; it is only populated by a rare `request_context` refresh mid-turn.
+            var currentBundle = rawBundleSuffix
+            var bundleSuffix = ""
             val summarizer = summarizerFor(client, settings, indicator) { used ->
                 turnUsage += used
                 session.totalUsage += used
@@ -188,6 +199,16 @@ class AgentLoop(
                 val skipCompression = activeGroups.contains("debug")
                 val compStart = System.currentTimeMillis()
                 val messagesBeforeComp = session.messages.size
+                if (!skipCompression) {
+                    val evicted = ToolResultEvictor.evict(session.messages, settings.toolResultKeepTurns)
+                    if (!evicted.isNoop) {
+                        listener.onEvent(
+                            AgentEvent.Info(
+                                "🧹 Evicted ${evicted.resultsEvicted} stale tool output(s), ~${evicted.charsReclaimed / 1_000}k chars reclaimed — durable findings stay in notes/ledger.",
+                            ),
+                        )
+                    }
+                }
                 val compacted = if (skipCompression) {
                     session.messages
                 } else {
@@ -227,12 +248,11 @@ class AgentLoop(
                     }
                 }
                 val compressionMs = System.currentTimeMillis() - compStart
-                val outgoing = appendNotesAsTrailingUser(session.messages, session.scratchpad)
+                val outgoing = appendTrailingContext(session.messages, session.scratchpad, bundleSuffix)
 
                 val request = ChatRequest(
                     model = settings.loopModel(),
                     system = systemPrompt,
-                    systemVolatileSuffix = bundleSuffix,
                     messages = outgoing,
                     tools = advertisedSpecs(settings, activeGroups),
                     maxTokens = settings.maxTokens,
@@ -306,6 +326,12 @@ class AgentLoop(
                 val llmMs = System.currentTimeMillis() - llmStart
                 session.totalUsage += result.usage
                 turnUsage += result.usage
+                // Calibrate the chars-per-token estimate against what the provider actually billed
+                // (cached + uncached input) so compaction triggers neither too late (overflow) nor too early.
+                val billedInput = result.usage.inputTokens + result.usage.cacheReadTokens + result.usage.cacheWriteTokens
+                // contextChars already includes the bundle (it now rides in `outgoing`); only the
+                // system prefix is outside the message list, so add just that — no double counting.
+                ContextCompressor.calibrate(contextChars + systemPrompt.length, billedInput)
                 session.messages.add(result.message)
                 result.message.text.takeIf { it.isNotBlank() }?.let { listener.onEvent(AgentEvent.AssistantText(it)) }
 
@@ -321,6 +347,11 @@ class AgentLoop(
                     }
                     if (result.stopReason == StopReason.MAX_TOKENS) {
                         listener.onEvent(AgentEvent.Info("Response was truncated by the token limit; raise Max tokens in Settings | Tools | Geai."))
+                    }
+                    // No tool calls AND no text = a silently empty turn (some cheap models do this,
+                    // especially right after a nudge). Never end without telling the user something.
+                    if (result.message.text.isBlank() && result.stopReason != StopReason.MAX_TOKENS) {
+                        listener.onEvent(AgentEvent.Info("The model returned an empty response (no answer, no tool calls). Try rephrasing, or switch to a stronger model."))
                     }
                     listener.onEvent(AgentEvent.Info(UsageFormat.summary(settings.loopModel(), turnUsage, session.totalUsage, settings.modelPrices)))
                     listener.onEvent(AgentEvent.Done(session.totalUsage))
@@ -341,13 +372,19 @@ class AgentLoop(
                     metaCalls, session, activeGroups, indicator, listener,
                     delegationCount, turnUsage, interrupted, iteration,
                     project, settings, command, compressionCount,
-                    bundleSuffix,
+                    currentBundle,
                 )
                 interrupted = metaResults.interrupted
                 delegationCount = metaResults.delegationCount
                 turnUsage = metaResults.turnUsage
                 toolResults.addAll(metaResults.results)
-                if (metaResults.bundleOverride != null) bundleSuffix = metaResults.bundleOverride!!
+                if (metaResults.bundleOverride != null) {
+                    // A mid-turn request_context refresh: update the effective bundle for delegates, and
+                    // deliver the refreshed context to the model via the trailing (uncached) path — rare,
+                    // so the lost caching is negligible and it avoids splitting a tool_use/tool_result pair.
+                    currentBundle = metaResults.bundleOverride!!
+                    bundleSuffix = metaResults.bundleOverride!!
+                }
 
                 val streamedCalls = regularCalls.filter { streamedFutures.containsKey(it.id) }
                 streamedCalls.forEach { call ->
@@ -369,6 +406,11 @@ class AgentLoop(
                     toolResults.addAll(executeToolsSequential(serialCalls, settings, indicator, listener))
                 }
 
+                // HARD INVARIANT: every tool_use must have a matching tool_result before this message is
+                // persisted, or the provider 400s the NEXT request forever ("tool_use ids without
+                // tool_result"). Interruption skips fresh tools above and would otherwise leave a gap
+                // that permanently corrupts the reused session — backfill any missing id with an error.
+                backfillMissingToolResults(toolUses, toolResults)
                 session.messages.add(ChatMessage.toolResults(toolResults))
                 val toolMs = System.currentTimeMillis() - toolStart
                 metrics.record(AgentMetrics.TurnMetrics(
@@ -385,10 +427,43 @@ class AgentLoop(
                     contextChars = contextChars,
                     inputTokens = result.usage.inputTokens,
                     outputTokens = result.usage.outputTokens,
+                    cacheReadTokens = result.usage.cacheReadTokens,
+                    cacheWriteTokens = result.usage.cacheWriteTokens,
                     compressed = compressionUsed,
                     summarized = false,
                 ))
-                thisLogger().info("[metrics] turn=${iteration} llm=${llmMs}ms tools=${toolMs}ms comp=${compressionMs}ms total=${System.currentTimeMillis() - compStart}ms ctx=${contextChars}ch inTok=${result.usage.inputTokens} outTok=${result.usage.outputTokens} toolCalls=${toolUses.size} compressed=$compressionUsed")
+                // cacheRead/cacheWrite are logged explicitly: a dead prompt cache (0 reads on turn 2+)
+                // is the single most expensive failure mode and was previously invisible in the metrics.
+                val cacheHitPct = result.usage.let {
+                    val total = it.inputTokens + it.cacheReadTokens
+                    if (total > 0) it.cacheReadTokens * 100 / total else 0
+                }
+                thisLogger().info("[metrics] turn=${iteration} llm=${llmMs}ms tools=${toolMs}ms comp=${compressionMs}ms total=${System.currentTimeMillis() - compStart}ms ctx=${contextChars}ch inTok=${result.usage.inputTokens} cacheRead=${result.usage.cacheReadTokens} cacheWrite=${result.usage.cacheWriteTokens} cacheHit=${cacheHitPct}% outTok=${result.usage.outputTokens} toolCalls=${toolUses.size} compressed=$compressionUsed")
+
+                val resultsById = toolResults.associateBy { it.toolUseId }
+                var streakNudged = false
+                for (call in toolUses) {
+                    val res = resultsById[call.id] ?: continue
+                    if (!res.isError) {
+                        toolErrorStreaks.remove(call.name)
+                        continue
+                    }
+                    val streak = (toolErrorStreaks[call.name] ?: 0) + 1
+                    toolErrorStreaks[call.name] = streak
+                    if (streak >= TOOL_ERROR_STREAK_LIMIT && !streakNudged) {
+                        streakNudged = true
+                        toolErrorStreaks[call.name] = 0
+                        session.messages.add(
+                            ChatMessage.user(
+                                "'${call.name}' has now failed $TOOL_ERROR_STREAK_LIMIT times in a row — variations of the " +
+                                    "same approach keep hitting the same wall. Do NOT send another variation. First state in ONE " +
+                                    "sentence the common cause of these failures; then change METHOD: a different tool, or write a " +
+                                    "helper file/script instead of fighting shell syntax, or — if genuinely blocked — ask the user.",
+                            ),
+                        )
+                        listener.onEvent(AgentEvent.Info("⚠ '${call.name}' failed $TOOL_ERROR_STREAK_LIMIT× in a row — nudging the model to change approach."))
+                    }
+                }
 
                 if (interrupted) {
                     listener.onEvent(AgentEvent.Cancelled())
@@ -485,18 +560,18 @@ class AgentLoop(
                     "Summarize now, concisely: what you found (with file:line), your current conclusion, and the " +
                     "exact next steps still needed to finish.",
             )
-            val outgoing = ContextCompressor.compress(
+            val compacted = ContextCompressor.compress(
                 session.messages,
                 settings.transcriptWindow(),
                 settings.effectiveOutputReserve(),
                 systemPrompt.length + bundleSuffix.length,
                 summarizer,
                 activeTask = session.activeTask,
-            ) + nudge
+            )
+            val outgoing = appendTrailingContext(compacted, emptyList(), bundleSuffix) + nudge
             val request = ChatRequest(
                 model = settings.loopModel(),
                 system = systemPrompt,
-                systemVolatileSuffix = bundleSuffix,
                 messages = outgoing,
                 tools = emptyList(),
                 maxTokens = settings.maxTokens,
@@ -505,7 +580,24 @@ class AgentLoop(
             session.totalUsage += result.usage
             usage += result.usage
             session.messages.add(result.message)
-            result.message.text.takeIf { it.isNotBlank() }?.let { listener.onEvent(AgentEvent.AssistantText(it)) }
+            val text = result.message.text
+            listener.onEvent(
+                if (text.isNotBlank()) AgentEvent.AssistantText(text)
+                // The model can return an empty final summary — never let the turn end silently.
+                else AgentEvent.Info("The model returned an empty summary. Your recorded notes hold the progress; ask me to continue."),
+            )
+        }.onFailure { e ->
+            // The final synthesis LLM call can fail (prompt still over the window after compaction, a
+            // rate-limit, or a network drop). Previously this was swallowed and the user was left with
+            // only a usage line after a long run — the exact "runs a long time then NO result" complaint.
+            if (e is ProcessCanceledException) throw e
+            thisLogger().warn("Final summary generation failed: ${e.message}", e)
+            listener.onEvent(
+                AgentEvent.Error(
+                    "Couldn't generate the final summary (${e.message ?: e.javaClass.simpleName}). " +
+                        "Your progress is preserved in the session and your notes — ask me to continue, or narrow the task.",
+                ),
+            )
         }
         listener.onEvent(AgentEvent.Info(UsageFormat.summary(settings.loopModel(), usage, session.totalUsage, settings.modelPrices)))
         listener.onEvent(AgentEvent.Done(session.totalUsage))
@@ -577,14 +669,29 @@ class AgentLoop(
             .replace(Regex("""\s*,?\s*"end_line"\s*:\s*\d+"""), "")
     }
 
-    private fun appendNotesAsTrailingUser(outgoing: List<ChatMessage>, scratchpad: List<NoteEntry>): List<ChatMessage> {
-        if (scratchpad.isEmpty()) return outgoing
-        val visible = retainNotes(scratchpad, MAX_NOTES_RETAINED)
-        val dropped = scratchpad.size - visible.size
-        val sorted = visible.sortedBy { it.priority.ordinal }
-        val header = if (dropped > 0) "<your_notes> (showing ${visible.size} of ${scratchpad.size}; $dropped lower-priority/older notes folded)\n" else "<your_notes>\n"
-        val notesText = header + sorted.joinToString("\n") { formatNote(it) } + "\n</your_notes>"
-        return outgoing + ChatMessage.user(notesText)
+    /**
+     * Append the per-turn VOLATILE context — the GRACE bundle and the scratchpad notes — as trailing
+     * user message(s), AFTER the transcript (and therefore after the rolling cache breakpoint the
+     * clients place on the last tool_result). This is the load-bearing half of the caching fix: the
+     * bundle changes every user turn (and on `request_context`), so keeping it out of the stable
+     * `system` prefix — where it used to sit ahead of the whole history in cache order — is what lets
+     * the transcript cache survive across turns instead of being invalidated on every request.
+     */
+    private fun appendTrailingContext(
+        outgoing: List<ChatMessage>,
+        scratchpad: List<NoteEntry>,
+        bundleSuffix: String,
+    ): List<ChatMessage> {
+        val extras = ArrayList<ChatMessage>(2)
+        if (bundleSuffix.isNotBlank()) extras.add(ChatMessage.user(bundleSuffix))
+        if (scratchpad.isNotEmpty()) {
+            val visible = retainNotes(scratchpad, MAX_NOTES_RETAINED)
+            val dropped = scratchpad.size - visible.size
+            val sorted = visible.sortedBy { it.priority.ordinal }
+            val header = if (dropped > 0) "<your_notes> (showing ${visible.size} of ${scratchpad.size}; $dropped lower-priority/older notes folded)\n" else "<your_notes>\n"
+            extras.add(ChatMessage.user(header + sorted.joinToString("\n") { formatNote(it) } + "\n</your_notes>"))
+        }
+        return if (extras.isEmpty()) outgoing else outgoing + extras
     }
 
     private fun formatNote(note: NoteEntry): String {
@@ -651,7 +758,11 @@ class AgentLoop(
                 }
                 append("</parent_findings>")
             }
-            append("\n\nReturn your findings as a structured list: for each finding, include the file:line location, what you observed, and its significance.")
+            append(
+                "\n\nReturn ONE compact report (hard cap ~$DELEGATE_RESULT_MAX_CHARS chars): aggregate counts plus at most " +
+                    "the 15 most significant findings, each with file:line and one line on what/why. NEVER enumerate every " +
+                    "occurrence — count and aggregate instead.",
+            )
             if (length > 12000) setLength(12000)
         }
 
@@ -676,7 +787,13 @@ class AgentLoop(
                 .run(subSession, prompt, subListener, indicator)
         }
         val text = captured.toString().ifBlank { "(the sub-agent returned no result)" }
-        return SubOutcome(ToolResult.ok(text), subSession.totalUsage)
+        val capped = if (text.length > DELEGATE_RESULT_MAX_CHARS) {
+            text.take(DELEGATE_RESULT_MAX_CHARS) +
+                "\n…[delegate report truncated at $DELEGATE_RESULT_MAX_CHARS chars — it exceeded the compact-report contract; work from the retained part]"
+        } else {
+            text
+        }
+        return SubOutcome(ToolResult.ok(capped), subSession.totalUsage)
     }
 
     private fun loadTools(call: ContentBlock.ToolUse, activeGroups: MutableSet<String>): ToolResult {
@@ -779,7 +896,7 @@ class AgentLoop(
                     val critical = session.scratchpad.count { it.priority == NotePriority.CRITICAL }
                     val normal = session.scratchpad.count { it.priority == NotePriority.NORMAL }
                     val low = session.scratchpad.count { it.priority == NotePriority.LOW }
-                    val metrics = ContextCompressor.lastMetrics
+                    val metrics = ContextCompressor.lastCompressionMetrics
                     val trend = tokenEst - previousTokenEst
                     val trendStr = when {
                         trend > 500 -> "↑ growing (+$trend)"
@@ -790,6 +907,10 @@ class AgentLoop(
                     val report = buildString {
                         appendLine("Transcript: ~$tokenEst tokens ($pct% of $budget budget) $trendStr")
                         appendLine("Messages: ${session.messages.size}")
+                        val u = session.totalUsage
+                        val promptIn = u.inputTokens + u.cacheReadTokens
+                        val hit = if (promptIn > 0) u.cacheReadTokens * 100 / promptIn else 0
+                        appendLine("Prompt cache: $hit% hit rate this session (fresh ${u.inputTokens} + cacheRead ${u.cacheReadTokens} input tokens; cacheWrite ${u.cacheWriteTokens})")
                         appendLine("Scratchpad: ${session.scratchpad.size} notes ($critical CRITICAL, $normal NORMAL, $low LOW)")
                         if (session.activeTask.isNotBlank()) appendLine("Active task: \"${session.activeTask.take(100)}\"")
                         if (lastBundleAtoms > 0) {
@@ -797,6 +918,10 @@ class AgentLoop(
                             appendLine("Bundle quality: $lastBundleAtoms atoms included, $lastBundleDropped dropped ($fillRate% fill rate)")
                         }
                         appendLine("Compression count: $compressionCount")
+                        val evStats = ToolResultEvictor.lastStats
+                        if (!evStats.isNoop) {
+                            appendLine("Last eviction: ${evStats.resultsEvicted} stale tool output(s), ${evStats.charsReclaimed} chars reclaimed")
+                        }
                         if (metrics != null) {
                             appendLine("Last compression: ${metrics.method} (${(metrics.ratio * 100).toInt()}% retained, ${metrics.inputChars}→${metrics.outputChars} chars)")
                         }
@@ -823,7 +948,7 @@ class AgentLoop(
 
         if (delegateIndices.isNotEmpty()) {
             val futures = delegateIndices.map { idx ->
-                idx to SHARED_POOL.submit(Callable { runDelegateTimed(calls[idx], indicator, listener, session, bundleSuffix) })
+                idx to DELEGATE_POOL.submit(Callable { runDelegateTimed(calls[idx], indicator, listener, session, bundleSuffix) })
             }
             for ((idx, future) in futures) {
                 if (indicator.isCanceled) {
@@ -955,6 +1080,21 @@ class AgentLoop(
         /** Stuck-loop guard: abort only after this many repeated-fingerprint hits (nudged in between). */
         const val STUCK_ABORT_HITS = 3
 
+        /**
+         * Error-streak guard: when the SAME tool fails this many times in a row (args may differ —
+         * the identical-step guard cannot see it), inject a change-your-method nudge. Catches the
+         * classic Windows-shell death spiral: tail/grep/quoting variations all failing one after another.
+         */
+        const val TOOL_ERROR_STREAK_LIMIT = 3
+
+        /**
+         * Hard cap on what a delegate may return into the parent transcript. A sub-agent exists to
+         * PROTECT the orchestrator's context; an unbounded "structured report per finding" defeats
+         * the purpose (observed in practice: multi-thousand-token scan reports that were then thrown
+         * away). The delegate prompt states the cap; this enforces it.
+         */
+        const val DELEGATE_RESULT_MAX_CHARS = 6_000
+
         const val MAX_NOTES_RETAINED = 50
 
         /**
@@ -1008,6 +1148,43 @@ class AgentLoop(
         private val SHARED_POOL: ExecutorService = Executors.newFixedThreadPool(
             Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
         )
+
+        /**
+         * Delegates run on a SEPARATE pool from [SHARED_POOL]. A delegate is a nested [AgentLoop] that
+         * blocks on ITS OWN tool tasks — and those tools run on [SHARED_POOL]. If delegates also ran on
+         * [SHARED_POOL], enough concurrent delegates would occupy every thread while each waits on a
+         * sub-tool task that can never be scheduled (no free thread) — a classic thread-pool starvation
+         * DEADLOCK that hangs the whole turn until the user cancels (observed on ≤4-core hosts where the
+         * pool is 2). Hosting delegates on their own cached pool breaks the cycle: delegates block here,
+         * their sub-tools run on [SHARED_POOL], neither starves the other. Bounded by MAX_DELEGATIONS.
+         */
+        private val DELEGATE_POOL: ExecutorService = Executors.newCachedThreadPool()
+    }
+}
+
+/**
+ * Guarantees every [ContentBlock.ToolUse] in [calls] has a matching [ContentBlock.ToolResult] in
+ * [results], appending an error stub for any that is missing. The Anthropic/OpenAI APIs reject the
+ * NEXT request with a 400 if a persisted assistant turn contains a tool_use whose id has no
+ * tool_result — so an interrupted turn (fresh tools skipped) would otherwise permanently break the
+ * reused session. Top-level + internal so the invariant is unit-testable without a live loop.
+ */
+internal fun backfillMissingToolResults(
+    calls: List<ContentBlock.ToolUse>,
+    results: MutableList<ContentBlock.ToolResult>,
+) {
+    if (calls.isEmpty()) return
+    val have = results.mapTo(HashSet()) { it.toolUseId }
+    for (call in calls) {
+        if (have.add(call.id)) {
+            results.add(
+                ContentBlock.ToolResult(
+                    call.id,
+                    "Skipped: the turn was interrupted before this tool ran.",
+                    isError = true,
+                ),
+            )
+        }
     }
 }
 

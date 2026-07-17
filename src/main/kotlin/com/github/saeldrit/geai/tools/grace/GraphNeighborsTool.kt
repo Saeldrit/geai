@@ -39,9 +39,16 @@ object GraphNeighborsTool : AgentTool {
 
         val edges = PsiStructure.neighbors(context.project, nodeId, edgeKind, direction, max)
         if (edges.isEmpty()) {
+            val nodeExists = PsiStructure.resolveNode(context.project, nodeId) != null
             return ToolResult.ok(
-                "No matching edges from '$nodeId'. Use a psi:<fqClass>[#member] id for code or spec:<id> " +
-                    "for a spec (from graph_query / find_symbol). For who-implements/overrides, use find_implementations.",
+                if (nodeExists) {
+                    val filter = edgeKind?.let { " with kind $it" } ?: ""
+                    "Node '$nodeId' exists but has no edges$filter. Try without the edge_kind filter, " +
+                        "or use find_implementations for who-implements/overrides."
+                } else {
+                    "Node '$nodeId' was not found. Use a psi:<fqClass>[#member] id for code or spec:<id> " +
+                        "for a spec (from graph_query / find_symbol)."
+                },
             )
         }
 

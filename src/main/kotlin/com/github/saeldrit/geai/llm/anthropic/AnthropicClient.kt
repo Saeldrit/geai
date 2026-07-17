@@ -174,27 +174,25 @@ class AnthropicClient(
         return ChatResult(ChatMessage.assistant(blocks), stopReason, usage)
     }
 
-    private fun buildRequestBody(request: ChatRequest, streaming: Boolean): JsonObject {
+    // internal (not private) so the wire-format contract — a single stable cached system block, one
+    // cache breakpoint on the last tool spec, and a rolling breakpoint on the last tool_result — can
+    // be asserted directly in unit tests without a live API.
+    internal fun buildRequestBody(request: ChatRequest, streaming: Boolean): JsonObject {
         val root = JsonObject().apply {
             addProperty("model", request.model)
             addProperty("max_tokens", request.maxTokens)
             addProperty("temperature", request.temperature)
             if (streaming) addProperty("stream", true)
-            if (request.system.isNotBlank() || request.systemVolatileSuffix.isNotBlank()) {
+            if (request.system.isNotBlank()) {
+                // ONE stable, cached system block. Nothing volatile appended here — a per-turn change
+                // in `system` sits ahead of `messages` in the cache hierarchy and would invalidate the
+                // whole conversation cache. Volatile context rides in trailing user messages instead.
                 add("system", JsonArray().apply {
-                    if (request.system.isNotBlank()) {
-                        add(JsonObject().apply {
-                            addProperty("type", "text")
-                            addProperty("text", request.system)
-                            add("cache_control", ephemeral())
-                        })
-                    }
-                    if (request.systemVolatileSuffix.isNotBlank()) {
-                        add(JsonObject().apply {
-                            addProperty("type", "text")
-                            addProperty("text", request.systemVolatileSuffix)
-                        })
-                    }
+                    add(JsonObject().apply {
+                        addProperty("type", "text")
+                        addProperty("text", request.system)
+                        add("cache_control", ephemeral())
+                    })
                 })
             }
         }

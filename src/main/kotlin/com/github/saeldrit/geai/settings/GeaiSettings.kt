@@ -22,7 +22,11 @@ class GeaiSettingsState : BaseState() {
     var provider by enum(LlmProvider.ANTHROPIC)
     var model by string()
     var baseUrl by string()
-    var maxTokens by property(8_192)
+    // Output ceiling per reply. 8_192 was too low for a coding agent: large edits/summaries hit the
+    // cap and triggered the "continue" auto-retry loop (each continue re-ships the whole context) —
+    // observed 6 continues in a single session. 16_384 fits almost every real reply in one shot while
+    // staying well under modern models' 128k streaming ceiling. Raise further in geai.xml if needed.
+    var maxTokens by property(16_384)
 
     /**
      * Model context window in tokens — the real limit. Compaction is sized against this. Default
@@ -47,6 +51,19 @@ class GeaiSettingsState : BaseState() {
      * so a large output ceiling does not starve the transcript. Internal — not in the UI.
      */
     var outputReserveTokens by property(16_384)
+
+    /**
+     * Stale-output eviction: tool results older than this many most-recent assistant turns are
+     * replaced by short stubs (see ToolResultEvictor) so the transcript — re-sent on EVERY LLM call —
+     * does not keep paying for file dumps and command output the model already digested. Raise it for
+     * models that struggle to re-read after eviction; 0 disables eviction. Internal — not in the UI.
+     *
+     * Default 8: observed in practice that a multi-file edit routinely spans 5-7 assistant turns
+     * between reading a region and editing it (edit_file needs verbatim text) — at 4 the evictor
+     * stubbed outputs the model was still using, forcing re-reads (the exact pathology it exists
+     * to prevent). The 60k-char activation floor in ToolResultEvictor keeps small sessions safe.
+     */
+    var toolResultKeepTurns by property(8)
 
     /** Master switch for the GRACE toolset + doctrine (anchors/specs/graph/bundle/routing). Off = lean baseline. */
     var graceEnabled by property(true)

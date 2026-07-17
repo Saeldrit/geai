@@ -18,7 +18,16 @@ object RunCommandTool : AgentTool {
     override val description =
         "Run an external command (rebuild, run the app, run tests, git, etc.) in the project root or a " +
             "given working directory. Returns the exit code and captured stdout/stderr (tails). Use this " +
-            "to reproduce, rebuild, and audit the result of a fix."
+            "to reproduce, rebuild, and audit the result of a fix. " + shellHint()
+
+    private fun shellHint(): String =
+        if (System.getProperty("os.name", "").lowercase().contains("win")) {
+            "Runs through Windows cmd.exe: tail/head/grep/sed/cat/ls do NOT exist — use findstr/dir/type " +
+                "or one `powershell -Command` call; write multi-word git commit messages to " +
+                ".git/geai-commit-msg.txt via write_file and use `git commit -F`."
+        } else {
+            "Runs through /bin/sh."
+        }
     override val parametersJsonSchema = """
         {"type":"object","properties":{
           "command":{"type":"string","description":"Full command line, e.g. \"gradlew.bat test\" or \"git status\""},
