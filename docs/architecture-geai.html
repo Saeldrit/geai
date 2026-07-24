@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>geai — архитектура: GRACE context engine и управление контекстом</title>
+<style>
+  :root {
+    --bg: #1e1f22; --panel: #26282e; --panel2: #2b2d33; --text: #d4d7dd;
+    --muted: #9aa0ab; --accent: #4f9cf0; --accent2: #6fc06f; --warn: #e0a44a;
+    --border: #3a3d45; --code-bg: #17181b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.65 "Segoe UI", system-ui, sans-serif;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 32px 28px 80px; }
+  h1 { font-size: 28px; color: #fff; border-bottom: 2px solid var(--accent); padding-bottom: 10px; }
+  h2 { font-size: 22px; color: var(--accent); margin-top: 48px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  h3 { font-size: 17px; color: #e8eaef; margin-top: 30px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, .loc {
+    font-family: "JetBrains Mono", Consolas, monospace; font-size: 13px;
+    background: var(--code-bg); padding: 1px 6px; border-radius: 4px; color: #c8d3e8;
+  }
+  .loc { color: var(--accent2); white-space: nowrap; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto; font-size: 13px; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 14px; }
+  th, td { border: 1px solid var(--border); padding: 7px 11px; text-align: left; vertical-align: top; }
+  th { background: var(--panel2); color: #fff; }
+  tr:nth-child(even) td { background: var(--panel); }
+  .toc {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 18px 26px; margin: 26px 0;
+  }
+  .toc ul { margin: 6px 0; padding-left: 22px; }
+  .toc > ul > li { margin: 5px 0; font-weight: 600; }
+  .toc ul ul li { font-weight: 400; margin: 2px 0; }
+  .callout {
+    border-left: 4px solid var(--accent); background: var(--panel);
+    padding: 10px 16px; border-radius: 0 8px 8px 0; margin: 14px 0;
+  }
+  .callout.warn { border-left-color: var(--warn); }
+  .callout.ok { border-left-color: var(--accent2); }
+  .diagram {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 16px 20px; font-family: "JetBrains Mono", Consolas, monospace;
+    font-size: 12.5px; line-height: 1.45; overflow-x: auto; white-space: pre; color: #b9c2d0;
+  }
+  .muted { color: var(--muted); font-size: 13px; }
+  footer { margin-top: 60px; color: var(--muted); font-size: 12.5px; border-top: 1px solid var(--border); padding-top: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>geai — архитектура ядра</h1>
+<p>Автономный агент отладки и разработки внутри IntelliJ IDEA / Android Studio. Документ описывает
+три кита архитектуры: <b>GRACE context engine</b> (граф + якоря + спеки), <b>agent loop</b>
+(цикл исполнения) и <b>управление контекстом</b> (сборка, эвикция, компрессия, персистентность).
+Все факты раздела 3 сверены с кодом; ссылки даны в формате <span class="loc">file:line</span>.</p>
+
+<nav class="toc" id="toc">
+<b>Оглавление</b>
+<ul>
+  <li><a href="#s1">1. Архитектура GRACE context engine</a>
+    <ul>
+      <li><a href="#s1-1">1.1 Главный принцип — «lookup, не recall»</a></li>
+      <li><a href="#s1-2">1.2 Две категории знания</a></li>
+      <li><a href="#s1-3">1.3 Слои хранения</a></li>
+      <li><a href="#s1-4">1.4 Узлы и рёбра графа</a></li>
+      <li><a href="#s1-5">1.5 Якоря и Resolver SPI</a></li>
+      <li><a href="#s1-6">1.6 Graph-RAG: сборка context bundle</a></li>
+      <li><a href="#s1-7">1.7 Двухуровневая маршрутизация моделей</a></li>
+      <li><a href="#s1-8">1.8 Детект дрейфа спек</a></li>
+      <li><a href="#s1-9">1.9 Инструменты и доктрина</a></li>
+      <li><a href="#s1-10">1.10 Фазы реализации и грациозная деградация</a></li>
+    </ul>
+  </li>
+  <li><a href="#s2">2. Agent loop</a>
+    <ul>
+      <li><a href="#s2-1">2.1 Обзор хода (turn)</a></li>
+      <li><a href="#s2-2">2.2 Итерационный цикл</a></li>
+      <li><a href="#s2-3">2.3 Инструменты по требованию (tool groups)</a></li>
+      <li><a href="#s2-4">2.4 Механизмы безопасности цикла</a></li>
+      <li><a href="#s2-5">2.5 Суб-агенты (delegate)</a></li>
+      <li><a href="#s2-6">2.6 Завершение хода</a></li>
+    </ul>
+  </li>
+  <li><a href="#s3">3. Управление контекстом</a>
+    <ul>
+      <li><a href="#s3-1">3.1 Сборка контекста хода — послойная схема запроса</a></li>
+      <li><a href="#s3-2">3.2 Эвикция устаревших выводов инструментов</a></li>
+      <li><a href="#s3-3">3.3 Компрессия транскрипта</a></li>
+      <li><a href="#s3-4">3.4 Лимиты и калибровка</a></li>
+      <li><a href="#s3-5">3.5 Notes / scratchpad / skills</a></li>
+      <li><a href="#s3-6">3.6 Персистентность .geai/</a></li>
+      <li><a href="#s3-7">3.7 Hub connector</a></li>
+    </ul>
+  </li>
+</ul>
+</nav>
+
+<h2 id="s1">1. Архитектура GRACE context engine</h2>
+<p><b>GRACE</b> — Graph-RAG Anchored Code Engineering. Цель: <b>вынести интеллект из модели в
+строительные леса</b> — граф, якоря, спеки, детерминированные резолверы — так, чтобы даже
+дешёвая LLM (Qwen, DeepSeek) умела навигировать и понимать проект на высоком уровне, а крупные
+модели подключались как <b>авторы кода</b>, а не как костыль для понимания. GRACE не привязан
+ни к языку, ни к IDE: привязка локализована в резолверах (SPI); граф, спеки и доктрина при смене
+хоста (VS Code, LSP, CLI) не меняются. Первоисточник: <code>docs/GRACE_ARCHITECTURE.md</code>.</p>
+
+<h3 id="s1-1">1.1 Главный принцип — «lookup, не recall»</h3>
+<p>Слабые модели галлюцинируют факты (сигнатуры, пути, контракты), <i>потому что вспоминают их
+по памяти</i>. GRACE превращает каждый такой факт в операцию «спроси граф → резолвни якорь →
+подставь вывод инструмента». Модель не обязана <i>знать</i> — она обязана <i>следовать правилам
+и подставлять ground truth</i>.</p>
+<div class="callout">Интеллект агента = качество графа + детерминизм резолверов + строгость
+доктрины. Качество модели — множитель сверху, не фундамент.</div>
+
+<h3 id="s1-2">1.2 Две категории знания</h3>
+<table>
+<tr><th></th><th>A. Замысел / инвариант</th><th>B. Контракт / реальность кода</th></tr>
+<tr><td>Что</td><td>то, что <b>нельзя вывести из кода</b>: инварианты, формулы, бизнес-правила, state-машины</td>
+<td>сигнатуры API, DTO, схемы, символы — то, <b>чем владеет код</b></td></tr>
+<tr><td>Хранение</td><td>полноценный XML в <code>spec/</code> (источник истины, в VCS)</td>
+<td><b>якорь-ссылка</b>, не копия</td></tr>
+<tr><td>Как агент берёт</td><td>читает дословно</td><td><b>резолвит в живой источник</b> (PSI/OpenAPI)</td></tr>
+<tr><td>Дрейф</td><td>ревьюится людьми</td><td><b>детектируется механически</b> (hash якоря)</td></tr>
+</table>
+<div class="callout warn">Железное правило: Категория Б никогда не копируется в текст — ни в
+спеку, ни в ответ модели. Только якорь + резолв. Это убивает рассинхрон на корню.</div>
+
+<h3 id="s1-3">1.3 Слои хранения</h3>
+<pre><code>spec/                      # Категория A — авторитетные XML-спеки, в VCS
+  &lt;domain&gt;/&lt;name&gt;.spec.xml
+.geai/knowledge.xml        # оси знания NAV/STYLE/TECH/LESSON</code></pre>
+<p><b>Граф кода не материализуется и не хранится</b> — структура (классы, методы, иерархия,
+соседи) читается на лету из PSI/индекса IntelliJ (<code>PsiStructure</code>), поэтому всегда
+актуальна и не требует пересборки. Контент Категории Б нигде не кешируется — только
+<code>ref</code>, резолвящийся в живой источник по запросу.</p>
+
+<h3 id="s1-4">1.4 Узлы и рёбра графа</h3>
+<p>Узлы делятся на <b>сущности кода</b> (анкерные, категория Б) и <b>узлы знания/замысла</b>
+(контентные, категория А):</p>
+<table>
+<tr><th>Группа</th><th>Узлы</th></tr>
+<tr><td>Сущности кода (Б)</td><td><code>MODULE</code>, <code>PACKAGE</code>, <code>FILE</code>,
+<code>SYMBOL</code> (psi-anchor), <code>CONTRACT</code> (openapi/proto/graphql),
+<code>ENTRYPOINT</code>, <code>TEST</code></td></tr>
+<tr><td>Знание и замысел (А)</td><td><code>INVARIANT</code>, <code>FORMULA</code>,
+<code>STATE_MACHINE</code>, <code>INTENT</code>, <code>POLICY</code>/<code>RULE</code>,
+<code>STYLE</code>, <code>TECH</code>, <code>LESSON</code></td></tr>
+</table>
+<p>Рёбра: <code>contains</code>, <code>defines</code>, <code>calls</code>,
+<code>reads</code>/<code>writes</code>, <code>implements</code>/<code>extends</code>,
+<code>depends_on</code>, <code>refs</code>, <code>tested_by</code>, <code>governed_by</code>,
+<code>violates</code>, <code>supersedes</code>. Ключевое ребро — <b><code>governed_by</code></b>:
+оно связывает код с правилом, которое его регулирует; автор-модель, трогая узел, обязана
+подтянуть все governed_by и применить их как ограничения.</p>
+
+<h3 id="s1-5">1.5 Якоря и Resolver SPI</h3>
+<p>Якорь — URI-подобная ссылка <code>scheme:locator</code>. На каждую схему — свой резолвер
+(<code>AnchorResolver</code> SPI: <code>resolve(ref, project) → kind, signature, location,
+content, hash</code>).</p>
+<table>
+<tr><th>Схема</th><th>Резолвит в</th><th>Хост</th></tr>
+<tr><td><code>psi:&lt;fqName&gt;[#member]</code></td><td>сигнатура/доки/file:line символа</td><td>IntelliJ (PSI)</td></tr>
+<tr><td><code>sym:&lt;lsp-id&gt;</code></td><td>то же через LSP</td><td>не-IDE хосты</td></tr>
+<tr><td><code>file:&lt;path&gt;[:a-b]</code></td><td>диапазон строк</td><td>любой</td></tr>
+<tr><td><code>openapi:&lt;doc&gt;#&lt;json-pointer&gt;</code></td><td>живой кусок сгенерённого OpenAPI</td><td>стек с OpenAPI</td></tr>
+<tr><td><code>proto:</code> / <code>graphql:</code> / <code>jsonschema:</code></td><td>соответствующий контракт</td><td>по наличию</td></tr>
+<tr><td><code>git:&lt;rev&gt;:&lt;path&gt;</code></td><td>запиненная историческая истина</td><td>любой</td></tr>
+</table>
+<p>IntelliJ-хост регистрирует PSI-резолверы; будущий VS Code/CLI-хост — LSP-резолверы.
+Граф, спеки и доктрина при этом не меняются — это и есть универсальность.</p>
+
+<h3 id="s1-6">1.6 Graph-RAG: сборка context bundle</h3>
+<p>Retrieval — детерминированный обход графа, не векторный «авось». На каждый запрос
+<code>PsiStructure</code> собирает эфемерный подграф из живого PSI (структура) + спек
+(governance), и по нему идёт обход:</p>
+<div class="diagram">1. Seed     — стартовые узлы по имени/тегу/оси (из запроса задачи)
+2. Expand   — N хопов по типам рёбер (calls, governed_by, refs, tested_by)
+3. Resolve  — для анкерных узлов дёрнуть resolve_ref → ЖИВОЙ контент Категории Б
+4. Pack     — bundle: спеки A дословно + контракты B живьём + правила + соседи</div>
+<p>Ранжирование — <code>Ranker</code> SPI с дефолтным <code>DeterministicRanker</code>
+(hops + term-overlap + kind-prior); векторный ранкер плагинится в тот же шов
+(флаг <code>graceVectorRanker</code>), базовый обход детерминирован.</p>
+
+<h3 id="s1-7">1.7 Двухуровневая маршрутизация моделей</h3>
+<table>
+<tr><th>Tier</th><th>Модели</th><th>Делает</th><th>Объём</th></tr>
+<tr><td><b>Navigator</b></td><td>Qwen, DeepSeek, Haiku</td><td>обход графа, резолв якорей, сборка bundle, локализация, механические правки</td><td>~90% операций, копейки</td></tr>
+<tr><td><b>Author</b></td><td>Qwen-max, Claude Opus</td><td>написание кода/рефактор с применением правил, трейд-оффы</td><td>~10%, дорого, по делу</td></tr>
+</table>
+<p>Тиринг opt-in (<code>tieredRoutingEnabled</code>, <code>navigatorModel</code>): цикл идёт на
+дешёвой navigator-модели, авторинг кода — через <code>escalate_author</code> на сильной
+main-модели. Navigator готовит минимальный точный bundle → Author пишет: дорогая модель не
+тратит токены на «понять проект» — только на «написать правильно».</p>
+
+<h3 id="s1-8">1.8 Детект дрейфа спек</h3>
+<p>Так как категория Б анкерная и хэшированная, geai <b>механически</b> проверяет
+согласованность спек↔код: каждый <code>ref</code> всё ещё резолвится; <code>contentHash</code>
+живого резолва совпадает с сохранённым (иначе узел <code>stale</code>); правила, на которые
+ссылается код, существуют. <code>spec_validate</code> гоняется после правок и в CI и репортит
+OK/DRIFT/BROKEN/NO-BASELINE. Именно это позволяет доверять слабой модели: она не может молча
+рассинхронизировать проект.</p>
+
+<h3 id="s1-9">1.9 Инструменты и доктрина</h3>
+<p><b>Navigator (read, дёшево):</b> <code>graph_query</code> (символы по имени вживую из индекса
++ governing-спеки), <code>graph_neighbors</code> (соседи узла: PSI + governed_by/refs),
+<code>resolve_ref</code>, <code>context_bundle</code> (seed→expand→resolve→pack — ключевой),
+<code>spec_lookup</code>/<code>spec_list</code>, <code>spec_validate</code>.
+<b>Author/mutating:</b> <code>spec_record</code> (create-or-update с CAS по version),
+существующие <code>edit_file</code>/<code>write_file</code>/<code>run_command</code>/debug-*.
+Отдельного <code>graph_reindex</code> нет — пересобирать нечего, структура живая.</p>
+<p>Доктрина (SystemPrompt): любой вопрос «где/что/почему» → сперва graph_query/context_bundle,
+не grep; факты категории Б → всегда resolve_ref, никогда не по памяти; перед написанием кода —
+подтянуть governed_by и применить как жёсткие ограничения; после правок — spec_validate +
+сборка/тесты; при неудаче — записать LESSON.</p>
+
+<h3 id="s1-10">1.10 Фазы реализации и грациозная деградация</h3>
+<table>
+<tr><th>Фаза</th><th>Содержание</th><th>Статус</th></tr>
+<tr><td>Ф1 — Якорный хребет</td><td><code>AnchorResolver</code> SPI, резолверы file:/psi:/openapi:, инструмент resolve_ref</td><td>✅</td></tr>
+<tr><td>Ф2 — Spec-слой</td><td><code>SpecModel</code>/<code>SpecStore</code> (JDOM), spec_* инструменты, hash-базлайны</td><td>✅</td></tr>
+<tr><td>Ф3 — Граф</td><td>материализованный стор — позже удалён в пользу живого PSI (Ф6)</td><td>✅→Ф6</td></tr>
+<tr><td>Ф4 — Graph-RAG bundle</td><td><code>ContextBundler</code>, Ranker SPI, инструмент context_bundle</td><td>✅</td></tr>
+<tr><td>Ф5 — Маршрутизация моделей</td><td>тиринг Navigator/Author, escalate_author</td><td>✅</td></tr>
+<tr><td>Ф6 — Живой PSI</td><td>graph_query/neighbors/bundle с PsiStructure; эфемерный CodeGraph на запрос; search_text на индексе IntelliJ</td><td>✅</td></tr>
+</table>
+<div class="callout ok">Грациозная деградация: нет <code>spec/</code> → geai работает на чистой
+PSI-навигации + файловом контексте. GRACE усиливает, но не обязателен; ноль cold-start, ничего
+не устаревает.</div>
+
+<h2 id="s2">2. Agent loop</h2>
+<p>Ядро исполнения — <code>AgentLoop</code>
+(<span class="loc">src/main/kotlin/com/github/saeldrit/geai/agent/AgentLoop.kt</span>),
+единственный нативный движок (CLI-движок удалён в Ф6). Точка входа —
+<code>GeaiAgentService.submit()</code> (<span class="loc">GeaiAgentService.kt:78-121</span>):
+ход выполняется как фоновая <code>Task.Backgroundable</code> с индикатором прогресса, метка
+Local History ставится перед ходом (для revert), сессия сохраняется на каждом
+<code>ToolFinished</code> (с троттлингом) и финально по Done/Error/Cancelled.</p>
+
+<h3 id="s2-1">2.1 Обзор хода (turn)</h3>
+<p>Один вызов <code>run(session, userText, listener, indicator)</code> — это один «ход»
+пользователя, внутри которого крутится итерационный цикл LLM ⇄ инструменты. Перед циклом:
+строится системный промпт (<code>SystemPrompt.build</code>, lean-вариант для суб-агентов,
+<span class="loc">AgentLoop.kt:134</span>), парсится slash-команда, подтягивается подсказка о
+прошлых сессиях (<code>PastSessions.hint</code>, только для первого сообщения сессии,
+<span class="loc">AgentLoop.kt:136-140</span>) и собирается GRACE-бандл, который <b>однократно
+вшивается в транскрипт</b> сразу после задачи (<span class="loc">AgentLoop.kt:141-148</span>,
+подробно — §3.1).</p>
+
+<h3 id="s2-2">2.2 Итерационный цикл</h3>
+<div class="diagram">while (true):                         // AgentLoop.kt:178+
+  1. проверка cancel / maxIterations / токен-бюджета суб-агента
+  2. эвикция + компрессия транскрипта (§3.2, §3.3; skip при активном debug)
+  3. LLM-запрос: system + tools + транскрипт + trailing-контекст (§3.1)
+  4. stream-ответ → AssistantText / Reasoning события
+  5. есть tool_use?  → исполнить инструменты, добавить tool_result, continue
+     нет tool_use?   → ход завершён (финальный ответ)</div>
+<p>Каждая итерация пересылает весь транскрипт, поэтому экономика хода определяется
+кешируемостью префикса и леанностью транскрипта — этому посвящён весь раздел 3.</p>
+
+<h3 id="s2-3">2.3 Инструменты по требованию (tool groups)</h3>
+<p>Реестр — <code>GeaiToolset</code> (<span class="loc">tools/GeaiToolset.kt</span>): ядровые
+группы (файлы, поиск, GRACE, knowledge) объявлены сразу, тяжёлые группы
+(<code>debug</code>/<code>run</code>/<code>specs</code>/<code>selfmod</code>) подключаются
+инструментом <code>load_tools</code> в <code>activeGroups</code>
+(<span class="loc">AgentLoop.kt:163-165</span>) — это экономит контекст: описания десятков
+инструментов не оплачиваются, пока не нужны. Если при старте хода уже есть активная
+debug-сессия, группа <code>debug</code> активируется автоматически
+(<span class="loc">AgentLoop.kt:165</span>).</p>
+
+<h3 id="s2-4">2.4 Механизмы безопасности цикла</h3>
+<table>
+<tr><th>Механизм</th><th>Что делает</th><th>Где</th></tr>
+<tr><td>maxIterations</td><td>жёсткий стоп: «Safety stop: N iterations without finishing» → summarizeAndFinish</td><td><span class="loc">AgentLoop.kt:183-190</span></td></tr>
+<tr><td>subTokenBudget</td><td>токен-бюджет суб-агента; по достижении — вернуть находки</td><td><span class="loc">AgentLoop.kt:191-197</span></td></tr>
+<tr><td>recentStepSignatures</td><td>детект зацикливания: повтор идентичных шагов (tool+args)</td><td><span class="loc">AgentLoop.kt:157</span></td></tr>
+<tr><td>toolErrorStreaks</td><td>серии ошибок одного инструмента → принуждение сменить подход</td><td><span class="loc">AgentLoop.kt:158</span></td></tr>
+<tr><td>contextOverflowRetries</td><td>overflow контекста → форс-компрессия и повтор запроса (§3.3)</td><td><span class="loc">AgentLoop.kt:161</span></td></tr>
+<tr><td>maxTokensAutoContinues</td><td>ответ обрезан по max_tokens → автопродолжение</td><td><span class="loc">AgentLoop.kt:162</span></td></tr>
+<tr><td>indicator.isCanceled</td><td>кооперативная отмена пользователем в любой точке</td><td><span class="loc">AgentLoop.kt:179-182</span></td></tr>
+</table>
+
+<h3 id="s2-5">2.5 Суб-агенты (delegate)</h3>
+<p>Инструмент <code>delegate</code> порождает <b>read-only</b> суб-агента со своим чистым
+контекстом: тот же <code>AgentLoop</code>, но с профилем <code>isSubAgent</code> — lean-промпт,
+свой <code>maxIterations</code> и токен-бюджет (<span class="loc">AgentLoop.kt:149-150</span>),
+без мутирующих инструментов. Суб-агенту передаётся текущий GRACE-бандл
+(<code>currentBundle</code>, <span class="loc">AgentLoop.kt:172</span>) и топ-10 заметок
+родителя (§3.5); отчёт ограничен ~6000 символов — родитель получает выжимку, а не сырые файлы.
+Количество делегирований на ход ограничено (<code>delegationCount</code>,
+<span class="loc">AgentLoop.kt:166</span>).</p>
+
+<h3 id="s2-6">2.6 Завершение хода</h3>
+<p>Нормальное завершение — ответ ассистента <b>без tool_use</b>. Аварийные пути
+(<code>summarizeAndFinish</code>) — лимит итераций, бюджет суб-агента: агент подводит итог по
+уже сделанному и отдаёт управление. Все пути ведут к событиям
+<code>Done</code>/<code>Error</code>/<code>Cancelled</code> для слушателя
+(UI-панель или <code>HubTaskListener</code>, §3.7) и финальному сохранению сессии
+(<span class="loc">GeaiAgentService.kt:99,115</span>). Метрики хода (итерации, токены,
+компрессии) собирает <code>AgentMetrics</code> (<span class="loc">AgentLoop.kt:152</span>).</p>
+
+<h2 id="s3">3. Управление контекстом</h2>
+<p>Контекстное окно — главный ресурс агента: каждая итерация цикла пересылает весь транскрипт.
+Подсистема управления контекстом решает четыре задачи: <b>собрать</b> запрос кеш-дружелюбно
+(§3.1), <b>не платить</b> за устаревшие выводы инструментов (§3.2), <b>пережить</b> длинные
+ходы без потери знания (§3.3) и <b>сохранить</b> всё на диск (§3.6). Все факты сверены с кодом.</p>
+
+<h3 id="s3-1">3.1 Сборка контекста хода — послойная схема запроса</h3>
+<p>Запрос к LLM строится слоями от самого стабильного (кешируемого провайдером) к самому
+изменчивому:</p>
+<div class="diagram">┌───────────────────────────────────────────────────────────────┐
+│ 1. System prompt + описания инструментов        [кеш: стабилен │
+│    (SystemPrompt.build, lean для суб-агентов)    весь ход]     │
+├───────────────────────────────────────────────────────────────┤
+│ 2. Транскрипт: задача пользователя                             │
+│    + GRACE-бандл, вшитый ОДНОКРАТНО после задачи               │
+│    + PastSessions.hint (подсказка о прошлых сессиях)           │
+│    + вся история итераций (assistant / tool_use / tool_result) │
+│                          [кеш: rolling breakpoint, растёт]     │
+├─────────────── rolling cache breakpoint ──────────────────────┤
+│ 3. Volatile-хвост (НЕ кешируется, меняется каждую итерацию):   │
+│    <your_notes> — заметки агента                               │
+│    + bundleSuffix (только после request_context среди хода)    │
+└───────────────────────────────────────────────────────────────┘</div>
+<p><b>Однократное вшивание бандла.</b> GRACE-бандл + <code>PastSessions.hint</code> склеиваются
+и добавляются в транскрипт одним user-сообщением сразу после задачи
+(<span class="loc">AgentLoop.kt:141-148</span>). Комментарий в коде объясняет экономику: внутри
+кешируемого префикса rolling breakpoint бандл оплачивается свежим <b>один раз</b> и дальше
+подаётся из кеша на каждой из ~20 итераций хода; трейлинг-копия после breakpoint никогда бы не
+кешировалась и оплачивалась бы заново каждую итерацию. Поэтому
+<code>bundleSuffix</code> — трейлинг-бандл — пуст и заполняется только редким
+<code>request_context</code> посреди хода (<span class="loc">AgentLoop.kt:169-173</span>).</p>
+<p><b>Volatile-блок заметок.</b> <code>appendTrailingContext</code>
+(<span class="loc">AgentLoop.kt:680-695</span>) добавляет после rolling cache breakpoint блок
+<code>&lt;your_notes&gt;</code> — до 50 актуальных заметок (<code>MAX_NOTES_RETAINED</code>,
+<span class="loc">AgentLoop.kt:1098</span>). Заметки меняются каждую итерацию, поэтому живут
+в некешируемом хвосте — их изменение не инвалидирует кеш транскрипта.</p>
+<p><b>PastSessions.hint</b> подтягивается только когда сессия практически пуста
+(<code>session.messages.size &lt;= 1</code>) и не для суб-агентов
+(<span class="loc">AgentLoop.kt:136-140</span>): агенту показываются заголовки/итоги возможно
+релевантных прошлых сессий, чтобы не расследовать заново уже решённое.</p>
+<p><b>Эвристика смены задачи.</b> В начале хода новый запрос пользователя сравнивается с
+текущей задачей; при детекте переключения scratchpad чистится по приоритетам: LOW-заметки
+сбрасываются, старые NORMAL отсекаются, CRITICAL сохраняются — с уведомлением
+«🧹 Task switch: dropped … kept …» (<span class="loc">AgentLoop.kt:120-124</span>).</p>
+
+<h3 id="s3-2">3.2 Эвикция устаревших выводов инструментов</h3>
+<p><code>ToolResultEvictor</code>
+(<span class="loc">context/ToolResultEvictor.kt</span>) — механическая, без LLM, замена
+устаревших tool_result на короткие заглушки. Мотивация (комментарий
+<span class="loc">ToolResultEvictor.kt:7-19</span>): 40k-символьный файл, прочитанный 20 ходов
+назад, оплачивается на <i>каждом</i> последующем запросе, хотя модель давно извлекла из него
+нужное; компрессор же срабатывает только у лимита окна и стоит вызова summarizer-а.</p>
+<table>
+<tr><th>Константа</th><th>Значение</th><th>Смысл</th><th>Где</th></tr>
+<tr><td><code>MIN_EVICTABLE_CHARS</code></td><td>600</td><td>результаты ≤600 символов не трогаются — заглушка не окупится</td><td><span class="loc">ToolResultEvictor.kt:24</span></td></tr>
+<tr><td><code>STUB_HEAD_CHARS</code></td><td>200</td><td>сколько «головы» оригинала выживает в заглушке (обрез по границе строки)</td><td><span class="loc">ToolResultEvictor.kt:27</span></td></tr>
+<tr><td><code>MIN_TOTAL_GAIN_CHARS</code></td><td>16 000</td><td>гистерезис: батч не запускается, пока нельзя вернуть ≥16k символов разом</td><td><span class="loc">ToolResultEvictor.kt:32</span></td></tr>
+<tr><td><code>MIN_TRANSCRIPT_CHARS</code></td><td>60 000</td><td>пол активации: ниже — эвикция не окупает промах кеша, малые сессии не трогаются</td><td><span class="loc">ToolResultEvictor.kt:37</span></td></tr>
+<tr><td><code>toolResultKeepTurns</code></td><td>8</td><td>последние 8 assistant-ходов неприкосновенны (настройка)</td><td><span class="loc">GeaiSettings.kt:66</span></td></tr>
+</table>
+<p><b>Гистерезисные батчи.</b> Каждый батч переписывает префикс транскрипта и тем самым
+инвалидирует prompt-кеш провайдера на весь диалог — поэтому батчи должны быть редкими и
+крупными: сначала сухой подсчёт выигрыша, и только если <code>gain ≥ 16k</code> — фактическая
+замена (<span class="loc">ToolResultEvictor.kt:54-91</span>). Граница «свежести» — индекс
+K-го с конца assistant-сообщения (<span class="loc">ToolResultEvictor.kt:97-106</span>);
+парность tool_use/tool_result никогда не рвётся — меняется только контент блока.</p>
+<p><b>Формат заглушки</b> (<span class="loc">ToolResultEvictor.kt:129-137</span>): первые
+~200 символов оригинала (для <code>read_file</code> это заголовок «// path (lines a-b of N)»,
+для <code>run_command</code> — команда и exit code), затем маркер:</p>
+<pre><code>…[stale tool output evicted: N chars of stale output dropped to keep context
+lean. Durable findings are in SESSION MEMORY / your notes; re-read the specific
+range or re-run the command if you truly need this data again]</code></pre>
+<p>Маркер служит и защитой от повторной эвикции (<span class="loc">ToolResultEvictor.kt:122-123</span>),
+и явной подсказкой агенту: узкое повторное чтение — штатный путь восстановления, знание не
+потеряно (оно в notes / SESSION MEMORY).</p>
+
+<h3 id="s3-3">3.3 Компрессия транскрипта</h3>
+<p><code>ContextCompressor</code> (<span class="loc">context/ContextCompressor.kt</span>) —
+lossy-сжатие, срабатывающее по водяным знакам: <b>триггер при заполнении 70%</b> бюджета
+транскрипта, <b>цель — ужать до 50%</b> (<span class="loc">ContextCompressor.kt:30,38</span>).
+Хвост из последних сообщений (адаптивно 6–14 в зависимости от бюджета,
+<span class="loc">ContextCompressor.kt:47-48,161-164</span>) сохраняется дословно; всё старше
+сворачивается.</p>
+<p><b>Пайплайн:</b> <code>TranscriptAnalyzer</code> строит детерминированный дайджест
+(SESSION MEMORY ledger: файлы, вызовы, находки, выводы), затем — если есть summarizer —
+старый сегмент рендерится в текст и сжимается LLM по доктрине
+<code>SemanticCompressor.DOCTRINE</code>
+(<span class="loc">context/SemanticCompressor.kt:12-36</span>): строгий JSON с полями
+taskDescription/findings/decisions/codeChanges/openQuestions/nextSteps/userPreferences,
+обязательное сохранение всех file:line, лимит 2000 токенов
+(<span class="loc">SemanticCompressor.kt:38</span>). Итоговое synthetic-сообщение:
+<code>[CURRENT ACTIVE TASK …]</code> + recap + <code>[SESSION MEMORY …]</code>
+(<span class="loc">ContextCompressor.kt:127-143</span>).</p>
+<p><b>Каскад fallback-ов</b> (метод фиксируется в метриках,
+<span class="loc">ContextCompressor.kt:144-157</span>):</p>
+<table>
+<tr><th>Метод</th><th>Когда</th></tr>
+<tr><td><code>summarize</code></td><td>LLM-recap удался — ledger + семантическая выжимка</td></tr>
+<tr><td><code>ledger</code></td><td>summarizer недоступен/вернул пусто — только детерминированный дайджест</td></tr>
+<tr><td><code>truncate</code></td><td>результат всё ещё не влез в бюджет — механическое усечение (сначала TOOL-блоки, затем ASSISTANT/USER, затем drop сообщений; <span class="loc">ContextCompressor.kt:189-200</span>)</td></tr>
+<tr><td><code>none</code></td><td>ниже watermark — компрессия не нужна</td></tr>
+</table>
+<p><b>Особые режимы:</b> при активной debug-группе компрессия пропускается
+(<code>skipCompression = activeGroups.contains("debug")</code>,
+<span class="loc">AgentLoop.kt:199</span>) — нельзя терять контекст живой отладочной сессии.
+При overflow-ошибке провайдера выполняется <b>forced-compress</b> до половины окна с повтором
+запроса (<span class="loc">AgentLoop.kt:307-321</span>, счётчик
+<code>contextOverflowRetries</code>). Ручная команда <code>/compact</code> сжимает транскрипт
+до <code>COMPACT_TARGET_TOKENS = 48 000</code> токенов
+(<span class="loc">GeaiAgentService.kt:26</span>).</p>
+
+<h3 id="s3-4">3.4 Лимиты и калибровка</h3>
+<p>Все «пороговые» числа вынесены в настройки (<code>GeaiSettings</code>,
+<span class="loc">GeaiSettings.kt</span>) или константы агента, чтобы пользователь мог
+подстроить систему под свой бюджет и модель.</p>
+<table>
+<tr><th>Параметр</th><th>Дефолт</th><th>Где</th><th>Роль</th></tr>
+<tr><td><code>maxContextTokens</code></td><td>128 000</td><td><span class="loc">GeaiSettings.kt:37</span></td><td>размер окна модели; от него считаются watermark-ы компрессии</td></tr>
+<tr><td><code>maxTokens</code></td><td>16 384</td><td><span class="loc">GeaiSettings.kt:29</span></td><td>потолок output-а на один ответ LLM</td></tr>
+<tr><td><code>outputReserveTokens</code></td><td>16 384</td><td><span class="loc">GeaiSettings.kt:53</span></td><td>резерв под следующий ответ при расчёте компрессии</td></tr>
+<tr><td><code>maxTranscriptTokens</code></td><td>0 (всё окно)</td><td><span class="loc">GeaiSettings.kt:47</span></td><td>мягкий потолок транскрипта — раньше триггерит компрессию</td></tr>
+<tr><td><code>toolResultKeepTurns</code></td><td>8</td><td><span class="loc">GeaiSettings.kt:66</span></td><td>глубина эвикции; 0 отключает эвикцию</td></tr>
+<tr><td><code>COMPACT_TARGET_TOKENS</code></td><td>48 000</td><td><span class="loc">GeaiAgentService.kt:26</span></td><td>цель ручной команды <code>/compact</code></td></tr>
+</table>
+<p><b>Суб-агенты</b> (§2.5) имеют отдельный бюджет: <code>SUB_MAX_ITERATIONS = 8</code>,
+<code>SUB_MAX_TURN_TOKENS = 40 000</code> (<span class="loc">AgentLoop.kt:1105-1106</span>);
+ответ суб-агента обрезается до <code>DELEGATE_RESULT_MAX_CHARS = 6 000</code>
+(<span class="loc">AgentLoop.kt:1096</span>), а суммаризация — до <code>SUMMARY_MAX_TOKENS = 2 000</code>
+(<span class="loc">AgentLoop.kt:1108</span>). Все числа подобраны под бюджет в 128k токенов:
+при другой модели достаточно изменить настройки в UI.</p>
+
+<h3 id="s3-5">3.5 Notes / scratchpad / skills</h3>
+<p><b>Scratchpad</b> — инструмент <code>note</code>, позволяющий агенту хранить промежуточные
+факты между итерациями без повторного чтения файлов. Заметки живут в памяти сессии и
+<b>не переживают</b> перезапуск IDE (для持久ного знания — knowledge store, §3.6).
+Три уровня приоритета: <code>CRITICAL</code> (переживают компрессию и смену задачи),
+<code>NORMAL</code> (переживают компрессию), <code>LOW</code> (сбрасываются при смене задачи).
+В запрос к LLM заметки вшиваются блоком <code>&lt;your_notes&gt;</code> после rolling cache
+breakpoint — максимум <code>MAX_NOTES_RETAINED = 50</code> штук, отсортированных по приоритету
+(<span class="loc">AgentLoop.kt:1098</span>). При превышении лимита старые LOW-заметки отбрасываются
+с явным сообщением «showing X of Y».</p>
+<p><b>Эвристика смены задачи</b> (<span class="loc">AgentLoop.kt:120-124</span>): при детекте
+переключения (новый запрос не похож на текущую задачу) LOW-заметки сбрасываются, старые NORMAL
+отсекаются, CRITICAL сохраняются — агент получает уведомление с количеством потерянных/сохранённых
+записей.</p>
+<p><b>Skills</b> —持久ные пользовательские предпочтения, сохраняемые в
+<code>.geai/skills/*.json</code> (<span class="loc">SkillStore.kt:38-39</span>). Лимит
+<code>MAX_SKILLS = 20</code> (<span class="loc">SkillStore.kt:25</span>). Семь доменов
+конфликтов (indentation, language, style, verbosity, comments, async, error handling) — при
+сохранении нового навыка проверяется пересечение с существующими, и пользователь получает
+предупреждение. Skills рендерятся в <code>&lt;user_preferences&gt;</code> XML, сгруппированные
+по категориям, и вшиваются в system prompt — они переживают перезапуск IDE, в отличие от
+scratchpad.</p>
+
+<h3 id="s3-6">3.6 Персистентность .geai/</h3>
+<p>Вся持久ная состояние geai хранится в директории <code>&lt;project&gt;/.geai/</code>:</p>
+<table>
+<tr><th>Путь</th><th>Содержимое</th><th>Формат</th></tr>
+<tr><td><code>.geai/sessions/*.json</code></td><td>сессии агента (транскрипт + метаданные)</td><td>JSON</td></tr>
+<tr><td><code>.geai/knowledge.xml</code></td><td>индекс знаний (NAV/STYLE/TECH/LESSON)</td><td>XML, CAS по version</td></tr>
+<tr><td><code>.geai/skills/*.json</code></td><td>пользовательские навыки</td><td>JSON</td></tr>
+</table>
+<p><b>GeaiSessionStore</b> (<span class="loc">GeaiSessionStore.kt:24-33</span>): атомарная запись
+(временный файл → <code>Files.move(REPLACE_EXISTING)</code>); <code>saveAsync()</code> —
+коалесцирующая асинхронная запись: если очередь забита, сохраняется только последний снимок.
+<code>loadMostRecent()</code> берёт свежайший <code>.json</code> по last-modified time.
+Fallback-путь при недоступности проектовой директории: <code>PathManager/geai/&lt;hash&gt;/sessions/</code>.</p>
+<p><b>GeaiKnowledgeStore</b> (<span class="loc">GeaiKnowledgeStore.kt:26-31</span>): единый
+XML-файл; каждая запись — ось (<code>NAV</code>/<code>STYLE</code>/<code>TECH</code>/<code>LESSON</code>),
+теги, заголовок, тело, location, version. <code>put(expectedVersion)</code> — CAS-апдейт: при
+несовпадении версии возвращается <code>Conflict(currentVersion)</code>. In-memory кеш
+инвалидируется при внешних правках файла (<code>invalidateCache()</code>).
+<code>query(axis?, tags, text?)</code> фильтрует по оси, совпадению тегов и полнотекстовому
+поиску по заголовку/телу/тегам/локации.</p>
+<p><b>Доктрина:</b> <code>.geai/</code> попадает в <code>.gitignore</code> — сессии и знания
+не коммитятся в репозиторий проекта (они персональны). Знания проекта (категория А) хранятся
+в <code>spec/</code> и коммитятся; знания агента (LESSON, STYLE) — в <code>.geai/</code> и не
+коммитятся.</p>
+
+<h3 id="s3-7">3.7 Hub connector</h3>
+<p>Hub — координатор распределённой разработки: централизованная точка, где создаются задачи и
+собираются результаты. geai-плагин подключается как <b>spoke</b> (вассал) через WebSocket.</p>
+<p><b>Протокол.</b> Версия <code>1.2.0</code> (<span class="loc">HubService.kt:29</span>).
+Идентификатор spoke: <code>geai-&lt;ideType&gt;-&lt;projectName&gt;-&lt;hash8&gt;</code>
+(<span class="loc">HubService.kt:67-71</span>); capabilities определяются типом IDE:
+webstorm → frontend, android-studio → android, иначе → backend
+(<span class="loc">HubService.kt:176-180</span>). Сообщения — полиморфный sealed class
+<code>WsMessage</code> с <code>@SerialName</code> дискриминаторами:
+<b>Inbound:</b> <code>HelloAck</code>, <code>TaskAssign</code>, <code>TaskCancel</code>,
+<code>FileRequest</code>, <code>Ping</code>/<code>Pong</code>.
+<b>Outbound:</b> <code>SpokeHello</code>, <code>SpokeStatus</code>, <code>SpokeEvent</code>,
+<code>SpokeMetrics</code>, <code>AgentProgress</code>, <code>TaskLog</code>,
+<code>TaskResult</code>, <code>FileContent</code>, <code>ContractPublish</code>/<code>ContractReject</code>.</p>
+<p><b>Транспорт.</b> <code>java.net.http.WebSocket</code>, connect timeout 8s
+(<span class="loc">HubClient.kt:93-96</span>). Авто-реконнект с экспоненциальным backoff
+<code>(1 &lt;&lt; min(n,5)).coerceAtMost(30)</code> секунд
+(<span class="loc">HubClient.kt:120-126</span>). Heartbeat ping каждые 25 секунд
+(<span class="loc">HubClient.kt:130-133</span>). Порядок сообщений гарантируется цепочкой
+<code>sendChain</code> CompletableFuture (<span class="loc">HubClient.kt:77-85</span>).
+Состояние: <code>HubState</code> sealed — <code>Disconnected</code> / <code>Connecting</code> /
+<code>Connected(hubVersion)</code> / <code>Error(message)</code>.</p>
+<p><b>Исполнение задачи.</b> При <code>TaskAssign</code> запускается <code>HubTaskListener</code>
+(<span class="loc">HubService.kt:476+</span>), который мостит <code>AgentEvent</code> → Hub:
+progress %, лог-строки, пути артефактов, финальный результат. Задача выполняется тем же
+<code>AgentLoop</code>, что и интерактивный ход — с теми же инструментами, GRACE-бандлом,
+эвикцией и компрессией. Авто-подключение при старте проекта (<code>hubAutoConnect = true</code>,
+<span class="loc">GeaiSettings.kt:116</span>) позволяет IDE мгновенно стать spoke без ручного
+действия.</p>
+<p><b>File pull.</b> Hub может запросить содержимое файла, который произвёл агент
+(<code>FileRequest</code> → <code>FileContent</code>), с ограничением <code>MAX_FILE_BYTES = 25 MB</code>
+(<span class="loc">HubService.kt:31</span>) и проверкой, что путь внутри проекта.</p>
+
+<footer>
+  <p>geai — архитектура ядра. Последнее обновление: v0.0.82. Сверено с кодом.</p>
+</footer>
+</div>
+</body>
+</html>

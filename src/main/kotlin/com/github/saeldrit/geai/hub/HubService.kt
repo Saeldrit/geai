@@ -27,6 +27,8 @@ class HubService(private val project: Project) : Disposable {
     companion object {
         fun getInstance(project: Project): HubService = project.getService(HubService::class.java)
         private const val VERSION = "1.2.0"
+        /** Upper bound on a single file the hub may pull back — keeps a base64 frame sane. */
+        private const val MAX_FILE_BYTES = 25L * 1024 * 1024
     }
 
     private val log = logger<HubService>()
@@ -182,12 +184,60 @@ class HubService(private val project: Project) : Disposable {
             is WsMessage.HelloAck -> transition(HubState.Connected(message.hubVersion))
             is WsMessage.TaskAssign -> onTaskAssigned(message)
             is WsMessage.TaskCancel -> onTaskCancelled(message)
+            is WsMessage.FileRequest -> onFileRequest(message)
             is WsMessage.Ping -> client?.send(WsMessage.Pong(System.currentTimeMillis()))
             is WsMessage.Pong -> Unit
             is WsMessage.SpokeHello, is WsMessage.SpokeStatus, is WsMessage.SpokeEvent,
             is WsMessage.SpokeMetrics, is WsMessage.AgentProgress, is WsMessage.TaskLog,
-            is WsMessage.TaskResult, is WsMessage.ContractPublish, is WsMessage.ContractReject -> Unit
+            is WsMessage.TaskResult, is WsMessage.FileContent,
+            is WsMessage.ContractPublish, is WsMessage.ContractReject -> Unit
         }
+    }
+
+    /** Serves a produced file back to the hub. Reads on a pooled thread; refuses anything outside
+     *  the project or larger than [MAX_FILE_BYTES]. Path is the same project-relative string the
+     *  agent used in write_file, so it maps directly to an artifact shown in the hub. */
+    private fun onFileRequest(req: WsMessage.FileRequest) {
+        val activeClient = client ?: return
+        com.intellij.util.concurrency.AppExecutorUtil.getAppExecutorService().execute {
+            val reply = runCatching {
+                val base = project.basePath ?: error("no project base path")
+                val baseDir = File(base).canonicalFile
+                val raw = req.path.trim().replace('\\', '/')
+                val target = (if (File(raw).isAbsolute) File(raw) else File(baseDir, raw)).canonicalFile
+                require(target.path == baseDir.path || target.path.startsWith(baseDir.path + File.separator)) {
+                    "path is outside the project"
+                }
+                require(target.isFile) { "not a file: ${req.path}" }
+                require(target.length() <= MAX_FILE_BYTES) {
+                    "file too large (${target.length()} bytes; cap $MAX_FILE_BYTES)"
+                }
+                val bytes = target.readBytes()
+                WsMessage.FileContent(
+                    spokeId = spokeId,
+                    requestId = req.requestId,
+                    path = req.path,
+                    contentBase64 = java.util.Base64.getEncoder().encodeToString(bytes),
+                    mimeType = mimeOf(target.name),
+                    sizeBytes = target.length()
+                )
+            }.getOrElse {
+                WsMessage.FileContent(
+                    spokeId = spokeId, requestId = req.requestId, path = req.path,
+                    error = it.message ?: "read failed"
+                )
+            }
+            activeClient.send(reply)
+        }
+    }
+
+    private fun mimeOf(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
+        "html", "htm" -> "text/html"
+        "json" -> "application/json"
+        "md", "txt", "kt", "java", "yaml", "yml", "xml", "css", "js", "ts" -> "text/plain"
+        "png" -> "image/png"
+        "pdf" -> "application/pdf"
+        else -> "application/octet-stream"
     }
 
 
@@ -537,13 +587,41 @@ class HubService(private val project: Project) : Disposable {
     }
 
 
+    /**
+     * Pull one JSON value out of a possibly-chatty reply. Prefers the last fenced ```json block,
+     * else scans the whole text; in BOTH cases it returns a BRACE-BALANCED span (string/escape
+     * aware), so nested JSON is not truncated at the first inner `}` (the old lazy-regex bug) and
+     * trailing prose after the value does not break parsing.
+     */
     private fun extractJsonBlock(text: String): String? {
-        val fenced = Regex("```(?:json)?\\s*([\\[{].*?[}\\]])\\s*```", RegexOption.DOT_MATCHES_ALL)
-            .findAll(text).lastOrNull()?.groupValues?.get(1)
-        if (fenced != null) return fenced
-        val start = text.indexOfFirst { it == '[' || it == '{' }
-        val end = text.indexOfLast { it == ']' || it == '}' }
-        if (start in 0 until end) return text.substring(start, end + 1)
+        val fenceRegex = Regex("```(?:json)?\\s*(.*?)```", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
+        val fenced = fenceRegex.findAll(text).lastOrNull()?.groupValues?.get(1)?.takeIf { it.isNotBlank() }
+        return (fenced?.let { balancedJsonSpan(it) }) ?: balancedJsonSpan(text)
+    }
+
+    /** First `{`/`[` in [s] to its matching close, tracking depth outside string literals. */
+    private fun balancedJsonSpan(s: String): String? {
+        val start = s.indexOfFirst { it == '{' || it == '[' }
+        if (start < 0) return null
+        val open = s[start]
+        val close = if (open == '{') '}' else ']'
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for (i in start until s.length) {
+            val c = s[i]
+            if (inString) {
+                when {
+                    escaped -> escaped = false
+                    c == '\\' -> escaped = true
+                    c == '"' -> inString = false
+                }
+            } else when (c) {
+                '"' -> inString = true
+                open -> depth++
+                close -> if (--depth == 0) return s.substring(start, i + 1)
+            }
+        }
         return null
     }
 

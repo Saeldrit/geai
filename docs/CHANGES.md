@@ -1,5 +1,37 @@
 # Что было сделано с geai — простым языком
 
+## v0.0.82 — Hub file pull, append mode, brace-balanced JSON, incremental authoring
+
+### 1. HubProtocol + HubService — File pull (запрос файлов из хаба)
+Hub теперь может запрашивать содержимое файлов, произведённых агентом. Добавлены сообщения
+`FileRequest` и `FileContent` в протокол. HubService проверяет, что путь внутри проекта и
+файл ≤ 25 MB, отдаёт base64 с автоматическим MIME.
+
+### 2. WriteFileTool — append mode (инкрементальная запись)
+Новый параметр `mode: "append"` позволяет дописывать в конец файла вместо перезаписи.
+Агент может писать крупные документы частями (skeleton → section by section), и каждая часть
+сразу сохраняется на диск.
+
+### 3. HubService — brace-balanced JSON extraction
+Старый regex для извлечения JSON из ответа LLM обрезал вложенные объекты на первом `}`.
+Новый `balancedJsonSpan()` отслеживает depth + string-литералы → корректный парсинг
+вложенного JSON.
+
+### 4. SystemPrompt — incremental authoring doctrine
+Новая секция «Authoring a large NEW file» учит агента: не писать гигантский файл за раз,
+а строить skeleton → append section by section. Каждый вызов персистентен, прерывание не
+теряет прогресс.
+
+### 5. GeaiSettings — hubAutoConnect = true
+Spoke теперь подключается к хабу автоматически при старте проекта (было false → нужен был
+ручной клик).
+
+### 6. docs/architecture-geai.html — полная документация архитектуры
+HTML-документ §3.4–3.7: лимиты и калибровка, scratchpad/skills, персистентность .geai/,
+hub connector.
+
+---
+
 ## Проблема
 
 Агент geai работал **крайне медленно**: простое чтение файлов могло занимать больше часа.

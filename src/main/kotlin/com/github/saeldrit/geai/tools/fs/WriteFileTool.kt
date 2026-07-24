@@ -16,12 +16,16 @@ object WriteFileTool : AgentTool {
     override val name = "write_file"
     override val mutating = true
     override val description =
-        "Create a new file or fully overwrite an existing one. Parent directories are created as " +
-            "needed. New files must be project-relative. For surgical changes prefer edit_file."
+        "Create/overwrite a file, or APPEND to one. Parent directories are created as needed. New " +
+            "files must be project-relative. For a LARGE deliverable, write a skeleton first with " +
+            "mode=overwrite, then grow it section by section with mode=append — each call persists, " +
+            "so partial progress survives an interruption and no single call is huge. For surgical " +
+            "changes to existing code prefer edit_file."
     override val parametersJsonSchema = """
         {"type":"object","properties":{
           "path":{"type":"string","description":"Project-relative path (or an existing absolute path to overwrite)"},
-          "content":{"type":"string","description":"Full file content to write"}
+          "content":{"type":"string","description":"File content to write (full file for overwrite, or the chunk to add for append)"},
+          "mode":{"type":"string","enum":["overwrite","append"],"description":"overwrite (default) replaces the whole file; append adds content to the end (creating the file if absent)"}
         },"required":["path","content"]}
     """.trimIndent()
 
@@ -30,6 +34,7 @@ object WriteFileTool : AgentTool {
     override fun execute(args: ToolArgs, context: ToolContext): ToolResult {
         val path = args.string("path")
         val content = args.string("content")
+        val append = args.stringOrNull("mode")?.equals("append", ignoreCase = true) == true
         val project = context.project
         val resultRef = AtomicReference<ToolResult>()
 
@@ -41,10 +46,14 @@ object WriteFileTool : AgentTool {
                             ?: return@runCatching ToolResult.error(
                                 "Cannot create '$path': use a project-relative path with an existing or creatable parent.",
                             )
-                        VfsUtil.saveText(file, content)
+                        // Append preserves what is already on disk — the load-bearing half of
+                        // incremental authoring: a big file is grown in bounded chunks, each durable.
+                        val finalText = if (append && file.length > 0) VfsUtil.loadText(file) + content else content
+                        VfsUtil.saveText(file, finalText)
                         val document = com.intellij.openapi.fileEditor.FileDocumentManager.getInstance().getDocument(file)
                         val syntax = PostEditCheck.syntaxWarning(project, file, document)
-                        ToolResult.ok("Wrote ${content.length} chars to ${FsPaths.relativize(project, file)}$syntax")
+                        val verb = if (append) "Appended ${content.length} chars to" else "Wrote ${content.length} chars to"
+                        ToolResult.ok("$verb ${FsPaths.relativize(project, file)} (now ${finalText.length} chars)$syntax")
                     }.getOrElse { ToolResult.error("Write failed: ${it.message}") },
                 )
             }

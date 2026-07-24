@@ -141,6 +141,28 @@ sealed class WsMessage {
         val reason: String = ""
     ) : WsMessage()
 
+    /** Hub → Spoke: fetch the content of a file the agent produced (project-relative path). */
+    @Serializable
+    @SerialName("file_request")
+    data class FileRequest(
+        val requestId: String,
+        val taskId: String = "",
+        val path: String
+    ) : WsMessage()
+
+    /** Spoke → Hub: the requested file's bytes (base64), or an [error] describing why not. */
+    @Serializable
+    @SerialName("file_content")
+    data class FileContent(
+        val spokeId: String = "",
+        val requestId: String,
+        val path: String,
+        val contentBase64: String = "",
+        val mimeType: String = "application/octet-stream",
+        val sizeBytes: Long = 0,
+        val error: String = ""
+    ) : WsMessage()
+
 
     @Serializable
     @SerialName("ping")

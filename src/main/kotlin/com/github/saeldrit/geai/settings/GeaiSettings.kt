@@ -113,7 +113,10 @@ class GeaiSettingsState : BaseState() {
 
     var hubUrl by string()
 
-    var hubAutoConnect by property(false)
+    // Auto-join the fleet on project open — no manual "Connect" click. The startup activity
+    // (HubStartupActivity) reads this; HubClient then keeps the socket alive with backoff reconnect.
+    // Turn off in Settings | Tools | Geai if this IDE should not act as a spoke.
+    var hubAutoConnect by property(true)
 }
 
 fun GeaiSettingsState.effectiveHubUrl(): String =
