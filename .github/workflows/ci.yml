@@ -28,7 +28,7 @@ jobs:
         with:
           distribution: zulu
           java-version: 21
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v5
       - name: Build & test
         run: ./gradlew buildPlugin test
       - uses: actions/upload-artifact@v4
@@ -47,7 +47,7 @@ jobs:
         with:
           distribution: zulu
           java-version: 21
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v5
 
       - name: Resolve version
         id: ver
